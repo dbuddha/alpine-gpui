@@ -818,13 +818,42 @@ fn responds_to_version(path: &Path) -> bool {
     if !is_executable_file(path) {
         return false;
     }
-    std::process::Command::new(path)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    bounded_success(
+        std::process::Command::new(path)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn(),
+    )
+}
+
+/// How long a candidate has to prove itself before discovery moves on.
+///
+/// This runs on the main thread during startup, so an executable that never
+/// exits must not be able to stop the editor from opening.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Waits for a probe to exit successfully, killing it if it overruns.
+fn bounded_success(spawned: std::io::Result<std::process::Child>) -> bool {
+    let Ok(mut child) = spawned else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Err(_) => return false,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
 }
 
 const SERVER_NAME: &str = "rust-analyzer";
@@ -3107,6 +3136,22 @@ mod discovery_tests {
         assert_eq!(
             discover_server_with(None, Some(plain.into_os_string()), None, present),
             None
+        );
+    }
+
+    #[test]
+    fn a_candidate_that_never_exits_is_abandoned_rather_than_hanging_startup() {
+        let directory = std::env::temp_dir().join("alpine-discovery-hang");
+        let _ = fs::create_dir_all(&directory);
+        let binary = directory.join(SERVER_NAME);
+        let _ = fs::write(&binary, b"#!/bin/sh\nsleep 600\n");
+        let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
+        let started = std::time::Instant::now();
+        assert_eq!(resolve_server(&binary), None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "discovery waited {:?} on a candidate that never exits",
+            started.elapsed()
         );
     }
 

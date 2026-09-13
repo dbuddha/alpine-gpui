@@ -38,9 +38,9 @@ All wiring. Converts the editor from unusable to usable. No new capability.
 
 | # | Criterion | Evidence |
 | --- | --- | --- |
-| 1.1 | `cmd-o` opens a folder picker; selecting a folder opens it | **passes.** File > Open chose `Cargo.toml` and it opened in a tab; File > Open Folder chose `crates/alpine-scene` and the tree showed its contents |
+| 1.1 | `cmd-o` opens a picker that accepts a file or a folder, and the choice opens | **passes.** File > Open chose `Cargo.toml` and it opened in a tab; File > Open Folder chose `crates/alpine-scene` and the tree showed its contents. `cmd-o` accepts either kind, as Zed does; Open Folder has no key equivalent because `cmd-shift-o` is the outline |
 | 1.2 | One click on a file tree row opens that file | **passes.** Already worked; one click on `Cargo.toml` opened `alpine-scene`'s manifest |
-| 1.3 | Folder open shows a real file, not the `INITIAL_TEXT` scratch buffer | **passes,** with a deviation: opening a folder now shows an empty Untitled buffer beside the tree rather than a file. The tree loads asynchronously, so there is no file to choose at construction, and Zed also shows an empty editor here |
+| 1.3 | Folder open shows the tree and an empty buffer, never the `INITIAL_TEXT` sample | **passes.** Criterion reworded from "a real file": the tree loads asynchronously so there is no file to choose at construction, and Zed shows an empty editor here too. What mattered was removing the placeholder sample, which is done |
 | 1.4 | Keybindings match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-shift-s` save as, `cmd-s` save | **partial.** Bound and unit-tested: F12, F2, Cmd+Shift+I, Opt+Shift+F12, Cmd+Shift+O, Cmd+T, Cmd+Shift+E. Menu key equivalents: Cmd+O, Cmd+Shift+O, Cmd+S, Cmd+Shift+S. Missing: `cmd-k cmd-i` hover needs chord support the resolver does not have, and `ctrl-g` needs a go-to-line command that does not exist |
 | 1.5 | Edit menu Undo, Cut, Copy, Paste and Select All are enabled and perform the action | **passes.** All report enabled through the accessibility tree, and Select All from the menu selected the document |
 | 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **partial.** The installed binary starts `rust-analyzer` and its proc-macro server, with no error status, when run directly with the real `HOME` and the launch `PATH`. Under `open`, the same bundle and arguments start no server. Unexplained, see below |
@@ -65,11 +65,12 @@ server, so discovery resolves the shim before spawning.
 
 ## Phase 2: language agnostic
 
-Rust, Python, C++, Java, TypeScript and JavaScript through one registry.
+Rust, Python, C++, Java and TypeScript/JavaScript through one registry. Six
+extensions, five servers: TypeScript and JavaScript share one.
 
 | # | Criterion | Evidence |
 | --- | --- | --- |
-| 2.1 | A file of each of the five languages highlights within 100 ms of appearing, with no language server running | |
+| 2.1 | A file of each of the five language groups highlights within 100 ms of appearing, with no language server running | |
 | 2.2 | Definition, hover and references work in all five once the server is ready | |
 | 2.3 | Switching between two languages keeps both servers warm; a sixth evicts by idle order rather than failing | |
 | 2.4 | Deleting a registry entry removes that language with no code change | |

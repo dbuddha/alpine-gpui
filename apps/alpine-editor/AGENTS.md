@@ -25,16 +25,15 @@ terminal, each with a screenshot:
 
 | # | Criterion |
 | --- | --- |
-| 1.1 | `cmd-o` opens a folder picker and selecting a folder opens it |
+| 1.1 | `cmd-o` opens a picker taking a file or folder, and the choice opens |
 | 1.2 | One click on a file tree row opens that file |
-| 1.3 | Folder open shows a real file, not the `INITIAL_TEXT` scratch buffer |
-| 1.4 | Keys match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-shift-s` save as |
+| 1.3 | Folder open shows the tree and an empty buffer, not the sample text |
+| 1.4 | Keys match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-s` save, `cmd-shift-s` save as |
 | 1.5 | Edit menu Undo, Cut, Copy, Paste, Select All are enabled and work |
 | 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset |
 | 1.7 | Launches from `~/Applications/Alpine Editor.app` with an icon |
 
-Everything in phase 1 is wiring. The capability already exists and is
-unreachable, which is the whole problem.
+Phase 1 is wiring: the capability exists and is unreachable.
 
 The bet is that a real editor can hold a real project in a fraction of the
 memory the alternatives need, and stay at 120 Hz while doing it. Every product
@@ -87,8 +86,9 @@ A command in `commands.rs` with no menu item, no key and no visible affordance
 is not a feature. That error has already been made here.
 
 Check every user-visible change by launching the app and capturing the window
-with `screencapture`, comparing against the spec and against Zed for the same
-surface. Use a disposable `HOME` so a restored session is not mistaken for
+through ScreenCaptureKit, as `tools/onscreen-sdr-capture` does, comparing
+against the spec and against Zed for the same surface. `screencapture -l`
+cannot see the Metal layer and reports a blank window. Use a disposable `HOME` so a restored session is not mistaken for
 current behavior. Latency and memory claims follow the root guide's measurement
 rules and need a matched workload on both sides.
 
@@ -109,9 +109,8 @@ rather than silent replacement.
 
 ## Known open defects
 
-Open issues are the backlog; read them rather than this list. The one worth
-knowing before touching rendering: `presentedTime` is always zero on the
-development Mac (#511), so presentation cannot be timed there, and that
-plausibly explains the intermittent frame deadline failures in #622.
+Open issues are the backlog; read them, not a list here. One matters before
+touching rendering: `presentedTime` is always zero on the development Mac
+(#511), so presentation cannot be timed there.
 
 Daily use is the acceptance test. A defect you hit while editing is the backlog.

@@ -382,8 +382,6 @@ pub enum ImeEvent {
 /// nothing at all when the user cancels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuAction {
-    /// Replace the active document with an empty untitled buffer.
-    NewFile,
     /// Open this file or folder, chosen in an open panel.
     OpenPath(std::path::PathBuf),
     /// Write the active document to its existing path.

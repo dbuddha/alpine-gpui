@@ -824,6 +824,9 @@ fn run_native(app: EditorApp) -> Result<(), RuntimeError> {
     let mut app = app;
     #[cfg(not(alpine_native_validation))]
     let mut app = app;
+    // Discovery runs here, not in construction, so the test constructors do
+    // not probe the developer's installation or pay for spawning a process.
+    app.rust_diagnostics = rust_diagnostics::discovered();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
         .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
     if let Some(capture) = capture.as_ref() {
@@ -1095,6 +1098,30 @@ impl ExplicitPathTarget {
         }
         Ok(())
     }
+}
+
+/// Writes `bytes` to `path` through a sibling temporary file and a rename.
+///
+/// A rename within a directory is atomic, so a crash or a full disk leaves the
+/// destination as it was instead of truncated.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = directory.join(".alpine-save-as");
+    temporary.set_extension(format!("{}", std::process::id()));
+    let write = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
 }
 
 fn record_project_settings_result(
@@ -2167,7 +2194,7 @@ impl EditorApp {
             dogfood_accessibility_actions: 0,
             profile_event_timestamp: EventTimestamp::new(0),
             profile_scene_revision: SceneRevision::new(0),
-            rust_diagnostics: rust_diagnostics::discovered(),
+            rust_diagnostics: RustDiagnostics::default(),
             language_wake_latch: LanguageWakeLatch::default(),
             workspace_edits: WorkspaceEditPanel::default(),
             #[cfg(test)]
@@ -6604,7 +6631,6 @@ impl EditorApp {
     /// Applies one menu command whose file choice the platform already made.
     fn handle_menu_action(&mut self, action: &MenuAction) -> EventEffect {
         match action {
-            MenuAction::NewFile => self.open_scratch_document(),
             MenuAction::OpenPath(path) => self.open_menu_path(path),
             MenuAction::Save => self.save_document(),
             MenuAction::SaveAsPath(path) => self.save_document_as(path),
@@ -6631,6 +6657,10 @@ impl EditorApp {
     }
 
     /// Replaces the workspace with the chosen folder and reloads the tree.
+    ///
+    /// The tab set is rebuilt rather than kept. Carrying tabs across a
+    /// workspace switch leaves the editor showing a file from the old project
+    /// while the tree and the language server point at the new root.
     fn open_workspace_root(&mut self, path: &Path) -> EventEffect {
         let workspace = match Workspace::open_root(path) {
             Ok(workspace) => workspace,
@@ -6641,6 +6671,13 @@ impl EditorApp {
         let Some(next_revision) = self.runtime_workspace_revision.checked_add(1) else {
             return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
         };
+        let Ok((tabs, panes)) = Self::initial_tabs_and_panes(None) else {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        };
+        self.tabs = tabs;
+        self.panes = panes;
+        self.document = EditorDocument::scratch("");
+        self.pending_recovery.clear();
         self.runtime_workspace_revision = next_revision;
         self.workspace = Some(workspace);
         let result = self
@@ -6655,24 +6692,23 @@ impl EditorApp {
         EventEffect::document_replacement()
     }
 
-    /// Replaces the active document with an empty untitled buffer.
-    fn open_scratch_document(&mut self) -> EventEffect {
-        let Some(next_revision) = self.runtime_document_revision.checked_add(1) else {
-            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
-        };
-        self.document = EditorDocument::scratch("");
-        self.runtime_document_revision = next_revision;
-        self.apply_document_view(DocumentViewState::default());
-        EventEffect::document_replacement()
-    }
-
     /// Writes the active buffer to `path`, then opens that file as the tab.
     ///
-    /// Reopening rather than retargeting the current document means the saved
-    /// file is the one on disk, not a buffer that merely believes it was saved.
+    /// Refuses a destination that is already open. That tab holds its own
+    /// buffer, and saving over the file underneath it would be silently
+    /// overwritten again the next time that tab saved.
+    ///
+    /// The write goes to a sibling temporary file and is renamed into place, so
+    /// an interrupted Save As leaves the destination untouched rather than
+    /// truncated.
     fn save_document_as(&mut self, path: &Path) -> EventEffect {
+        if self.tabs.index_for_path(path).is_some() {
+            return self.record_workspace_error(&WorkspaceSelectionError::Tabs(
+                DocumentTabError::DuplicatePath(path.to_path_buf()),
+            ));
+        }
         let text = self.buffer().snapshot().text();
-        if let Err(source) = std::fs::write(path, text) {
+        if let Err(source) = write_atomically(path, text.as_bytes()) {
             return self.record_workspace_error(&WorkspaceSelectionError::Workspace(
                 WorkspaceError::io("write chosen path", path, source),
             ));

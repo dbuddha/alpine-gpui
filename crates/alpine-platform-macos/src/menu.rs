@@ -60,21 +60,16 @@ define_class!(
     // borrowed only for the call and never escapes. Every emitted value owns
     // its path, so no AppKit object crosses the boundary.
     impl MenuTarget {
-        #[unsafe(method(alpineNewFile:))]
-        fn new_file(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::NewFile);
-        }
-
         #[unsafe(method(alpineOpenFile:))]
         fn open_file(&self, _sender: Option<&AnyObject>) {
-            if let Some(path) = choose_path(self.mtm(), false) {
+            if let Some(path) = choose_path(self.mtm(), Choice::FileOrFolder) {
                 self.emit(MenuAction::OpenPath(path));
             }
         }
 
         #[unsafe(method(alpineOpenFolder:))]
         fn open_folder(&self, _sender: Option<&AnyObject>) {
-            if let Some(path) = choose_path(self.mtm(), true) {
+            if let Some(path) = choose_path(self.mtm(), Choice::FolderOnly) {
                 self.emit(MenuAction::OpenPath(path));
             }
         }
@@ -102,10 +97,16 @@ impl MenuTarget {
     }
 
     /// Installs the handler that receives every menu command.
-    pub(crate) fn install_handler(&self, handler: MenuHandler) {
-        if let Ok(mut installed) = self.ivars().handler.try_borrow_mut() {
-            *installed = Some(handler);
-        }
+    ///
+    /// Returns false when the slot is already borrowed, which means a menu
+    /// command is mid-dispatch. Reporting that is the point: a caller that
+    /// believed installation succeeded would run with no menu at all.
+    pub(crate) fn install_handler(&self, handler: MenuHandler) -> bool {
+        let Ok(mut installed) = self.ivars().handler.try_borrow_mut() else {
+            return false;
+        };
+        *installed = Some(handler);
+        true
     }
 
     /// Drops the handler so later menu commands are ignored.
@@ -129,11 +130,18 @@ impl MenuTarget {
     }
 }
 
+/// What an open panel is allowed to return.
+#[derive(Clone, Copy)]
+enum Choice {
+    FileOrFolder,
+    FolderOnly,
+}
+
 /// Runs an open panel and returns the chosen path, or `None` when cancelled.
-fn choose_path(mtm: MainThreadMarker, directories: bool) -> Option<PathBuf> {
+fn choose_path(mtm: MainThreadMarker, choice: Choice) -> Option<PathBuf> {
     let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseFiles(!directories);
-    panel.setCanChooseDirectories(directories);
+    panel.setCanChooseFiles(matches!(choice, Choice::FileOrFolder));
+    panel.setCanChooseDirectories(true);
     panel.setAllowsMultipleSelection(false);
     panel.setResolvesAliases(true);
     if panel.runModal() != NSModalResponseOK {
@@ -271,14 +279,14 @@ fn file_menu(mtm: MainThreadMarker, main: &NSMenu, target: &MenuTarget) {
         main,
         "File",
         &[
-            Some(Item {
-                title: "New File",
-                selector: sel!(alpineNewFile:),
-                key: "n",
-                shift: false,
-                owned: true,
-            }),
-            None,
+            // New File is absent on purpose: DocumentTabs::insert_and_activate
+            // requires a path, so a scratch tab cannot be inserted without a
+            // pathless insert API. Replacing the active document in place left
+            // the tab pointing at the old file, which lost work on tab switch.
+            //
+            // One Open, accepting a file or a folder, as Zed does. A separate
+            // Cmd+Shift+O would take the outline shortcut: AppKit consumes menu
+            // key equivalents before the view ever sees the key.
             Some(Item {
                 title: "Open\u{2026}",
                 selector: sel!(alpineOpenFile:),
@@ -289,8 +297,8 @@ fn file_menu(mtm: MainThreadMarker, main: &NSMenu, target: &MenuTarget) {
             Some(Item {
                 title: "Open Folder\u{2026}",
                 selector: sel!(alpineOpenFolder:),
-                key: "o",
-                shift: true,
+                key: "",
+                shift: false,
                 owned: true,
             }),
             None,
@@ -425,11 +433,7 @@ fn shared_target(mtm: MainThreadMarker) -> Option<Retained<MenuTarget>> {
 /// already borrowed, which the caller treats as the surface failure it is
 /// rather than silently losing every menu command.
 pub(crate) fn install_handler(mtm: MainThreadMarker, handler: MenuHandler) -> bool {
-    let Some(target) = shared_target(mtm) else {
-        return false;
-    };
-    target.install_handler(handler);
-    true
+    shared_target(mtm).is_some_and(|target| target.install_handler(handler))
 }
 
 /// Stops delivering menu commands to the installed handler.

@@ -4552,13 +4552,15 @@ impl NativeSurface {
             crate::menu::install_handler(
                 main_thread,
                 Box::new(move |action| {
-                    // A menu command the editor never sees is worse than a
-                    // visible failure, but the run loop owns error reporting,
-                    // so record it the same way input dispatch failures are.
-                    let _ = menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
+                    // A menu command the editor never sees must not be
+                    // silent, so a rejected dispatch reaches the surface error
+                    // path exactly as a failed input event does.
+                    if let Err(error) = menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
                         timestamp: menu_delegate.next_event_timestamp(),
                         action,
-                    });
+                    }) {
+                        menu_delegate.record_dispatch_error(error);
+                    }
                 }),
             )
         });

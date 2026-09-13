@@ -95,19 +95,36 @@ func drawIcon(size: CGFloat) -> CGImage? {
     return ctx.makeImage()
 }
 
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write("icon generation failed: \(message)\n".data(using: .utf8)!)
+    exit(1)
+}
+
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "/tmp/AlpineEditor.iconset"
-try? FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+do {
+    try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+} catch {
+    fail("could not create \(out): \(error)")
+}
 // The exact set `iconutil` requires.
 let plan: [(Int, String)] = [
     (16, "icon_16x16"), (32, "icon_16x16@2x"), (32, "icon_32x32"), (64, "icon_32x32@2x"),
     (128, "icon_128x128"), (256, "icon_128x128@2x"), (256, "icon_256x256"),
     (512, "icon_256x256@2x"), (512, "icon_512x512"), (1024, "icon_512x512@2x"),
 ]
+// A silently partial iconset produces a bad bundle that only fails much
+// later, so every step here is fatal.
 for (pixels, name) in plan {
-    guard let image = drawIcon(size: CGFloat(pixels)) else { continue }
+    guard let image = drawIcon(size: CGFloat(pixels)) else { fail("could not draw \(name)") }
     let rep = NSBitmapImageRep(cgImage: image)
     rep.size = NSSize(width: pixels, height: pixels)
-    guard let data = rep.representation(using: .png, properties: [:]) else { continue }
-    try? data.write(to: URL(fileURLWithPath: "\(out)/\(name).png"))
+    guard let data = rep.representation(using: .png, properties: [:]) else {
+        fail("could not encode \(name)")
+    }
+    do {
+        try data.write(to: URL(fileURLWithPath: "\(out)/\(name).png"))
+    } catch {
+        fail("could not write \(name): \(error)")
+    }
 }
 print("wrote iconset to \(out)")
