@@ -514,6 +514,7 @@ impl NativeAccessibilityAdapter {
         view: &SurfaceView,
         revision: AccessibilityRevision,
         range: NSRange,
+        target: Option<AccessibilityNodeId>,
     ) -> Option<NSRect> {
         let end = range.location.checked_add(range.length)?;
         let mut cursor = range.location;
@@ -521,8 +522,14 @@ impl NativeAccessibilityAdapter {
         // Bound synchronous AX work. Every fragment must cover the requested
         // range; an unavailable/offscreen fragment rejects the whole rectangle.
         for _ in 0..256 {
-            let (rect, actual) =
-                Self::input_geometry(view, revision, NSRange::new(cursor, end - cursor), false)?;
+            let (bounds, actual) = view
+                .ivars()
+                .accessibility
+                .try_borrow_mut()
+                .ok()?
+                .geometry_for(revision, NSRange::new(cursor, end - cursor), false, target)?;
+            let rect = view_rect_to_screen(view, bounds)?;
+            let actual = to_ns_range(actual);
             if actual.location != cursor || actual.length > end - cursor {
                 return None;
             }
@@ -592,6 +599,24 @@ impl NativeAccessibilityAdapter {
         range: NSRange,
         marked_text: bool,
     ) -> Option<(AccessibilityBounds, AccessibilityTextRange)> {
+        let target = if marked_text {
+            self.snapshot
+                .as_ref()?
+                .focused_text_input()
+                .map(crate::AccessibilityTextInput::node)
+        } else {
+            None
+        };
+        self.geometry_for(revision, range, marked_text, target)
+    }
+
+    fn geometry_for(
+        &mut self,
+        revision: AccessibilityRevision,
+        range: NSRange,
+        marked_text: bool,
+        target: Option<AccessibilityNodeId>,
+    ) -> Option<(AccessibilityBounds, AccessibilityTextRange)> {
         let request = AccessibilityRequest::first_rect_for_range(
             self.next_id().ok()?,
             revision,
@@ -599,11 +624,7 @@ impl NativeAccessibilityAdapter {
             marked_text,
         )
         .ok()?;
-        let request = if marked_text {
-            self.target_focused_text(request)
-        } else {
-            request
-        };
+        let request = targeted(request, target);
         let response = self.dispatch(&request).ok()?;
         match response.result() {
             Ok(AccessibilityPayload::TextGeometry { bounds, range }) => Some((*bounds, *range)),
@@ -682,6 +703,20 @@ impl NativeAccessibilityAdapter {
                 .collect::<Vec<_>>()
         };
         NSArray::from_retained_slice(&roots)
+    }
+
+    pub(crate) fn focused_element(view: &SurfaceView) -> Option<Retained<AnyObject>> {
+        let adapter = view.ivars().accessibility.try_borrow().ok()?;
+        if !adapter.active {
+            return None;
+        }
+        let node = adapter
+            .snapshot
+            .as_ref()?
+            .nodes()
+            .iter()
+            .find(|node| node.is_focused())?;
+        adapter.element(node.id()).map(Into::into)
     }
 
     pub(crate) fn revoke_view(view: &SurfaceView) {
@@ -910,12 +945,24 @@ impl NativeAccessibilityAdapter {
             self.push_notification(intents, id, NotificationKind::Selection);
         }
         if any_conditions([
-            previous.revision() != current.revision(),
+            previous.revision().document() != current.revision().document(),
+            previous.revision().buffer() != current.revision().buffer(),
             previous.text_len_utf16() != current.text_len_utf16(),
             previous.is_dirty() != current.is_dirty(),
         ]) && let Some(id) = role_id(current, AccessibilityRole::CodeEditor)
         {
             self.push_notification(intents, id, NotificationKind::Value);
+        }
+        if let Some(input) = current.focused_text_input() {
+            let previous_input = previous
+                .focused_text_input()
+                .filter(|prior| prior.node() == input.node());
+            if previous_input.is_none_or(|prior| prior.selection() != input.selection()) {
+                self.push_notification(intents, input.node(), NotificationKind::Selection);
+            }
+            if previous_input != Some(input) || previous.revision() != current.revision() {
+                self.push_notification(intents, input.node(), NotificationKind::Value);
+            }
         }
         for node in current.nodes().iter().filter(|node| node.announces()) {
             let changed = previous
@@ -1134,8 +1181,10 @@ impl NativeAccessibilityAdapter {
         &mut self,
         revision: AccessibilityRevision,
         range: AccessibilityTextRange,
+        target: Option<AccessibilityNodeId>,
     ) -> Option<Box<str>> {
         let request = AccessibilityRequest::text(self.next_id().ok()?, revision, range).ok()?;
+        let request = targeted(request, target);
         let response = self.dispatch(&request).ok()?;
         match response.result() {
             Ok(AccessibilityPayload::Text(text)) => Some(text.as_str().into()),
@@ -1146,9 +1195,10 @@ impl NativeAccessibilityAdapter {
     fn range_request(
         &mut self,
         revision: AccessibilityRevision,
+        target: Option<AccessibilityNodeId>,
         build: impl FnOnce(AccessibilityRequestId) -> Result<AccessibilityRequest, AccessibilityError>,
     ) -> Option<AccessibilityTextRange> {
-        let request = build(self.next_id().ok()?).ok()?;
+        let request = targeted(build(self.next_id().ok()?).ok()?, target);
         let response = self.dispatch(&request).ok()?;
         if response.observed_revision() != revision {
             return None;
@@ -1159,9 +1209,15 @@ impl NativeAccessibilityAdapter {
         }
     }
 
-    fn line_for_index(&mut self, revision: AccessibilityRevision, index: usize) -> Option<usize> {
+    fn line_for_index(
+        &mut self,
+        revision: AccessibilityRevision,
+        index: usize,
+        target: Option<AccessibilityNodeId>,
+    ) -> Option<usize> {
         let request =
             AccessibilityRequest::line_for_index(self.next_id().ok()?, revision, index).ok()?;
+        let request = targeted(request, target);
         let response = self.dispatch(&request).ok()?;
         match response.result() {
             Ok(AccessibilityPayload::Line(line)) => Some(*line),
@@ -1173,6 +1229,7 @@ impl NativeAccessibilityAdapter {
         &mut self,
         revision: AccessibilityRevision,
         range: AccessibilityTextRange,
+        target: Option<AccessibilityNodeId>,
     ) -> bool {
         let request = AccessibilityRequest::action(
             match self.next_id() {
@@ -1188,6 +1245,7 @@ impl NativeAccessibilityAdapter {
         let Ok(request) = request else {
             return false;
         };
+        let request = targeted(request, target);
         let Ok(response) = self.dispatch(&request) else {
             return false;
         };
@@ -1237,16 +1295,32 @@ impl NativeAccessibilityAdapter {
         )
     }
 
+    fn element_text_target(&self, id: AccessibilityNodeId) -> Option<AccessibilityNodeId> {
+        self.snapshot
+            .as_ref()?
+            .focused_text_input()
+            .filter(|input| input.node() == id)
+            .map(|_| id)
+    }
+
     fn snapshot_metadata(
         &self,
         generation: u64,
         instance_generation: u64,
         id: AccessibilityNodeId,
     ) -> Option<(AccessibilityRevision, usize, AccessibilityTextRange)> {
-        if self.node(generation, instance_generation, id)?.role() != AccessibilityRole::CodeEditor {
-            return None;
-        }
+        let node = self.node(generation, instance_generation, id)?;
         let snapshot = self.snapshot.as_ref()?;
+        if node.role() != AccessibilityRole::CodeEditor {
+            let input = snapshot
+                .focused_text_input()
+                .filter(|input| input.node() == id)?;
+            return Some((
+                snapshot.revision(),
+                input.text_len_utf16(),
+                input.selection().range(),
+            ));
+        }
         Some((
             snapshot.revision(),
             snapshot.text_len_utf16(),
@@ -1259,6 +1333,130 @@ impl NativeAccessibilityAdapter {
         self.elements
             .len()
             .saturating_mul(mem::size_of::<Retained<NativeAccessibilityElement>>())
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn validate_window_relationships(view: &SurfaceView) -> Result<(), SurfaceError> {
+        let failure = || SurfaceError::validation(SurfaceOperation::Accessibility);
+        let (root, elements, expected_focus) = {
+            let adapter = view
+                .ivars()
+                .accessibility
+                .try_borrow()
+                .map_err(|_| failure())?;
+            let snapshot = adapter.snapshot.as_ref().ok_or_else(failure)?;
+            let root = adapter.element(snapshot.root()).ok_or_else(failure)?;
+            let elements = snapshot
+                .nodes()
+                .iter()
+                .filter_map(|node| adapter.element(node.id()))
+                .collect::<Vec<_>>();
+            let focus = snapshot
+                .nodes()
+                .iter()
+                .find(|node| node.is_focused())
+                .and_then(|node| adapter.element(node.id()))
+                .map(Into::<Retained<AnyObject>>::into);
+            (root, elements, focus)
+        };
+        let window: Retained<AnyObject> = view.window().ok_or_else(failure)?.into();
+        if root
+            .accessibility_parent_impl()
+            .is_none_or(|parent| !core::ptr::eq(&*parent, &*window))
+        {
+            return Err(failure());
+        }
+        for element in elements {
+            // SAFETY: live main-thread elements implement these object-returning
+            // selectors; retained results follow Objective-C getter ownership.
+            let parent_window: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*element, accessibilityWindow] };
+            let top_level: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*element, accessibilityTopLevelUIElement] };
+            if parent_window.is_none_or(|value| !core::ptr::eq(&*value, &*window))
+                || top_level.is_none_or(|value| !core::ptr::eq(&*value, &*window))
+            {
+                return Err(failure());
+            }
+        }
+        // SAFETY: this live SurfaceView implements the object-returning focus
+        // selector; no adapter borrow survives into Objective-C dispatch.
+        let focus: Option<Retained<AnyObject>> =
+            unsafe { msg_send![view, accessibilityFocusedUIElement] };
+        match (focus, expected_focus) {
+            (Some(actual), Some(expected)) if core::ptr::eq(&*actual, &*expected) => Ok(()),
+            (None, None) => Ok(()),
+            _ => Err(failure()),
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(super) fn validate_focused_field_text(
+        view: &SurfaceView,
+        expected: &str,
+    ) -> Result<(), SurfaceError> {
+        Self::refresh_view(view)?;
+        Self::validate_window_relationships(view)?;
+        let failure = || SurfaceError::validation(SurfaceOperation::Accessibility);
+        let (element, document, document_length) = {
+            let adapter = view
+                .ivars()
+                .accessibility
+                .try_borrow()
+                .map_err(|_| failure())?;
+            let snapshot = adapter.snapshot.as_ref().ok_or_else(failure)?;
+            let field = snapshot.focused_text_input().ok_or_else(failure)?;
+            let document = role_id(snapshot, AccessibilityRole::CodeEditor)
+                .and_then(|id| adapter.element(id))
+                .ok_or_else(failure)?;
+            (
+                adapter.element(field.node()).ok_or_else(failure)?,
+                document,
+                snapshot.text_len_utf16(),
+            )
+        };
+        let length = expected.encode_utf16().count();
+        let value = element.accessibility_value_impl().ok_or_else(failure)?;
+        let string = element
+            .accessibility_string_for_range_impl(NSRange::new(0, length))
+            .ok_or_else(failure)?;
+        // SAFETY: these retained, main-thread elements implement each selector
+        // below with the exact usize/NSRange/bool signatures being requested.
+        let field_length: usize = unsafe { msg_send![&*element, accessibilityNumberOfCharacters] };
+        let allowed: bool = unsafe {
+            msg_send![&*element, isAccessibilitySelectorAllowed: sel!(accessibilityStringForRange:)]
+        };
+        let source_length: usize =
+            unsafe { msg_send![&*document, accessibilityNumberOfCharacters] };
+        if value.to_string() != expected
+            || string.to_string() != expected
+            || field_length != length
+            || !allowed
+            || source_length != document_length
+        {
+            return Err(failure());
+        }
+        // Selecting through the field's AX setter must leave document selection
+        // intact and expose the same selected substring through native AX reads.
+        // SAFETY: selection getter/setter ABI is implemented by these live
+        // elements; ranges are bounded by the field length validated above.
+        let document_selection: NSRange =
+            unsafe { msg_send![&*document, accessibilitySelectedTextRange] };
+        let _: () = unsafe {
+            msg_send![&*element, setAccessibilitySelectedTextRange: NSRange::new(0, length)]
+        };
+        let source_selection: NSRange =
+            unsafe { msg_send![&*document, accessibilitySelectedTextRange] };
+        if element.accessibility_selected_text_impl().to_string() != expected
+            || source_selection != document_selection
+        {
+            return Err(failure());
+        }
+        // SAFETY: the same live field accepts this bounded end insertion caret.
+        let _: () = unsafe {
+            msg_send![&*element, setAccessibilitySelectedTextRange: NSRange::new(length, 0)]
+        };
+        Ok(())
     }
 
     #[cfg(alpine_native_validation)]
@@ -1386,6 +1584,7 @@ impl NativeAccessibilityAdapter {
         let root = roots
             .firstObject()
             .ok_or(SurfaceError::validation(SurfaceOperation::Validation))?;
+        Self::validate_window_relationships(view)?;
         let stable_root_identity = repeated
             .firstObject()
             .is_some_and(|candidate| core::ptr::eq(&*root, &*candidate));
@@ -1759,6 +1958,7 @@ impl NativeAccessibilityAdapter {
                 stale_revision.buffer().saturating_sub(1),
             ),
             AccessibilityTextRange::new(0, 0),
+            None,
         );
         let counters = view.ivars().accessibility.borrow().counters;
         let peak_elements = counters.peak_elements;
@@ -1900,8 +2100,18 @@ define_class!(
         }
 
         #[unsafe(method_id(accessibilityParent))]
-        fn accessibility_parent(&self) -> Option<Retained<NativeAccessibilityElement>> {
+        fn accessibility_parent(&self) -> Option<Retained<AnyObject>> {
             self.accessibility_parent_impl()
+        }
+
+        #[unsafe(method_id(accessibilityWindow))]
+        fn accessibility_window(&self) -> Option<Retained<AnyObject>> {
+            self.accessibility_window_impl()
+        }
+
+        #[unsafe(method_id(accessibilityTopLevelUIElement))]
+        fn accessibility_top_level(&self) -> Option<Retained<AnyObject>> {
+            self.accessibility_window_impl()
         }
 
         #[unsafe(method_id(accessibilityChildren))]
@@ -1954,32 +2164,32 @@ define_class!(
             let Some((revision, length, _)) = self.metadata() else { return NSRect::ZERO; };
             if checked_range(range, length).is_none() { return NSRect::ZERO; }
             let Some(view) = self.ivars().view.load() else { return NSRect::ZERO; };
-            NativeAccessibilityAdapter::input_range_geometry(&view, revision, range).unwrap_or(NSRect::ZERO)
+            NativeAccessibilityAdapter::input_range_geometry(&view, revision, range, self.text_target()).unwrap_or(NSRect::ZERO)
         }
 
         #[unsafe(method(accessibilityLineForIndex:))]
         fn accessibility_line_for_index(&self, index: usize) -> usize {
             let Some((revision, _, _)) = self.metadata().filter(|(_, length, _)| index <= *length) else { return usize::MAX; };
-            self.with_adapter_mut(|adapter| adapter.line_for_index(revision, index)).flatten().unwrap_or(usize::MAX)
+            self.with_adapter_mut(|adapter| adapter.line_for_index(revision, index, adapter.element_text_target(self.ivars().id))).flatten().unwrap_or(usize::MAX)
         }
 
         #[unsafe(method(accessibilityRangeForLine:))]
         fn accessibility_range_for_line(&self, line: usize) -> NSRange {
             let Some((revision, _, _)) = self.metadata() else { return not_found_range(); };
-            self.with_adapter_mut(|adapter| adapter.range_request(revision, |id| AccessibilityRequest::range_for_line(id, revision, line))).flatten().map_or_else(not_found_range, to_ns_range)
+            self.with_adapter_mut(|adapter| adapter.range_request(revision, adapter.element_text_target(self.ivars().id), |id| AccessibilityRequest::range_for_line(id, revision, line))).flatten().map_or_else(not_found_range, to_ns_range)
         }
 
         #[unsafe(method(accessibilityRangeForIndex:))]
         fn accessibility_range_for_index(&self, index: usize) -> NSRange {
             let Some((revision, _, _)) = self.metadata().filter(|(_, length, _)| index <= *length) else { return not_found_range(); };
-            self.with_adapter_mut(|adapter| adapter.range_request(revision, |id| AccessibilityRequest::range_for_index(id, revision, index))).flatten().map_or_else(not_found_range, to_ns_range)
+            self.with_adapter_mut(|adapter| adapter.range_request(revision, adapter.element_text_target(self.ivars().id), |id| AccessibilityRequest::range_for_index(id, revision, index))).flatten().map_or_else(not_found_range, to_ns_range)
         }
 
         #[unsafe(method(setAccessibilitySelectedTextRange:))]
         fn set_accessibility_selected_text_range(&self, range: NSRange) {
             let Some((revision, length, _)) = self.metadata() else { return; };
             let Some(range) = checked_range(range, length) else { return; };
-            let applied = self.with_adapter_mut(|adapter| adapter.set_selection(revision, range)).unwrap_or(false);
+            let applied = self.with_adapter_mut(|adapter| adapter.set_selection(revision, range, adapter.element_text_target(self.ivars().id))).unwrap_or(false);
             if applied
                 && let Some(view) = self.ivars().view.load()
                 && NativeAccessibilityAdapter::refresh_view(&view).is_err()
@@ -1990,9 +2200,7 @@ define_class!(
 
         #[unsafe(method(isAccessibilitySelectorAllowed:))]
         fn is_accessibility_selector_allowed(&self, selector: Sel) -> bool {
-            let text_editor = self
-                .node()
-                .is_some_and(|node| node.role() == AccessibilityRole::CodeEditor);
+            let text_editor = self.metadata().is_some();
             selector == sel!(accessibilityRole)
                 || selector == sel!(accessibilityRoleDescription)
                 || selector == sel!(isAccessibilityElement)
@@ -2003,6 +2211,8 @@ define_class!(
                 || selector == sel!(accessibilityTitle)
                 || selector == sel!(accessibilityValue)
                 || selector == sel!(accessibilityParent)
+                || selector == sel!(accessibilityWindow)
+                || selector == sel!(accessibilityTopLevelUIElement)
                 || selector == sel!(accessibilityChildren)
                 || selector == sel!(isAccessibilityFocused)
                 || selector == sel!(isAccessibilitySelected)
@@ -2074,15 +2284,36 @@ impl NativeAccessibilityElement {
         .flatten()
     }
 
-    fn accessibility_value_impl(&self) -> Option<Retained<NSString>> {
-        let node = self.node()?;
-        (node.role() != AccessibilityRole::CodeEditor).then(|| NSString::from_str(node.name()))
+    fn text_target(&self) -> Option<AccessibilityNodeId> {
+        self.node()
+            .filter(|node| node.role() != AccessibilityRole::CodeEditor)
+            .map(|node| node.id())
     }
 
-    fn accessibility_parent_impl(&self) -> Option<Retained<NativeAccessibilityElement>> {
-        let parent = self.node()?.parent()?;
-        self.with_adapter(|adapter| adapter.element(parent))
-            .flatten()
+    fn accessibility_value_impl(&self) -> Option<Retained<NSString>> {
+        let node = self.node()?;
+        if node.role() == AccessibilityRole::CodeEditor {
+            return None;
+        }
+        if let Some((_, length, _)) = self.metadata() {
+            return self.accessibility_string_for_range_impl(NSRange::new(0, length));
+        }
+        Some(NSString::from_str(node.name()))
+    }
+
+    fn accessibility_parent_impl(&self) -> Option<Retained<AnyObject>> {
+        match self.node()?.parent() {
+            Some(parent) => self
+                .with_adapter(|adapter| adapter.element(parent))
+                .flatten()
+                .map(Into::into),
+            None => self.accessibility_window_impl(),
+        }
+    }
+
+    fn accessibility_window_impl(&self) -> Option<Retained<AnyObject>> {
+        self.node()?; // Reject revoked or replaced element instances.
+        self.ivars().view.load()?.window().map(Into::into)
     }
 
     fn accessibility_frame_impl(&self) -> NSRect {
@@ -2106,7 +2337,13 @@ impl NativeAccessibilityElement {
             return NSString::new();
         };
         let text = self
-            .with_adapter_mut(|adapter| adapter.text(revision, range))
+            .with_adapter_mut(|adapter| {
+                adapter.text(
+                    revision,
+                    range,
+                    adapter.element_text_target(self.ivars().id),
+                )
+            })
             .flatten()
             .unwrap_or_default();
         NSString::from_str(&text)
@@ -2115,9 +2352,15 @@ impl NativeAccessibilityElement {
     fn accessibility_string_for_range_impl(&self, range: NSRange) -> Option<Retained<NSString>> {
         let (revision, length, _) = self.metadata()?;
         let range = checked_range(range, length)?;
-        self.with_adapter_mut(|adapter| adapter.text(revision, range))
-            .flatten()
-            .map(|text| NSString::from_str(&text))
+        self.with_adapter_mut(|adapter| {
+            adapter.text(
+                revision,
+                range,
+                adapter.element_text_target(self.ivars().id),
+            )
+        })
+        .flatten()
+        .map(|text| NSString::from_str(&text))
     }
 
     fn metadata(&self) -> Option<(AccessibilityRevision, usize, AccessibilityTextRange)> {
@@ -2129,6 +2372,16 @@ impl NativeAccessibilityElement {
             )
         })
         .flatten()
+    }
+}
+
+fn targeted(
+    request: AccessibilityRequest,
+    target: Option<AccessibilityNodeId>,
+) -> AccessibilityRequest {
+    match target {
+        Some(node) => request.targeting_text(node),
+        None => request,
     }
 }
 
@@ -2423,6 +2676,6 @@ mod adapter_refresh_tests {
                 .map_err(|_| SurfaceError::invariant(SurfaceOperation::Accessibility))
         }));
 
-        assert_eq!(adapter.line_for_index(revision, 9), Some(4));
+        assert_eq!(adapter.line_for_index(revision, 9, None), Some(4));
     }
 }

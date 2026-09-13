@@ -2827,7 +2827,12 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
         Point::new(40.0, CONTENT_INSET).ok_or("caret origin")?,
         Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or("caret size")?,
     );
-    assert_eq!(exact_scene.quads()[2].bounds(), expected_selection);
+    assert!(
+        exact_scene
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == expected_selection)
+    );
     assert_eq!(
         exact_scene.quads().last().ok_or("missing caret")?.bounds(),
         expected_caret
@@ -4820,14 +4825,20 @@ fn quick_open_lazily_indexes_renders_and_opens_a_nested_file()
         quad.clip().is_some_and(|clip| clip.index() == overlay_clip)
             && quad.bounds() == expected_selected
     }));
+    let query_clip = scene
+        .clips()
+        .iter()
+        .position(|clip| {
+            clip.bounds().origin() == expected_overlay.origin()
+                && clip.bounds().size().height() == QUICK_OPEN_QUERY_HEIGHT
+        })
+        .ok_or("query clip")?;
     let query_y = overlay_top + 19.0;
     let query_glyph = scene
         .glyphs()
         .iter()
         .find(|glyph| {
-            glyph
-                .clip()
-                .is_some_and(|clip| clip.index() == overlay_clip)
+            glyph.clip().is_some_and(|clip| clip.index() == query_clip)
                 && glyph.bounds().origin().y().to_bits() == query_y.to_bits()
         })
         .ok_or("query glyph")?;
@@ -6166,8 +6177,8 @@ fn accessibility_snapshot_preserves_unicode_revision_focus_and_bounded_text()
     assert!(app.open_command_palette().visual_changed);
     let palette = app.accessibility_snapshot()?;
     assert!(palette.nodes().iter().any(|node| {
-        node.role() == AccessibilityRole::Dialog
-            && node.name() == "Command palette"
+        node.role() == AccessibilityRole::SearchField
+            && node.name() == "Command search"
             && node.is_focused()
     }));
     assert_single_accessibility_focus(&palette);
@@ -6885,7 +6896,7 @@ fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
         quick_snapshot
             .nodes()
             .iter()
-            .any(|node| node.name() == "Quick open" && node.is_focused())
+            .any(|node| node.name() == "File search" && node.is_focused())
     );
 
     let mut project = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;
@@ -6896,7 +6907,7 @@ fn accessibility_non_identity_state_and_every_focus_owner_are_exact()
         project_snapshot
             .nodes()
             .iter()
-            .any(|node| node.name() == "Project search" && node.is_focused())
+            .any(|node| node.name() == "Search project text" && node.is_focused())
     );
 
     let mut tree = StudioApp::from_document(TestTextSystem, StudioDocument::scratch("x"), None)?;

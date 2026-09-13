@@ -1416,6 +1416,29 @@ impl RustDiagnostics {
         self.symbols(identity).is_some()
     }
 
+    pub(crate) fn symbol_picker(&self, identity: LanguageIdentity) -> Option<&SymbolPicker> {
+        Some(&self.symbols(identity)?.picker)
+    }
+
+    pub(crate) fn symbol_picker_mut(
+        &mut self,
+        identity: LanguageIdentity,
+    ) -> Option<&mut SymbolPicker> {
+        Some(&mut self.symbols_mut(identity)?.picker)
+    }
+
+    pub(crate) fn apply_symbol_edit(
+        &mut self,
+        identity: LanguageIdentity,
+        prepared: super::field_edit::Prepared,
+    ) -> LanguageEffect {
+        let Some(picker) = self.symbol_picker_mut(identity) else {
+            return LanguageEffect::default();
+        };
+        let changed = picker.apply_edit(prepared);
+        self.finish_symbol_query_change(changed)
+    }
+
     pub(crate) fn commit_symbol_text(
         &mut self,
         identity: LanguageIdentity,
@@ -1484,6 +1507,7 @@ impl RustDiagnostics {
             .is_some_and(|symbols| symbols.picker.cancel_composition())
     }
 
+    #[cfg(test)]
     pub(crate) fn symbol_display_text(
         &self,
         identity: LanguageIdentity,

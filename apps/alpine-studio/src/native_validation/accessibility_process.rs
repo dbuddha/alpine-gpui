@@ -2318,7 +2318,7 @@ fn open_palette_and_activate(
     *timestamp = timestamp.saturating_add(1);
     let tree = inspect(surface, state)?;
     assert!(tree.nodes().iter().any(|node| {
-        node.role() == "AXGroup" && node.label() == "Command palette" && node.focused()
+        node.role() == "AXTextField" && node.label() == "Command search" && node.focused()
     }));
     activate(surface, state, AccessibilityRole::ListItem, label)
 }

@@ -476,7 +476,7 @@ pub(crate) struct ProjectSearchState {
     request_generation: u64,
     inventory: Option<Arc<SearchInventory>>,
     query: String,
-    composition: Option<Box<str>>,
+    pub(crate) edit: super::field_edit::FieldEdit,
     results: Vec<ProjectMatch>,
     result_bytes: usize,
     selected: usize,
@@ -504,6 +504,18 @@ impl Default for ProjectSearchState {
     }
 }
 
+impl From<super::field_edit::EditError> for ProjectSearchError {
+    fn from(error: super::field_edit::EditError) -> Self {
+        match error {
+            super::field_edit::EditError::InvalidSelection => Self::InvalidComposition,
+            super::field_edit::EditError::TooLong { actual, limit } => {
+                Self::QueryTooLong { actual, limit }
+            }
+            super::field_edit::EditError::AllocationFailed => Self::AllocationFailed,
+        }
+    }
+}
+
 impl ProjectSearchState {
     fn with_limits(limits: ProjectSearchLimits) -> Self {
         Self {
@@ -514,7 +526,7 @@ impl ProjectSearchState {
             request_generation: 0,
             inventory: None,
             query: String::new(),
-            composition: None,
+            edit: super::field_edit::FieldEdit::default(),
             results: Vec::new(),
             result_bytes: 0,
             selected: 0,
@@ -574,88 +586,76 @@ impl ProjectSearchState {
         true
     }
 
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub(crate) fn edit_parts(&mut self) -> (&str, &mut super::field_edit::FieldEdit) {
+        (&self.query, &mut self.edit)
+    }
+
     pub(crate) fn begin_composition(&mut self) -> bool {
-        if !self.open || self.composition.is_some() {
-            false
-        } else {
-            self.composition = Some(Box::default());
-            self.observe_peak();
-            true
-        }
+        self.open && self.edit.begin_composition()
     }
 
     pub(crate) fn update_composition(
         &mut self,
         text: &str,
-        selected_start_utf16: u32,
-        selected_length_utf16: u32,
+        start: u32,
+        length: u32,
     ) -> Result<bool, ProjectSearchError> {
-        let selected_end = selected_start_utf16
-            .checked_add(selected_length_utf16)
-            .ok_or(ProjectSearchError::InvalidComposition)?;
-        let units = u32::try_from(text.encode_utf16().count())
-            .map_err(|_| ProjectSearchError::InvalidComposition)?;
-        if selected_end > units {
-            return Err(ProjectSearchError::InvalidComposition);
-        }
-        Self::check_query_length(self.query.len().saturating_add(text.len()))?;
-        let changed = self.composition.as_deref() != Some(text);
-        if changed {
-            let mut replacement = String::new();
-            replacement
-                .try_reserve_exact(text.len())
-                .map_err(|_| ProjectSearchError::AllocationFailed)?;
-            replacement.push_str(text);
-            self.composition = Some(replacement.into_boxed_str());
-            self.observe_peak();
-        }
+        let changed =
+            self.edit
+                .update_composition(&self.query, text, start, length, MAX_QUERY_BYTES)?;
+        self.observe_peak();
         Ok(changed)
     }
 
     pub(crate) fn cancel_composition(&mut self) -> bool {
-        self.composition.take().is_some()
+        self.edit.cancel_composition()
     }
 
     pub(crate) fn commit_text(&mut self, text: &str) -> Result<bool, ProjectSearchError> {
-        if !self.open || text.is_empty() {
-            self.composition = None;
+        self.commit_text_at(text, text.len())
+    }
+
+    pub(crate) fn commit_text_at(
+        &mut self,
+        text: &str,
+        caret: usize,
+    ) -> Result<bool, ProjectSearchError> {
+        if !self.open {
             return Ok(false);
         }
-        let length =
-            self.query
-                .len()
-                .checked_add(text.len())
-                .ok_or(ProjectSearchError::QueryTooLong {
-                    actual: usize::MAX,
-                    limit: MAX_QUERY_BYTES,
-                })?;
-        Self::check_query_length(length)?;
-        let next_generation = self.next_query_generation()?;
-        let mut query = String::new();
-        query
-            .try_reserve_exact(length)
-            .map_err(|_| ProjectSearchError::AllocationFailed)?;
-        query.push_str(&self.query);
-        query.push_str(text);
-        self.composition = None;
-        self.replace_query(query, next_generation)?;
-        Ok(true)
+        let prepared = self
+            .edit
+            .prepare(&self.query, text, caret, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared)
     }
 
     pub(crate) fn delete_backward(&mut self) -> Result<bool, ProjectSearchError> {
-        self.composition = None;
-        if self.query.is_empty() {
-            return Ok(false);
+        self.delete(false)
+    }
+
+    pub(crate) fn delete(&mut self, forward: bool) -> Result<bool, ProjectSearchError> {
+        let prepared = self
+            .edit
+            .prepare_delete(&self.query, forward, MAX_QUERY_BYTES)?;
+        self.apply_edit(prepared)
+    }
+
+    pub(crate) fn apply_edit(
+        &mut self,
+        mut prepared: super::field_edit::Prepared,
+    ) -> Result<bool, ProjectSearchError> {
+        let changed = self.query != prepared.value;
+        if changed {
+            let generation = self.next_query_generation()?;
+            self.replace_query(std::mem::take(&mut prepared.value), generation)?;
         }
-        let next_generation = self.next_query_generation()?;
-        let mut query = String::new();
-        query
-            .try_reserve_exact(self.query.len())
-            .map_err(|_| ProjectSearchError::AllocationFailed)?;
-        query.push_str(&self.query);
-        let _ = query.pop();
-        self.replace_query(query, next_generation)?;
-        Ok(true)
+        self.edit.accept(prepared, changed);
+        self.observe_peak();
+        Ok(changed)
     }
 
     pub(crate) fn take_request(
@@ -886,7 +886,7 @@ impl ProjectSearchState {
     }
 
     pub(crate) fn display_text(&self) -> Result<String, ProjectSearchError> {
-        let composition = self.composition.as_deref().unwrap_or_default();
+        let projected = self.edit.projected_value(&self.query)?;
         let inventory = self
             .inventory
             .as_ref()
@@ -902,9 +902,8 @@ impl ProjectSearchState {
             .map_err(|_| ProjectSearchError::AllocationFailed)?;
         write!(
             display,
-            "Project Search: {}{} | {} matches, {}/{} files, {} B, {} batches{}{}",
-            self.query,
-            composition,
+            "Project Search: {} | {} matches, {}/{} files, {} B, {} batches{}{}",
+            projected,
             self.results.len(),
             self.counters.files,
             inventory.files,
@@ -914,7 +913,10 @@ impl ProjectSearchState {
             first_error.map_or_else(String::new, |message| format!(" | {message}")),
         )
         .map_err(|_| ProjectSearchError::AllocationFailed)?;
-        let maximum = display.len().min(MAX_DIAGNOSTIC_BYTES);
+        // The committed/preedit field is admitted independently of diagnostics.
+        // Never truncate editable text or its native caret; only shorten status.
+        let field_end = "Project Search: ".len() + projected.len();
+        let maximum = display.len().min(MAX_DIAGNOSTIC_BYTES.max(field_end));
         let end = (0..=maximum)
             .rev()
             .find(|index| display.is_char_boundary(*index))
@@ -934,7 +936,7 @@ impl ProjectSearchState {
             .map_or(InventoryReport::default(), |value| value.report);
         ProjectSearchReport {
             query_bytes: self.query.len(),
-            composition_bytes: self.composition.as_deref().map_or(0, str::len),
+            composition_bytes: self.edit.composition().map_or(0, str::len),
             inventory_files: inventory.files,
             inventory_bytes: inventory.path_bytes,
             scanned_entries: inventory.scanned,
@@ -956,11 +958,6 @@ impl ProjectSearchState {
             truncated: self.truncated,
             terminal: self.terminal,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn query(&self) -> &str {
-        &self.query
     }
 
     #[cfg(test)]
@@ -1033,17 +1030,6 @@ impl ProjectSearchState {
         Ok(())
     }
 
-    fn check_query_length(actual: usize) -> Result<(), ProjectSearchError> {
-        if actual > MAX_QUERY_BYTES {
-            Err(ProjectSearchError::QueryTooLong {
-                actual,
-                limit: MAX_QUERY_BYTES,
-            })
-        } else {
-            Ok(())
-        }
-    }
-
     fn record_error(&mut self, error: &ProjectSearchError) {
         self.error = Some(Arc::from(error.to_string()));
     }
@@ -1058,7 +1044,7 @@ impl ProjectSearchState {
         });
         self.query
             .capacity()
-            .saturating_add(self.composition.as_deref().map_or(0, str::len))
+            .saturating_add(self.edit.retained_bytes())
             .saturating_add(inventory)
             .saturating_add(self.result_bytes)
             .saturating_add(self.error.as_deref().map_or(0, str::len))
@@ -1072,7 +1058,7 @@ impl ProjectSearchState {
         self.cancellation.store(u64::MAX, Ordering::Release);
         self.inventory = None;
         self.query = String::new();
-        self.composition = None;
+        self.edit = super::field_edit::FieldEdit::default();
         self.results = Vec::new();
         self.result_bytes = 0;
         self.selected = 0;
@@ -2193,9 +2179,9 @@ mod tests {
         state.query = format!("a{}", "é".repeat(2_047));
         state.error = Some(Arc::from("x".repeat(MAX_DIAGNOSTIC_BYTES)));
         let display = state.display_text()?;
-        assert!(display.len() <= MAX_DIAGNOSTIC_BYTES);
+        assert_eq!(display, format!("Project Search: {}", state.query));
+        assert!(display.len() <= "Project Search: ".len() + MAX_QUERY_BYTES);
         assert!(display.is_char_boundary(display.len()));
-        assert!(display.starts_with("Project Search: "));
         Ok(())
     }
 

@@ -10,6 +10,7 @@ mod commands;
 mod composition;
 mod documents;
 mod dogfood_diagnostic;
+mod field_edit;
 mod file_tree;
 mod find;
 mod find_input;
@@ -53,6 +54,7 @@ mod lsp_language;
     )
 )]
 mod lsp_process;
+mod overlay_field;
 mod panes;
 mod profiling;
 mod project_search;
@@ -74,6 +76,7 @@ mod rust_workspace_edit;
 mod rust_workspace_publication_tests;
 mod rust_workspace_publish;
 mod rust_workspace_ui;
+mod scene_paint;
 mod session;
 mod settings;
 mod syntax;
@@ -108,8 +111,8 @@ use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
 };
 use alpine_scene::{
-    AtlasBounds, Clip, Glyph, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene,
-    SceneBuilder, SceneError, SceneRevision,
+    AtlasBounds, Clip, GlyphAtlasImage, GlyphAtlasRowPatch, Primitive, Quad, Scene, SceneBuilder,
+    SceneError, SceneRevision,
 };
 use alpine_text::{
     Buffer, BufferSnapshot, ByteOffset, Editor, ExternalChange, FileError, SaveReport, Selection,
@@ -1825,6 +1828,7 @@ struct StudioApp {
     scroll_y: f32,
     focused: bool,
     pointer_selecting: bool,
+    field_pointer_owner: Option<alpine_platform_macos::AccessibilityNodeId>,
     last_viewport: Size,
     rendered_lines: Vec<RenderedLine>,
     layout_cache: LineLayoutCache,
@@ -1857,6 +1861,7 @@ struct StudioApp {
     workspace_failures: u64,
     last_workspace_error: Option<Arc<str>>,
     pending_cut: Option<PendingCut>,
+    pending_field_clipboard: Option<overlay_field::PendingClipboard>,
     local_status: Option<LocalStatus>,
     find: FindState,
     find_needs_search: bool,
@@ -2086,8 +2091,6 @@ impl StudioApp {
         let settings_reload = settings_reload_for(workspace.as_ref());
         let last_viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(APPLICATION_INVARIANT)?;
         let (layout_budget, atlas_budget) = Self::initial_text_budgets()?;
-        let syntax_cache =
-            SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES).map_err(|_| APPLICATION_INVARIANT)?;
         let runtime_document_revision = document.buffer().revision().get();
         let accessibility_projection_revision =
             Self::initial_accessibility_projection_revision(&document);
@@ -2117,10 +2120,12 @@ impl StudioApp {
             scroll_y: 0.0,
             focused: true,
             pointer_selecting: false,
+            field_pointer_owner: None,
             last_viewport,
             rendered_lines: Vec::new(),
             layout_cache: LineLayoutCache::new(layout_budget),
-            syntax_cache,
+            syntax_cache: SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)
+                .map_err(|_| APPLICATION_INVARIANT)?,
             glyph_atlas: GlyphAtlas::new(atlas_budget),
             published_atlas: None,
             atlas_revision: 0,
@@ -2149,6 +2154,7 @@ impl StudioApp {
             workspace_failures: 0,
             last_workspace_error: None,
             pending_cut: None,
+            pending_field_clipboard: None,
             local_status: None,
             find: FindState::default(),
             find_needs_search: false,
@@ -2794,7 +2800,7 @@ impl StudioApp {
         let command_palette_background = theme.command_palette_background;
         let command_palette_selected = theme.command_palette_selected;
 
-        let mut builder = SceneBuilder::new(revision, viewport);
+        let mut builder = scene_paint::DeferredScene::new(revision, viewport);
         builder.push_quad(Quad::new(Rect::new(origin, viewport), background))?;
         let mut pane_clips = [None; MAX_PANES];
         for (index, pane) in pane_layout.iter().enumerate() {
@@ -2861,6 +2867,21 @@ impl StudioApp {
         let tab_labels: Vec<(usize, Arc<str>)> = tab_range
             .filter_map(|index| self.tabs.label(index).map(|label| (index, label)))
             .collect();
+        builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
+        if tab_labels
+            .iter()
+            .any(|(index, _)| *index == self.tabs.active_index())
+        {
+            let active_left = sidebar_width + usize_as_f32(self.tabs.active_index()) * TAB_WIDTH
+                - self.tab_scroll_x;
+            let active_origin = Point::new(active_left, 0.0).ok_or(StudioRenderError::Domain)?;
+            let active_size =
+                Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
+            let active_quad = Quad::new(Rect::new(active_origin, active_size), active_tab_color)
+                .clipped(tab_clip);
+            builder.push_quad(active_quad)?;
+        }
+
         for (index, label) in &tab_labels {
             let left = sidebar_width + usize_as_f32(*index) * TAB_WIDTH - self.tab_scroll_x;
             let layout = self.text_system.shape(label, font)?;
@@ -3104,6 +3125,22 @@ impl StudioApp {
             }
         }
 
+        builder.flush_glyphs(&pending_glyphs);
+        for bounds in composition_underlines {
+            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
+        }
+        if self.focused
+            && !self.workspace_edits.is_open()
+            && !self.find.is_open()
+            && !self.quick_open.is_open()
+            && !self.project_search.is_open()
+            && !self.command_palette.is_open()
+            && !self.file_tree.is_focused()
+            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
+        {
+            builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
+        }
+
         let language_status = self.rust_diagnostics.status_message();
         let status = self
             .local_status
@@ -3153,6 +3190,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for (visible_row, index) in rows.enumerate() {
                 let row = self
@@ -3196,6 +3234,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for row in 0..row_count {
                 let line = self
@@ -3228,6 +3267,7 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for (visible_row, index) in rows.enumerate() {
                 let row = self
@@ -3268,24 +3308,13 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
-            let query = self
-                .rust_diagnostics
-                .symbol_display_text(language_identity)
-                .map_err(|_| StudioRenderError::Domain)?
-                .ok_or(StudioRenderError::Domain)?;
-            let query_text = if query.is_empty() {
-                "Search Rust symbols"
-            } else {
-                query.as_str()
-            };
-            let query_layout = self.text_system.shape(query_text, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &query_layout,
-                font,
-                symbol_overlay_text_x(left),
-                symbol_overlay_baseline(top, query_layout.ascent()),
-                overlay_clip,
+            pending_glyphs.extend(self.paint_overlay_field(
+                overlay_field::Owner::Symbols,
+                &mut builder,
+                selection_color,
+                caret_color,
             )?);
             for (visible_row, index) in rows.enumerate() {
                 let row = self
@@ -3319,8 +3348,18 @@ impl StudioApp {
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
             let background =
                 Quad::new(overlay_bounds, command_palette_background).clipped(overlay_clip);
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(background)?;
             for row in 0..row_count {
+                if row == 0 && self.workspace_edits.is_rename_input() {
+                    pending_glyphs.extend(self.paint_overlay_field(
+                        overlay_field::Owner::Rename,
+                        &mut builder,
+                        selection_color,
+                        caret_color,
+                    )?);
+                    continue;
+                }
                 let line = self
                     .workspace_edits
                     .line(row)
@@ -3334,61 +3373,14 @@ impl StudioApp {
             }
         }
         if self.find.is_open() {
-            let view = find_input::layout(self)?;
-            let overlay_clip = builder.push_clip(Clip::new(view.bounds));
-            builder.push_quad(Quad::new(view.bounds, find_background_color))?;
-            if let Some(range) = self.find.display_selection() {
-                let start = view.text[..range.start].encode_utf16().count();
-                let end = view.text[..range.end].encode_utf16().count();
-                for (left, right) in composition::visual_spans(
-                    &view.text,
-                    &view.line,
-                    font,
-                    &mut self.text_system,
-                    start..end,
-                )? {
-                    let origin = Point::new(view.origin_x + left, view.top)
-                        .ok_or(StudioRenderError::Domain)?;
-                    let size = Size::new((right - left).max(1.0), LINE_HEIGHT)
-                        .ok_or(StudioRenderError::Domain)?;
-                    builder.push_quad(
-                        Quad::new(Rect::new(origin, size), selection_color).clipped(overlay_clip),
-                    )?;
-                }
-            }
-            if let Some(range) = self.find.display_mark().filter(|range| !range.is_empty()) {
-                let start = view.text[..range.start].encode_utf16().count();
-                let end = view.text[..range.end].encode_utf16().count();
-                for (left, right) in composition::visual_spans(
-                    &view.text,
-                    &view.line,
-                    font,
-                    &mut self.text_system,
-                    start..end,
-                )? {
-                    let rect = Rect::new(
-                        Point::new(view.origin_x + left, view.top + LINE_HEIGHT - 1.0)
-                            .ok_or(StudioRenderError::Domain)?,
-                        Size::new((right - left).max(1.0), 1.0).ok_or(StudioRenderError::Domain)?,
-                    );
-                    builder.push_quad(Quad::new(rect, caret_color).clipped(overlay_clip))?;
-                }
-            }
-            let caret = view.text[..self.find.display_caret()]
-                .encode_utf16()
-                .count();
-            let caret_x = view.origin_x + self.text_system.caret_offset(&view.text, font, caret)?;
-            let caret = Rect::new(
-                Point::new(caret_x, view.top).ok_or(StudioRenderError::Domain)?,
-                Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?,
-            );
-            builder.push_quad(Quad::new(caret, caret_color).clipped(overlay_clip))?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &view.line,
-                font,
-                view.origin_x,
-                view.top + view.line.ascent(),
-                overlay_clip,
+            let bounds = find_input::bounds(self)?;
+            builder.flush_glyphs(&pending_glyphs);
+            builder.push_quad(Quad::new(bounds, find_background_color))?;
+            pending_glyphs.extend(self.paint_overlay_field(
+                overlay_field::Owner::Find,
+                &mut builder,
+                selection_color,
+                caret_color,
             )?);
         }
         if self.quick_open.is_open() {
@@ -3404,15 +3396,13 @@ impl StudioApp {
                 Size::new(width, height.max(1.0)).ok_or(StudioRenderError::Domain)?;
             let overlay_bounds = Rect::new(overlay_origin, overlay_size);
             let overlay_clip = builder.push_clip(Clip::new(overlay_bounds));
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(overlay_bounds, quick_open_background))?;
-            let display = self.quick_open.display_text()?;
-            let query_layout = self.text_system.shape(&display, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &query_layout,
-                font,
-                left + FIND_BAR_INSET,
-                top + query_layout.ascent() + 7.0,
-                overlay_clip,
+            pending_glyphs.extend(self.paint_overlay_field(
+                overlay_field::Owner::QuickOpen,
+                &mut builder,
+                selection_color,
+                caret_color,
             )?);
             for (row, (path, selected)) in rows.iter().enumerate() {
                 let row_top =
@@ -3461,15 +3451,13 @@ impl StudioApp {
             } else {
                 project_selection_clip
             };
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(overlay_bounds, project_search_background))?;
-            let display = self.project_search.display_text()?;
-            let query_layout = self.text_system.shape(&display, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &query_layout,
-                font,
-                left + FIND_BAR_INSET,
-                top + query_layout.ascent() + 7.0,
-                overlay_clip,
+            pending_glyphs.extend(self.paint_overlay_field(
+                overlay_field::Owner::ProjectSearch,
+                &mut builder,
+                selection_color,
+                caret_color,
             )?);
             for (row_index, row) in rows.iter().enumerate() {
                 let row_top = top
@@ -3528,15 +3516,13 @@ impl StudioApp {
             } else {
                 command_selection_clip
             };
+            builder.flush_glyphs(&pending_glyphs);
             builder.push_quad(Quad::new(overlay_bounds, command_palette_background))?;
-            let display = self.command_palette.display_text()?;
-            let query_layout = self.text_system.shape(&display, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &query_layout,
-                font,
-                left + FIND_BAR_INSET,
-                top + query_layout.ascent() + 7.0,
-                overlay_clip,
+            pending_glyphs.extend(self.paint_overlay_field(
+                overlay_field::Owner::Palette,
+                &mut builder,
+                selection_color,
+                caret_color,
             )?);
             for (row_index, row) in rows.iter().enumerate() {
                 let row_top = top
@@ -3574,56 +3560,11 @@ impl StudioApp {
                 }
             }
         }
-        builder.push_quad(Quad::new(tab_bounds, tab_background).clipped(tab_clip))?;
-        if tab_labels
-            .iter()
-            .any(|(index, _)| *index == self.tabs.active_index())
-        {
-            let active_left = sidebar_width + usize_as_f32(self.tabs.active_index()) * TAB_WIDTH
-                - self.tab_scroll_x;
-            let active_origin = Point::new(active_left, 0.0).ok_or(StudioRenderError::Domain)?;
-            let active_size =
-                Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(StudioRenderError::Domain)?;
-            let active_quad = Quad::new(Rect::new(active_origin, active_size), active_tab_color)
-                .clipped(tab_clip);
-            builder.push_quad(active_quad)?;
-        }
-
         self.publish_atlas_if_needed(&pending_glyphs)?;
-        if !pending_glyphs.is_empty() {
-            let atlas = self
-                .published_atlas
-                .clone()
-                .ok_or(StudioRenderError::Domain)?;
-            builder.set_glyph_atlas(atlas)?;
-            for pending in pending_glyphs {
-                let glyph = Glyph::new(
-                    pending.bounds,
-                    pending.atlas_bounds,
-                    pending.color.unwrap_or(text_color),
-                )
-                .clipped(pending.clip);
-                builder.push_glyph(glyph)?;
-            }
-        }
-        for bounds in composition_underlines {
-            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
-        }
-        if self.focused
-            && !self.workspace_edits.is_open()
-            && !self.find.is_open()
-            && !self.quick_open.is_open()
-            && !self.project_search.is_open()
-            && !self.command_palette.is_open()
-            && !self.file_tree.is_focused()
-            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
-        {
-            builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
-        }
-
+        let scene = builder.finish(self.published_atlas.clone(), &pending_glyphs, text_color)?;
         self.rendered_lines = rendered_lines;
         self.publish_accessibility_projection();
-        Ok(builder.finish())
+        Ok(scene)
     }
 
     fn language_overlay_bounds(
@@ -3648,7 +3589,7 @@ impl StudioApp {
         reason = "selection painting keeps all scene-local values explicit"
     )]
     fn paint_selection(
-        builder: &mut SceneBuilder,
+        builder: &mut scene_paint::DeferredScene,
         clip: alpine_scene::ClipId,
         snapshot: &BufferSnapshot,
         line: usize,
@@ -3685,6 +3626,68 @@ impl StudioApp {
         let size = Size::new(width, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?;
         builder.push_quad(Quad::new(Rect::new(origin, size), color).clipped(clip))?;
         Ok(())
+    }
+
+    fn paint_overlay_field(
+        &mut self,
+        owner: overlay_field::Owner,
+        builder: &mut scene_paint::DeferredScene,
+        selection_color: LinearRgba,
+        caret_color: LinearRgba,
+    ) -> Result<Vec<PendingGlyph>, StudioRenderError> {
+        let view = find_input::layout_for(self, owner)?;
+        let clip = builder.push_clip(Clip::new(view.bounds));
+        if overlay_field::Owner::active(self) == Some(owner) {
+            if !view.selection.is_empty() {
+                for (left, right) in composition::visual_spans(
+                    &view.text,
+                    &view.line,
+                    view.font,
+                    &mut self.text_system,
+                    view.selection,
+                )? {
+                    let bounds = Rect::new(
+                        Point::new(view.origin_x + left, view.top)
+                            .ok_or(StudioRenderError::Domain)?,
+                        Size::new((right - left).max(1.0), LINE_HEIGHT)
+                            .ok_or(StudioRenderError::Domain)?,
+                    );
+                    builder.push_quad(Quad::new(bounds, selection_color).clipped(clip))?;
+                }
+            }
+            if let Some(mark) = view.mark.filter(|range| !range.is_empty()) {
+                for (left, right) in composition::visual_spans(
+                    &view.text,
+                    &view.line,
+                    view.font,
+                    &mut self.text_system,
+                    mark,
+                )? {
+                    let bounds = Rect::new(
+                        Point::new(view.origin_x + left, view.top + LINE_HEIGHT - 1.0)
+                            .ok_or(StudioRenderError::Domain)?,
+                        Size::new((right - left).max(1.0), 1.0).ok_or(StudioRenderError::Domain)?,
+                    );
+                    builder.push_quad(Quad::new(bounds, caret_color).clipped(clip))?;
+                }
+            }
+            let caret_x = view.origin_x
+                + self
+                    .text_system
+                    .caret_offset(&view.text, view.font, view.caret)?;
+            let bounds = Rect::new(
+                Point::new(caret_x, view.top).ok_or(StudioRenderError::Domain)?,
+                Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or(StudioRenderError::Domain)?,
+            );
+            builder.push_quad(Quad::new(bounds, caret_color).clipped(clip))?;
+        }
+        self.collect_glyphs(
+            &view.line,
+            view.font,
+            view.origin_x,
+            view.top + view.line.ascent(),
+            clip,
+        )
     }
 
     fn collect_glyphs(
@@ -3958,6 +3961,23 @@ impl StudioApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> StudioTransition {
+        if matches!(
+            event,
+            SurfaceEvent::Keyboard { .. }
+                | SurfaceEvent::Pointer { .. }
+                | SurfaceEvent::Ime { .. }
+                | SurfaceEvent::Focus { .. }
+                | SurfaceEvent::CloseRequested { .. }
+        ) && let Some(pending) = self.pending_field_clipboard.as_mut()
+        {
+            pending.valid = false;
+        }
+        if let Some(operation) = studio_clipboard_shortcut(event)
+            && let Some(owner) = overlay_field::Owner::active(self)
+        {
+            return self.begin_field_clipboard(owner, operation);
+        }
+
         if self.workspace_edits.is_publication_pending()
             && studio_clipboard_shortcut(event).is_some()
         {
@@ -4039,6 +4059,7 @@ impl StudioApp {
     }
 
     fn begin_clipboard_operation(&mut self, operation: ClipboardOperation) -> StudioTransition {
+        self.pending_field_clipboard = None;
         self.pending_cut = None;
         let mut effect = self.clear_clipboard_status();
         let selection = self.selection;
@@ -4080,6 +4101,16 @@ impl StudioApp {
     }
 
     fn handle_clipboard_completion(&mut self, event: &ClipboardEvent) -> StudioTransition {
+        if let Some(effect) = self.complete_field_clipboard(event) {
+            return StudioTransition::effect(effect);
+        }
+        if overlay_field::Owner::active(self).is_some()
+            && !matches!(event, ClipboardEvent::CopyCompleted(_))
+        {
+            return StudioTransition::effect(self.record_clipboard_protocol_failure(
+                "Clipboard completion has no active field request.",
+            ));
+        }
         let effect = match event {
             ClipboardEvent::CopyCompleted(Ok(())) => self.clear_clipboard_status(),
             ClipboardEvent::CopyCompleted(Err(error))
@@ -4120,6 +4151,7 @@ impl StudioApp {
     }
 
     fn handle_close_request(&mut self) -> StudioTransition {
+        self.field_pointer_owner = None;
         let blocker = if self.workspace_edits.is_publication_pending() {
             Some((
                 self.tabs.active_index(),
@@ -4395,6 +4427,12 @@ impl StudioApp {
     }
 
     fn handle_key(&mut self, physical_key: u16, modifiers: Modifiers) -> EventEffect {
+        self.field_pointer_owner = None;
+        if let Some(owner) = overlay_field::Owner::active(self)
+            && let Some(effect) = owner.key(self, physical_key, modifiers)
+        {
+            return effect;
+        }
         let command = modifiers.contains(Modifiers::COMMAND);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let option = modifiers.contains(Modifiers::OPTION);
@@ -4490,6 +4528,35 @@ impl StudioApp {
     }
 
     fn handle_ime(&mut self, event: &ImeEvent) -> EventEffect {
+        self.field_pointer_owner = None;
+        if let Some(owner) = overlay_field::Owner::active(self) {
+            match event {
+                ImeEvent::Committed(text) => return owner.commit(self, text, text.len()),
+                ImeEvent::CommittedWithCaret { text, caret_utf16 } => {
+                    return match u32::try_from(*caret_utf16)
+                        .ok()
+                        .and_then(|index| byte_at_utf16(text, index))
+                    {
+                        Some(caret) => owner.commit(self, text, caret),
+                        None => owner.reject(self, field_edit::EditError::InvalidSelection),
+                    };
+                }
+                _ => {
+                    return match owner {
+                        overlay_field::Owner::Find => self.handle_find_ime(event),
+                        overlay_field::Owner::Palette => self.handle_command_palette_ime(event),
+                        overlay_field::Owner::QuickOpen => self.handle_quick_open_ime(event),
+                        overlay_field::Owner::ProjectSearch => {
+                            self.handle_project_search_ime(event)
+                        }
+                        overlay_field::Owner::Symbols => {
+                            self.handle_symbol_ime(self.language_identity(), event)
+                        }
+                        overlay_field::Owner::Rename => self.handle_workspace_edit_ime(event),
+                    };
+                }
+            }
+        }
         if self.workspace_edits.is_open() {
             return self.handle_workspace_edit_ime(event);
         }
@@ -4512,6 +4579,10 @@ impl StudioApp {
         if self.file_tree.is_focused() {
             return EventEffect::default();
         }
+        self.handle_editor_ime(event)
+    }
+
+    fn handle_editor_ime(&mut self, event: &ImeEvent) -> EventEffect {
         match event {
             ImeEvent::Started => {
                 let composition = Composition {
@@ -4698,6 +4769,8 @@ impl StudioApp {
 
         let mut effect = EventEffect::default();
         if admission == InputEpochAdmission::Future || !focused {
+            self.field_pointer_owner = None;
+            self.pointer_selecting = false;
             effect = effect.merge(self.cancel_focused_composition());
         }
         self.input_epoch = input_epoch;
@@ -5253,7 +5326,11 @@ impl StudioApp {
                     self.input_failures = self.input_failures.saturating_add(1);
                     return EventEffect::default();
                 }
-                self.quick_open.update_composition(text)
+                self.quick_open.update_composition_selected(
+                    text,
+                    *selected_start_utf16,
+                    *selected_length_utf16,
+                )
             }
             ImeEvent::Committed(text) | ImeEvent::CommittedWithCaret { text, .. } => {
                 self.quick_open.commit_text(text)
@@ -5602,33 +5679,55 @@ impl StudioApp {
     ) -> EventEffect {
         self.last_pointer_position = Some(position);
         let mut closed = false;
-        if accessibility::focus_owner(self) == Some(accessibility::find_node(self))
+        let active = overlay_field::Owner::active(self);
+        if let Some(drag_owner) = self.field_pointer_owner
+            && active.is_none_or(|owner| owner.node(self) != drag_owner)
+        {
+            self.field_pointer_owner = None;
+            if action != PointerAction::Down {
+                return EventEffect::default();
+            }
+        }
+        if action == PointerAction::Down {
+            self.field_pointer_owner = None;
+        }
+        if let Some(owner) = active
             && !self.workspace_edits.is_publication_pending()
         {
-            let inside = find_input::bounds(self).is_ok_and(|bounds| {
+            let inside = find_input::bounds_for(self, owner).is_ok_and(|bounds| {
                 position.x() >= bounds.origin().x()
                     && position.x() < bounds.origin().x() + bounds.size().width()
                     && position.y() >= bounds.origin().y()
                     && position.y() < bounds.origin().y() + bounds.size().height()
             });
-            if inside || self.pointer_selecting {
+            if inside || self.field_pointer_owner.is_some() {
                 let selecting = (action == PointerAction::Down && button == PointerButton::Primary)
-                    || (action == PointerAction::Moved && self.pointer_selecting);
+                    || (action == PointerAction::Moved && self.field_pointer_owner.is_some());
                 if selecting {
-                    let extend = self.pointer_selecting || modifiers.contains(Modifiers::SHIFT);
-                    self.pointer_selecting = true;
+                    let extend =
+                        self.field_pointer_owner.is_some() || modifiers.contains(Modifiers::SHIFT);
+                    self.field_pointer_owner = Some(owner.node(self));
+                    self.pointer_selecting = false;
                     return match find_input::pointer_selection(self, position, extend) {
                         Ok(changed) => changed.then(EventEffect::visual).unwrap_or_default(),
                         Err(_) => EventEffect::default(),
                     };
                 }
                 if action == PointerAction::Up {
-                    self.pointer_selecting = false;
+                    self.field_pointer_owner = None;
                 }
                 return EventEffect::default();
             }
-            if action == PointerAction::Down && button == PointerButton::Primary {
+            if owner == overlay_field::Owner::Find
+                && action == PointerAction::Down
+                && button == PointerButton::Primary
+            {
                 closed = self.find.close();
+            } else if owner != overlay_field::Owner::Find {
+                // A modal field retains focus until activation or dismissal;
+                // outside gestures must not start an editor selection behind it.
+                self.pointer_selecting = false;
+                return EventEffect::default();
             }
         }
         let effect = self.handle_content_pointer(action, position, button, modifiers);

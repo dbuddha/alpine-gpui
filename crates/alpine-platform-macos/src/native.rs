@@ -1912,6 +1912,11 @@ define_class!(
             NativeAccessibilityAdapter::surface_children(self)
         }
 
+        #[unsafe(method_id(accessibilityFocusedUIElement))]
+        fn accessibility_focused_element(&self) -> Option<Retained<objc2::runtime::AnyObject>> {
+            NativeAccessibilityAdapter::focused_element(self)
+        }
+
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true

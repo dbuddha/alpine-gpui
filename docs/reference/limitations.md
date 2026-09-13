@@ -12,13 +12,14 @@ limit; unavailable geometry returns no rectangle. Replacement callbacks validate
 UTF-16 boundaries and reject stale document, focus and composition ownership.
 
 This does not qualify physical candidate-window placement or VoiceOver editing.
-Find/Replace fields expose their own native UTF-16 text, selection, projected
-geometry and glyph queries. They support partial replacement, keyboard and mouse
-selection, grapheme deletion, and horizontal caret scrolling within the existing
-4 KiB field limit. Clicking outside dismisses Find and continues the click.
-Their native Accessibility text selectors, clipboard and undo history are still
-incomplete; VoiceOver editing is not qualified. Palette, quick-open, project-search
-and symbol/rename fields still lack their own native text and geometry queries.
+Find/Replace, command-palette, quick-open, project-search and symbol/rename fields
+expose their own native UTF-16 text, selection, projected geometry, glyph queries
+and Accessibility text selectors. They support partial replacement, keyboard and
+mouse selection, grapheme deletion, horizontal caret scrolling, clipboard editing
+and bounded local undo/redo. Each owner retains its existing input limits; history
+retains at most 32 states per field. Clicking outside dismisses Find and continues
+the click; modal query fields prevent document selection behind their overlays.
+Physical candidate-window placement and VoiceOver editing remain unqualified.
 Editor composition replaces the displayed span, moves the
 suffix and following lines, and shares projected coordinates with native text
 geometry and glyph hits. Projection retains at most 1 MiB of boundary text plus

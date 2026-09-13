@@ -48,6 +48,15 @@ impl Drop for TempProject {
 struct SearchTextSystem;
 
 impl TextShaper for SearchTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        crate::tests::TestTextSystem.caret_offset(text, font, index)
+    }
+
     fn shape(&mut self, text: &str, _font: FontKey) -> Result<LineLayout, LayoutError> {
         let mut glyphs = Vec::new();
         let mut x = 0.0;
@@ -93,6 +102,15 @@ struct FaultSearchTextSystem {
 }
 
 impl TextShaper for FaultSearchTextSystem {
+    fn caret_offset(
+        &mut self,
+        text: &str,
+        font: FontKey,
+        index: usize,
+    ) -> Result<f32, LayoutError> {
+        crate::tests::TestTextSystem.caret_offset(text, font, index)
+    }
+
     fn shape(&mut self, text: &str, font: FontKey) -> Result<LineLayout, LayoutError> {
         SearchTextSystem.shape(text, font)
     }
@@ -552,15 +570,21 @@ fn project_search_geometry_and_command_guards_are_exact() -> Result<(), Box<dyn 
             && quad.bounds() == expected_selected
     }));
 
+    let query_clip = scene
+        .clips()
+        .iter()
+        .position(|clip| {
+            clip.bounds().origin() == expected_overlay.origin()
+                && clip.bounds().size().height() == PROJECT_SEARCH_QUERY_HEIGHT
+        })
+        .ok_or("query clip")?;
     let query_origin = Point::new(overlay_left + FIND_BAR_INSET, overlay_top + 19.0)
         .ok_or("query glyph origin")?;
     let first_query_glyph = scene
         .glyphs()
         .iter()
         .filter(|glyph| {
-            glyph
-                .clip()
-                .is_some_and(|clip| clip.index() == overlay_clip)
+            glyph.clip().is_some_and(|clip| clip.index() == query_clip)
                 && glyph.bounds().origin().y().to_bits() == query_origin.y().to_bits()
         })
         .min_by(|left, right| {
