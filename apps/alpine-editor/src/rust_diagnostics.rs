@@ -729,7 +729,7 @@ pub(crate) fn discovered() -> RustDiagnostics {
             env::var_os("ALPINE_RUST_ANALYZER"),
             env::var_os("PATH"),
             env::var_os("HOME"),
-            responds_to_version,
+            resolve_server,
         ),
         ..RustDiagnostics::default()
     }
@@ -737,14 +737,15 @@ pub(crate) fn discovered() -> RustDiagnostics {
 
 /// The discovery order, separated from the environment so it can be tested.
 ///
-/// `accept` decides whether a candidate is a usable server. A pinned path is
-/// taken as given: qualification chooses it deliberately and must fail loudly
-/// rather than silently fall back to whatever else is installed.
+/// `resolve` turns a candidate path into the server to actually run, or `None`
+/// when it is not one. A pinned path is taken as given: qualification chooses
+/// it deliberately and must fail loudly rather than quietly fall back to
+/// whatever else is installed.
 fn discover_server_with(
     pinned: Option<OsString>,
     path: Option<OsString>,
     home: Option<OsString>,
-    accept: impl Fn(&Path) -> bool,
+    resolve: impl Fn(&Path) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
     if let Some(pinned) = pinned {
         return Some(PathBuf::from(pinned));
@@ -763,8 +764,41 @@ fn discover_server_with(
     searched
         .into_iter()
         .chain(fallbacks)
-        .map(|directory| directory.join(SERVER_NAME))
-        .find(|candidate| accept(candidate))
+        .find_map(|directory| resolve(&directory.join(SERVER_NAME)))
+}
+
+/// Turns a candidate path into the server binary to spawn.
+///
+/// `~/.cargo/bin/rust-analyzer` is normally a link to `rustup`, which execs the
+/// real binary. That shim answers `--version` but does not survive being run as
+/// a long-lived server here, so it is resolved to the toolchain binary rather
+/// than spawned. A candidate that cannot report a version is skipped: with the
+/// component uninstalled the shim exits "Unknown binary", and starting that as
+/// a language server fails far from its cause.
+fn resolve_server(candidate: &Path) -> Option<PathBuf> {
+    if !is_executable_file(candidate) {
+        return None;
+    }
+    let resolved = resolve_rustup_shim(candidate).unwrap_or_else(|| candidate.to_path_buf());
+    responds_to_version(&resolved).then_some(resolved)
+}
+
+/// Asks rustup which binary the shim stands for, if this is a shim at all.
+fn resolve_rustup_shim(candidate: &Path) -> Option<PathBuf> {
+    let target = std::fs::canonicalize(candidate).ok()?;
+    if target.file_name()? != "rustup" {
+        return None;
+    }
+    let output = std::process::Command::new(&target)
+        .args(["which", SERVER_NAME])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let resolved = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    resolved.is_absolute().then_some(resolved)
 }
 
 /// Reports whether the path is a regular file with an execute bit set.
@@ -2995,7 +3029,9 @@ fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, Wo
 
 #[cfg(test)]
 mod discovery_tests {
-    use super::{SERVER_NAME, discover_server_with, is_executable_file, responds_to_version};
+    use super::{
+        SERVER_NAME, discover_server_with, is_executable_file, resolve_server, responds_to_version,
+    };
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -3014,8 +3050,8 @@ mod discovery_tests {
         directory
     }
 
-    fn present(path: &Path) -> bool {
-        is_executable_file(path)
+    fn present(path: &Path) -> Option<PathBuf> {
+        is_executable_file(path).then(|| path.to_path_buf())
     }
 
     #[test]
@@ -3082,7 +3118,7 @@ mod discovery_tests {
         search.push(":");
         search.push(working.as_os_str());
         assert_eq!(
-            discover_server_with(None, Some(search), None, responds_to_version),
+            discover_server_with(None, Some(search), None, resolve_server),
             Some(working.join(SERVER_NAME))
         );
     }
