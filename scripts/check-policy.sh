@@ -185,6 +185,20 @@ if [ -n "$workflow_files" ]; then
     if grep -lE '^[[:space:]]*issues:[[:space:]]*write' $workflow_files >/dev/null 2>&1; then
         fail 'no workflow may file issues automatically; defects are entered by a human'
     fi
+
+    # A workflow naming a script that does not exist only fails in CI, because
+    # the local gate keeps its own list. Catch the drift here instead.
+    missing_workflow_scripts=$(grep -hoE 'scripts/[A-Za-z0-9._-]+\.(sh|py|jq)' $workflow_files \
+        | sort -u \
+        | while IFS= read -r referenced; do
+            if [ ! -f "$referenced" ]; then
+                printf '%s\n' "$referenced"
+            fi
+        done)
+    if [ -n "$missing_workflow_scripts" ]; then
+        fail 'every script a workflow runs must exist'
+        printf '%s\n' "$missing_workflow_scripts" >&2
+    fi
     if ! awk '
         function without_comment(line, i, character, quote, escaped) {
             for (i = 1; i <= length(line); i++) {
