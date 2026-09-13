@@ -246,8 +246,10 @@ const APPLICATION_INVARIANT: SurfaceError = SurfaceError::InvariantViolation {
 };
 
 #[cfg(alpine_native_validation)]
-static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; 10] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 10];
+/// One slot per `surface_event_kind`, which is one-based. Adding a variant
+/// there without growing this array silently drops it from the receipt.
+static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; 11] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 11];
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_FRAME_BUILDS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -543,8 +545,8 @@ fn reset_native_validation_dispatch_counts() {
 }
 
 #[cfg(alpine_native_validation)]
-fn native_validation_dispatch_counts() -> ([u64; 10], u64) {
-    let mut events = [0; 10];
+fn native_validation_dispatch_counts() -> ([u64; 11], u64) {
+    let mut events = [0; 11];
     for (value, count) in events.iter_mut().zip(&NATIVE_VALIDATION_EVENT_COUNTS) {
         *value = count.load(std::sync::atomic::Ordering::Acquire);
     }
