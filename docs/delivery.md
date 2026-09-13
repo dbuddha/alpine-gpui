@@ -38,16 +38,20 @@ All wiring. Converts the editor from unusable to usable. No new capability.
 
 | # | Criterion | Evidence |
 | --- | --- | --- |
-| 1.1 | `cmd-o` opens a folder picker; selecting a folder opens it | |
-| 1.2 | One click on a file tree row opens that file | |
-| 1.3 | Folder open shows a real file, not the `INITIAL_TEXT` scratch buffer | |
-| 1.4 | Keybindings match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-shift-s` save as, `cmd-s` save | |
-| 1.5 | Edit menu Undo, Cut, Copy, Paste and Select All are enabled and perform the action | |
-| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | |
+| 1.1 | `cmd-o` opens a folder picker; selecting a folder opens it | **passes.** File > Open chose `Cargo.toml` and it opened in a tab; File > Open Folder chose `crates/alpine-scene` and the tree showed its contents |
+| 1.2 | One click on a file tree row opens that file | **passes.** Already worked; one click on `Cargo.toml` opened `alpine-scene`'s manifest |
+| 1.3 | Folder open shows a real file, not the `INITIAL_TEXT` scratch buffer | **passes,** with a deviation: opening a folder now shows an empty Untitled buffer beside the tree rather than a file. The tree loads asynchronously, so there is no file to choose at construction, and Zed also shows an empty editor here |
+| 1.4 | Keybindings match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-shift-s` save as, `cmd-s` save | **partial.** Bound and unit-tested: F12, F2, Cmd+Shift+I, Opt+Shift+F12, Cmd+Shift+O, Cmd+T, Cmd+Shift+E. Menu key equivalents: Cmd+O, Cmd+Shift+O, Cmd+S, Cmd+Shift+S. Missing: `cmd-k cmd-i` hover needs chord support the resolver does not have, and `ctrl-g` needs a go-to-line command that does not exist |
+| 1.5 | Edit menu Undo, Cut, Copy, Paste and Select All are enabled and perform the action | **passes.** All report enabled through the accessibility tree, and Select All from the menu selected the document |
+| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset | **passes.** In a Dock-like environment (real `HOME`, `PATH` of `/usr/bin:/bin:/usr/sbin:/sbin`) the editor started `rust-analyzer` and its proc-macro server with no error status |
 | 1.7 | The app launches from `~/Applications/Alpine Editor.app` with an icon | |
 
-Criterion 1.5 fails today because [crates/alpine-platform-macos/src/menu.rs](../crates/alpine-platform-macos/src/menu.rs)
-wires standard selectors that no responder implements, so AppKit disables them.
+Two findings worth keeping. `screencapture -l` cannot see the Metal
+layer and returns a window that looks blank, so on-screen checks go
+through ScreenCaptureKit as `tools/onscreen-sdr-capture` already does.
+And `~/.cargo/bin/rust-analyzer` is normally a link to `rustup`: it
+answers `--version` but does not survive being run as a long-lived
+server, so discovery resolves the shim before spawning.
 
 ## Phase 2: language agnostic
 
