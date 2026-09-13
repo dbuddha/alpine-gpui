@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Path allowlists use byte order, independent of the hosted runner's locale.
+export LC_ALL=C
+
 failures=0
 
 fail() {

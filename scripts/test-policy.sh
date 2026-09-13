@@ -51,6 +51,7 @@ run_policy() {
 for source in crates/alpine-core/src/lib.rs apps/alpine-studio/src/lib.rs ARCHITECTURE.md; do
     ALPINE_CHANGED_FILES="$source" run_policy >/dev/null
 done
+( LC_ALL=en_US.UTF-8 run_policy >/dev/null )
 
 for job in preflight quality native; do
     awk -v job="$job" '
