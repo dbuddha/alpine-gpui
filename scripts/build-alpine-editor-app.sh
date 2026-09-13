@@ -136,6 +136,13 @@ if ! cmp -s "$executable" "$macos/alpine-editor"; then
     exit 1
 fi
 
+icon_source="$repository_root/assets/AlpineEditor.icns"
+if [ ! -f "$icon_source" ]; then
+    printf 'app bundle error: missing %s\n' "$icon_source" >&2
+    exit 1
+fi
+cp "$icon_source" "$resources/AlpineEditor.icns"
+
 cat > "$contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -147,6 +154,8 @@ cat > "$contents/Info.plist" <<EOF
     <string>Alpine Editor</string>
     <key>CFBundleExecutable</key>
     <string>alpine-editor</string>
+    <key>CFBundleIconFile</key>
+    <string>AlpineEditor</string>
     <key>CFBundleIdentifier</key>
     <string>com.dbuddha.alpine-editor</string>
     <key>CFBundleInfoDictionaryVersion</key>

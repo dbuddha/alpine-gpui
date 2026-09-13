@@ -1,9 +1,39 @@
+---
+product: Alpine Editor
+current_phase: 1
+phase_name: reachable
+phase_gate: criteria must pass on main with evidence before phase 2 starts
+execution: serial, one feature at a time, one worktree
+verification: launch ~/Applications/Alpine Editor.app and look at it
+parity_reference: pinned Zed v1.15.0 at alpine-zed-lab/.lab/zed
+delivery: docs/delivery.md
+---
+
 # Alpine Editor
 
 One code editor for Apple Silicon macOS, on Alpine GPUI, that its author uses
 every day. Owned end to end and understandable without a plugin API. The root
 [AGENTS.md](../../AGENTS.md) owns the framework, its performance contract and
 the shared engineering rules; this file owns the product.
+
+## Current phase: 1, reachable
+
+Do not start phase 2 work. The full table is in
+[docs/delivery.md](../../docs/delivery.md). Phase 1 closes when all of these
+pass on main, each exercised in the installed app from a Dock launch with no
+terminal, each with a screenshot:
+
+| # | Criterion |
+| --- | --- |
+| 1.1 | `cmd-o` opens a picker taking a file or folder, and the choice opens |
+| 1.2 | One click on a file tree row opens that file |
+| 1.3 | Folder open shows the tree and an empty buffer, not the sample text |
+| 1.4 | Keys match pinned Zed: `f12` definition, `f2` rename, `cmd-shift-i` format, `alt-shift-f12` references, `cmd-k cmd-i` hover, `ctrl-g` go to line, `cmd-shift-o` outline, `cmd-shift-e` project panel, `cmd-o` open, `cmd-s` save, `cmd-shift-s` save as |
+| 1.5 | Edit menu Undo, Cut, Copy, Paste, Select All are enabled and work |
+| 1.6 | rust-analyzer starts with `ALPINE_RUST_ANALYZER` unset |
+| 1.7 | Launches from `~/Applications/Alpine Editor.app` with an icon |
+
+Phase 1 is wiring: the capability exists and is unreachable.
 
 The bet is that a real editor can hold a real project in a fraction of the
 memory the alternatives need, and stay at 120 Hz while doing it. Every product
@@ -52,17 +82,15 @@ two of them is a defect, and it is the current state.
 
 ## Verification
 
-Judge the product by using it, never by reading the code that implements it. A
-command that exists in `commands.rs` with no menu item, no panel and no visible
-affordance is not a feature. That error has already been made here.
+A command in `commands.rs` with no menu item, no key and no visible affordance
+is not a feature. That error has already been made here.
 
-Every user-visible change is checked by launching the app and looking at it.
-Capture the window with `screencapture` and inspect the result against the spec
-and against Zed for the same surface. Launch with a disposable `HOME` so a
-restored session cannot be mistaken for current behavior.
-
-For anything touching latency or memory, follow the measurement rules in the
-root guide. Editor-side claims need a matched workload on both sides.
+Check every user-visible change by launching the app and capturing the window
+through ScreenCaptureKit, as `tools/onscreen-sdr-capture` does, comparing
+against the spec and against Zed for the same surface. `screencapture -l`
+cannot see the Metal layer and reports a blank window. Use a disposable `HOME` so a restored session is not mistaken for
+current behavior. Latency and memory claims follow the root guide's measurement
+rules and need a matched workload on both sides.
 
 ## Correctness that must never regress
 
@@ -81,11 +109,8 @@ rather than silent replacement.
 
 ## Known open defects
 
-Presentation cannot be timed on the development Mac because `presentedTime` is
-always zero (#511), which also plausibly explains the intermittent frame
-deadline failures in the accessibility controls (#622). The caret does not
-follow the active edit (#555). Settings reload is rejected on a clean launch
-(#547). `LaunchServices` refuses supported documents (#543). Tab labels overlap
-when a multi-tab session restores.
+Open issues are the backlog; read them, not a list here. One matters before
+touching rendering: `presentedTime` is always zero on the development Mac
+(#511), so presentation cannot be timed there.
 
 Daily use is the acceptance test. A defect you hit while editing is the backlog.

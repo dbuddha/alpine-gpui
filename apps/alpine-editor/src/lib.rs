@@ -106,8 +106,8 @@ use alpine_platform_macos::{AccessibilityPayload, AccessibilityRequest, Accessib
 use alpine_platform_macos::{
     AccessibilityRequestKind, ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText,
     ClipboardWrite, EditorSignpost, EditorSignpostStage, EventTimestamp, ImeEvent, InputEpoch,
-    InputEpochAdmission, KeyState, Modifiers, PointerAction, PointerButton, SurfaceError,
-    SurfaceEvent,
+    InputEpochAdmission, KeyState, MenuAction, Modifiers, PointerAction, PointerButton,
+    SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
@@ -246,8 +246,10 @@ const APPLICATION_INVARIANT: SurfaceError = SurfaceError::InvariantViolation {
 };
 
 #[cfg(alpine_native_validation)]
-static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; 10] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 10];
+/// One slot per `surface_event_kind`, which is one-based. Adding a variant
+/// there without growing this array silently drops it from the receipt.
+static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; 11] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 11];
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_FRAME_BUILDS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -543,8 +545,8 @@ fn reset_native_validation_dispatch_counts() {
 }
 
 #[cfg(alpine_native_validation)]
-fn native_validation_dispatch_counts() -> ([u64; 10], u64) {
-    let mut events = [0; 10];
+fn native_validation_dispatch_counts() -> ([u64; 11], u64) {
+    let mut events = [0; 11];
     for (value, count) in events.iter_mut().zip(&NATIVE_VALIDATION_EVENT_COUNTS) {
         *value = count.load(std::sync::atomic::Ordering::Acquire);
     }
@@ -824,6 +826,7 @@ fn run_native(app: EditorApp) -> Result<(), RuntimeError> {
     let mut app = app;
     #[cfg(not(alpine_native_validation))]
     let mut app = app;
+    app.adopt_discovered_language_server();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
         .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
     if let Some(capture) = capture.as_ref() {
@@ -1095,6 +1098,30 @@ impl ExplicitPathTarget {
         }
         Ok(())
     }
+}
+
+/// Writes `bytes` to `path` through a sibling temporary file and a rename.
+///
+/// A rename within a directory is atomic, so a crash or a full disk leaves the
+/// destination as it was instead of truncated.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = directory.join(".alpine-save-as");
+    temporary.set_extension(format!("{}", std::process::id()));
+    let write = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
 }
 
 fn record_project_settings_result(
@@ -2063,7 +2090,10 @@ impl EditorApp {
     ) -> Result<Self, SurfaceError> {
         #[cfg(test)]
         let omitted_entries = workspace.snapshot().omitted_entries;
-        let document = EditorDocument::scratch(INITIAL_TEXT);
+        // Opening a folder must not look like a file the user wrote. Zed shows
+        // an empty editor beside the project panel; the placeholder sample this
+        // used to show was the single loudest signal that this was a toy.
+        let document = EditorDocument::scratch("");
         let app = Self::from_parts(text_system, document, None, Some(workspace))?;
         #[cfg(test)]
         let mut app = app;
@@ -2074,6 +2104,15 @@ impl EditorApp {
             ))));
         }
         Ok(app)
+    }
+
+    /// Adopts whatever language server this machine has.
+    ///
+    /// Called from the entry points that actually run the editor, never from
+    /// construction, so test constructors do not probe the host or pay to
+    /// spawn a process.
+    pub(crate) fn adopt_discovered_language_server(&mut self) {
+        self.rust_diagnostics = rust_diagnostics::discovered();
     }
 
     fn prime_workspace_launch(&mut self) -> Result<(), EditorError> {
@@ -4072,6 +4111,7 @@ impl EditorApp {
                 return self.handle_clipboard_completion(event);
             }
             SurfaceEvent::CloseRequested { .. } => return self.handle_close_request(),
+            SurfaceEvent::Menu { action, .. } => self.handle_menu_action(action),
             SurfaceEvent::Accessibility { .. }
             | SurfaceEvent::Keyboard { .. }
             | SurfaceEvent::Resize { .. }
@@ -6597,6 +6637,97 @@ impl EditorApp {
         self.set_local_status(LocalStatus::Workspace(message))
     }
 
+    /// Applies one menu command whose file choice the platform already made.
+    fn handle_menu_action(&mut self, action: &MenuAction) -> EventEffect {
+        match action {
+            MenuAction::OpenPath(path) => self.open_menu_path(path),
+            MenuAction::Save => self.save_document(),
+            MenuAction::SaveAsPath(path) => self.save_document_as(path),
+        }
+    }
+
+    /// Opens a chosen file as a tab, or a chosen folder as the workspace.
+    fn open_menu_path(&mut self, path: &Path) -> EventEffect {
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(source) => {
+                return self.record_workspace_error(&WorkspaceSelectionError::Workspace(
+                    WorkspaceError::io("read chosen path", path, source),
+                ));
+            }
+        };
+        if metadata.is_dir() {
+            return self.open_workspace_root(path);
+        }
+        match self.open_workspace_path(path, None) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
+    /// Replaces the workspace with the chosen folder and reloads the tree.
+    ///
+    /// The tab set is rebuilt rather than kept. Carrying tabs across a
+    /// workspace switch leaves the editor showing a file from the old project
+    /// while the tree and the language server point at the new root.
+    fn open_workspace_root(&mut self, path: &Path) -> EventEffect {
+        let workspace = match Workspace::open_root(path) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                return self.record_workspace_error(&WorkspaceSelectionError::Workspace(error));
+            }
+        };
+        let Some(next_revision) = self.runtime_workspace_revision.checked_add(1) else {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        };
+        let Ok((tabs, panes)) = Self::initial_tabs_and_panes(None) else {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        };
+        self.tabs = tabs;
+        self.panes = panes;
+        self.document = EditorDocument::scratch("");
+        self.pending_recovery.clear();
+        self.runtime_workspace_revision = next_revision;
+        self.workspace = Some(workspace);
+        let result = self
+            .settings_reload
+            .replace_project(self.workspace.as_ref().map(Workspace::root));
+        record_project_settings_result(self, result);
+        self.active_workspace_entry = None;
+        self.file_tree = FileTreeState::default();
+        if self.prime_workspace_launch().is_err() {
+            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
+        }
+        EventEffect::document_replacement()
+    }
+
+    /// Writes the active buffer to `path`, then opens that file as the tab.
+    ///
+    /// Refuses a destination that is already open. That tab holds its own
+    /// buffer, and saving over the file underneath it would be silently
+    /// overwritten again the next time that tab saved.
+    ///
+    /// The write goes to a sibling temporary file and is renamed into place, so
+    /// an interrupted Save As leaves the destination untouched rather than
+    /// truncated.
+    fn save_document_as(&mut self, path: &Path) -> EventEffect {
+        if self.tabs.index_for_path(path).is_some() {
+            return self.record_workspace_error(&WorkspaceSelectionError::Tabs(
+                DocumentTabError::DuplicatePath(path.to_path_buf()),
+            ));
+        }
+        let text = self.buffer().snapshot().text();
+        if let Err(source) = write_atomically(path, text.as_bytes()) {
+            return self.record_workspace_error(&WorkspaceSelectionError::Workspace(
+                WorkspaceError::io("write chosen path", path, source),
+            ));
+        }
+        match self.open_workspace_path(path, None) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
     fn save_document(&mut self) -> EventEffect {
         match self.document.save() {
             Ok(Some(report)) => {
@@ -7479,6 +7610,7 @@ const fn surface_event_kind(event: &SurfaceEvent) -> u64 {
         SurfaceEvent::Accessibility { .. } => 8,
         SurfaceEvent::Wake { .. } => 9,
         SurfaceEvent::CloseRequested { .. } => 10,
+        SurfaceEvent::Menu { .. } => 11,
     }
 }
 
@@ -8711,7 +8843,11 @@ pub mod native_validation {
                 SurfaceEvent::Scroll { .. } => {
                     self.scroll = self.scroll.saturating_add(1);
                 }
+                // A menu command is not native input. Counting it as
+                // unexpected is correct for this receipt: qualification drives
+                // the keyboard and pointer, never the menu bar.
                 SurfaceEvent::Accessibility { .. }
+                | SurfaceEvent::Menu { .. }
                 | SurfaceEvent::Resize { .. }
                 | SurfaceEvent::Clipboard { .. }
                 | SurfaceEvent::Wake { .. }

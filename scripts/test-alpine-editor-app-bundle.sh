@@ -83,9 +83,11 @@ grep -Fq 'output basename must be Alpine Editor.app' "$fixture_dir/output.log"
 
 fixture_repository="$fixture_dir/repository"
 fixture_bin="$fixture_dir/bin"
-mkdir -p "$fixture_repository/scripts" "$fixture_bin"
+mkdir -p "$fixture_repository/scripts" "$fixture_repository/assets" "$fixture_bin"
 cp "$repository_root/scripts/build-alpine-editor-app.sh" \
     "$fixture_repository/scripts/build-alpine-editor-app.sh"
+# The bundle refuses to ship without an icon, so the fixture needs one too.
+cp "$repository_root/assets/AlpineEditor.icns" "$fixture_repository/assets/AlpineEditor.icns"
 cat > "$fixture_repository/Cargo.toml" <<'EOF'
 [workspace]
 

@@ -1245,7 +1245,10 @@ fn pinned_rust_analyzer_drives_product_open_edit_and_diagnostic_admission()
         selection_revision: 1,
     };
     let latch = LanguageWakeLatch::default();
-    let mut model = RustDiagnostics::default();
+    // This journey runs against the pinned server named by
+    // ALPINE_RUST_ANALYZER, so it must go through discovery rather than
+    // Default, which deliberately knows nothing about the environment.
+    let mut model = super::discovered();
     let input = RustDocumentInput::new(&path, &workspace, identity, buffer.snapshot());
     let wake_latch = latch.clone();
     let started = model.sync(Some(input), move |wake| {

@@ -5164,7 +5164,7 @@ fn native_validation_dispatch_counters_reset_and_report_nonzero_work() {
     );
 
     reset_native_validation_dispatch_counts();
-    assert_eq!(native_validation_dispatch_counts(), ([0; 10], 0));
+    assert_eq!(native_validation_dispatch_counts(), ([0; 11], 0));
     assert_eq!(
         native_validation_language_evidence(),
         NativeValidationLanguageEvidence::default()

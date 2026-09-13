@@ -330,6 +330,10 @@ fn qualify_workspace(
     let mut text_system = alpine_text_layout::CoreTextSystem::new();
     text_system.register_font(FONT_FAMILY, "Menlo-Regular")?;
     let mut delegate = EditorApp::from_workspace(text_system, workspace)?;
+    // This composes the product without run_native, so it has to adopt the
+    // server the same way the real entry points do or no diagnostic ever
+    // arrives and the label wait times out.
+    delegate.adopt_discovered_language_server();
     delegate.prime_workspace_launch()?;
     let clear = alpine_core::LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(EditorError::Runtime(
         alpine_runtime::RuntimeError::Surface(alpine_platform_macos::SurfaceError::validation(

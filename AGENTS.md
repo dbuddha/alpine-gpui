@@ -1,3 +1,12 @@
+---
+product: Alpine GPUI
+scope: framework
+execution: serial, one feature at a time, one worktree
+verification: launch the installed app and look at it; reading code is not verification
+parity_reference: pinned Zed v1.15.0 at alpine-zed-lab/.lab/zed
+delivery: docs/delivery.md
+---
+
 # Alpine GPUI
 
 An application framework for Apple Silicon macOS, in Rust, with a Direct Metal
@@ -92,6 +101,17 @@ cargo test --locked -p <affected-crate>
 scripts/check-native.sh physical shipping
 scripts/check.sh
 ```
+
+## How work is delivered
+
+Serially. One feature at a time, one worktree, no parallel branches of work.
+Phases and acceptance criteria are in [docs/delivery.md](docs/delivery.md); a
+phase does not begin until the previous one passes **on main** with evidence.
+
+Verify by using the installed application, not by reading the code that
+implements it. A command reachable only from the command palette is not
+shipped: that is how this project's language-server work sat unusable for
+months while looking complete in source.
 
 Each AGENTS.md is capped at 900 words; adding a rule requires removing one. No
 new script may test another script. No workflow may file issues. Retired process

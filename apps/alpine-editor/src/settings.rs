@@ -17,6 +17,9 @@ pub(crate) const KEY_A: u16 = 0;
 pub(crate) const KEY_S: u16 = 1;
 pub(crate) const KEY_F: u16 = 3;
 pub(crate) const KEY_Z: u16 = 6;
+pub(crate) const KEY_T: u16 = 17;
+pub(crate) const KEY_O: u16 = 31;
+pub(crate) const KEY_I: u16 = 34;
 pub(crate) const KEY_W: u16 = 13;
 pub(crate) const KEY_E: u16 = 14;
 pub(crate) const KEY_RIGHT_BRACKET: u16 = 30;
@@ -30,10 +33,12 @@ pub(crate) const KEY_ESCAPE: u16 = 53;
 pub(crate) const KEY_HOME: u16 = 115;
 pub(crate) const KEY_DELETE_FORWARD: u16 = 117;
 pub(crate) const KEY_END: u16 = 119;
+pub(crate) const KEY_F12: u16 = 111;
 pub(crate) const KEY_LEFT: u16 = 123;
 pub(crate) const KEY_RIGHT: u16 = 124;
 pub(crate) const KEY_DOWN: u16 = 125;
 pub(crate) const KEY_UP: u16 = 126;
+pub(crate) const KEY_F2: u16 = 120;
 
 pub(crate) const FONT_FAMILY: u64 = 1;
 pub(crate) const FONT_NAME: &str = "Menlo-Regular";
@@ -57,6 +62,7 @@ fn checked_retained_mul(left: usize, right: usize) -> Result<usize, SettingsErro
 
 const COMMAND_SHIFT: u8 = Modifiers::COMMAND.saturating_add(Modifiers::SHIFT);
 const COMMAND_OPTION: u8 = Modifiers::COMMAND.saturating_add(Modifiers::OPTION);
+const OPTION_SHIFT: u8 = Modifiers::OPTION.saturating_add(Modifiers::SHIFT);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EditorSettings {
@@ -205,7 +211,49 @@ struct KeyBinding {
     label: Cow<'static, str>,
 }
 
-static DEFAULT_BINDINGS: [KeyBinding; 14] = [
+/// Defaults match pinned Zed v1.15.0 on macOS.
+///
+/// Order matters twice over: `resolve` takes the first binding whose modifiers
+/// are all held, and `validate_bindings` rejects a binding shadowed by an
+/// earlier one on the same key. Both require the more specific combination
+/// first, which is why Opt+Shift+F12 precedes F12.
+static DEFAULT_BINDINGS: [KeyBinding; 20] = [
+    binding(
+        KEY_F12,
+        OPTION_SHIFT,
+        KeyAction::Command(EditorCommand::FindRustReferences),
+        "Opt+Shift+F12",
+    ),
+    binding(
+        KEY_F12,
+        0,
+        KeyAction::Command(EditorCommand::GoToRustDefinition),
+        "F12",
+    ),
+    binding(
+        KEY_F2,
+        0,
+        KeyAction::Command(EditorCommand::PreviewRustRename),
+        "F2",
+    ),
+    binding(
+        KEY_I,
+        COMMAND_SHIFT,
+        KeyAction::Command(EditorCommand::PreviewRustFormatting),
+        "Cmd+Shift+I",
+    ),
+    binding(
+        KEY_O,
+        COMMAND_SHIFT,
+        KeyAction::Command(EditorCommand::ShowRustDocumentSymbols),
+        "Cmd+Shift+O",
+    ),
+    binding(
+        KEY_T,
+        Modifiers::COMMAND,
+        KeyAction::Command(EditorCommand::ShowRustWorkspaceSymbols),
+        "Cmd+T",
+    ),
     binding(
         KEY_P,
         COMMAND_SHIFT,
@@ -778,11 +826,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn navigation_keys_match_pinned_zed_defaults() -> Result<(), SettingsError> {
+        let keymap = AppSettings::compiled()?.keymap;
+        let resolved = |key, modifiers| keymap.resolve(key, Modifiers::from_bits(modifiers));
+        assert_eq!(
+            resolved(KEY_F12, 0),
+            Some(KeyAction::Command(EditorCommand::GoToRustDefinition))
+        );
+        // Opt+Shift+F12 must win over bare F12, which requires no modifiers
+        // and therefore matches every F12 press.
+        assert_eq!(
+            resolved(KEY_F12, OPTION_SHIFT),
+            Some(KeyAction::Command(EditorCommand::FindRustReferences))
+        );
+        assert_eq!(
+            resolved(KEY_F2, 0),
+            Some(KeyAction::Command(EditorCommand::PreviewRustRename))
+        );
+        assert_eq!(
+            resolved(KEY_I, COMMAND_SHIFT),
+            Some(KeyAction::Command(EditorCommand::PreviewRustFormatting))
+        );
+        assert_eq!(
+            resolved(KEY_O, COMMAND_SHIFT),
+            Some(KeyAction::Command(EditorCommand::ShowRustDocumentSymbols))
+        );
+        assert_eq!(
+            resolved(KEY_T, Modifiers::COMMAND),
+            Some(KeyAction::Command(EditorCommand::ShowRustWorkspaceSymbols))
+        );
+        assert_eq!(
+            resolved(KEY_E, COMMAND_SHIFT),
+            Some(KeyAction::Command(EditorCommand::ToggleFileTree))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn compiled_settings_are_valid_static_and_bounded() -> Result<(), SettingsError> {
         let settings = AppSettings::compiled()?;
         assert_eq!(settings.editor.font_name.as_ref(), "Menlo-Regular");
         assert_eq!(settings.editor.tab_columns, 4);
-        assert_eq!(settings.keymap.bindings.len(), 14);
+        assert_eq!(settings.keymap.bindings.len(), 20);
         assert!(std::mem::size_of::<AppSettings>() <= 512);
         let classes = [
             SyntaxClass::Comment,
