@@ -91,12 +91,15 @@ grep -Fq 'release binary contains a network endpoint' "$fixture_dir/endpoint.log
 
 # Exercise the real workflow command using GitHub's shell semantics. The
 # isolated fixture avoids overwriting evidence from an actual release build.
-mkdir -p "$fixture_dir/workflow/scripts" "$fixture_dir/workflow/assurance" "$fixture_dir/workflow/target"
+mkdir -p "$fixture_dir/workflow/scripts" "$fixture_dir/workflow/assurance"
 cp scripts/check-product-boundary.sh "$fixture_dir/workflow/scripts/"
 cp assurance/alpine-studio-dependencies.txt "$fixture_dir/workflow/assurance/"
 step=$(awk '/- name: Audit Alpine Studio release product boundary/ { active=1; next }
     active && /- name:/ { exit } active { print }' .github/workflows/ci.yml)
-command=$(printf '%s\n' "$step" | sed -n 's/^        run: //p')
+command=$(printf '%s\n' "$step" | awk '
+    /^        run: \|$/ { body=1; next }
+    body { sub(/^          /, ""); print }
+')
 test -n "$command"
 if printf '%s\n' "$step" | grep -Fq '        shell: bash'; then
     set -- --noprofile --norc -eo pipefail

@@ -46,8 +46,6 @@ mutation=false
 kani=false
 miri=false
 metal=false
-tla=false
-portable=false
 
 enable() {
     reason=$1
@@ -59,8 +57,6 @@ enable() {
             kani) kani=true ;;
             miri) miri=true ;;
             metal) metal=true ;;
-            tla) tla=true ;;
-            portable) portable=true ;;
             *) fail 'internal unknown gate' ;;
         esac
         printf '%s\t%s\n' "$gate" "$reason" >> "$temporary/reasons.tsv"
@@ -68,12 +64,12 @@ enable() {
 }
 
 enable_all() {
-    enable "$1" coverage mutation kani miri metal tla portable
+    enable "$1" coverage mutation kani miri metal
 }
 
 # Execution controls default to full selection. The narrowly reviewed
 # non-runtime control component is resolved below through its mandatory tests.
-if matches '^(\.github/(workflows/.+\.ya?ml$|actions/)|assurance/miri-[^/]+\.tsv$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|check-tla|test-formal-effectiveness)\.sh$)'; then
+if matches '^(\.github/(workflows/.+\.ya?ml$|actions/)|assurance/miri-[^/]+\.tsv$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|test-formal-effectiveness)\.sh$)'; then
     enable_all ci-control-plane
 fi
 
@@ -109,10 +105,6 @@ if matches '^(tools/alpine-assurance/.+\.rs$|assurance/qualification/)'; then
     enable assurance-implementation coverage mutation
 fi
 
-if matches '^(formal/tla/|docs/aep/|assurance/evidence\.toml$|assurance/qualification/|tools/alpine-assurance/|tools/alpine-trace/)'; then
-    enable formal-contract tla
-fi
-
 if matches '^(crates/alpine-text-layout/|crates/.+/(unsafe|ffi|resource|lifetime))'; then
     enable unsafe-or-lifetime miri
 fi
@@ -131,14 +123,10 @@ if matches '^scripts/(check-metal|check-native-benchmark-result|test-native-benc
     enable metal-orchestration metal
 fi
 
-if matches '(^|/)(Cargo\.toml|build\.rs|[^/]+\.rs)$|^(Cargo\.lock|rust-toolchain\.toml|\.github/workflows/.+\.yml|scripts/(check-portable-targets|test-portable-targets|classify-ci|test-classifier)\.sh)$'; then
-    enable portable-compilation portable
-fi
-
 # An explicit known-input list prevents a mapped file from masking an unknown
 # consumer in the same diff. Generic Rust/manifest matches above are not proof
 # that an otherwise unrecognized package or input has complete gate coverage.
-known_inputs='^(README\.md$|ARCHITECTURE\.md$|AGENTS\.md$|CONTRIBUTING\.md$|CHANGELOG\.md$|LICENSE([^/]*$)|NOTICE([^/]*$)|docs/|skills/|\.agents/skills/|\.github/(ISSUE_TEMPLATE/|pull_request_template\.md$|workflows/.+\.ya?ml$|actions/)|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos|alpine-text|alpine-text-layout|alpine-runtime)/(.+\.rs$|Cargo\.toml$|README\.md$)|apps/alpine-studio/(.+\.rs$|Cargo\.toml$|README\.md$|fixtures/|tests/|assets/|resources/)|tools/(alpine-assurance|alpine-trace|alpine-ax-client)/(src/.+\.rs$|Cargo\.toml$|README\.md$)|tools/alpine-(trace|assurance)/|tools/alpine-ax-client/(fixtures|tests|assets|resources)/|formal/tla/|assurance/(evidence\.toml$|qualification/|miri-[^/]+\.tsv$)|shaders/|.+\.metal$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|check-tla|test-formal-effectiveness|check-metal|check-native-benchmark-result|test-native-benchmark-result|check-portable-targets|test-portable-targets)\.sh$)'
+known_inputs='^(README\.md$|ARCHITECTURE\.md$|AGENTS\.md$|CONTRIBUTING\.md$|CHANGELOG\.md$|LICENSE([^/]*$)|NOTICE([^/]*$)|docs/|skills/|\.agents/skills/|\.github/(ISSUE_TEMPLATE/|pull_request_template\.md$|workflows/.+\.ya?ml$|actions/)|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|crates/(alpine-core|alpine-scene|alpine-renderer|alpine-metal|alpine-platform|alpine-platform-macos|alpine-text|alpine-text-layout|alpine-runtime)/(.+\.rs$|Cargo\.toml$|README\.md$)|apps/alpine-studio/(.+\.rs$|Cargo\.toml$|README\.md$|fixtures/|tests/|assets/|resources/)|tools/(alpine-assurance|alpine-trace|alpine-ax-client)/(src/.+\.rs$|Cargo\.toml$|README\.md$)|tools/alpine-(trace|assurance)/|tools/alpine-ax-client/(fixtures|tests|assets|resources)/|assurance/(evidence\.toml$|qualification/|miri-[^/]+\.tsv$)|shaders/|.+\.metal$|scripts/(classify-ci|test-classifier|setup-kani|test-setup-kani|test-studio-concurrency-stress|check-coverage|test-coverage|run-miri-partition|test-miri-partitions|check-native-mutation-receipts|test-native-mutation-receipts|test-formal-effectiveness|check-metal|check-native-benchmark-result|test-native-benchmark-result)\.sh$)'
 unknown_inputs=$(printf '%s\n' "$changed_files" | sed '/^$/d' | grep -Ev "$known_inputs") || {
     result=$?
     [ "$result" -eq 1 ] || fail 'known-input classification failed'
@@ -161,11 +149,9 @@ ci_control_only=false
 if [ -n "$changed_files" ] && [ -z "$outside_controls" ] && matches "$ci_control_inputs" \
     && ! matches '^docs/aep/'; then
     ci_control_only=true
-    coverage=false mutation=false kani=false miri=false metal=false tla=false
-    portable=true
+    coverage=false mutation=false kani=false miri=false metal=false
     unknown_inputs=
     : > "$temporary/reasons.tsv"
-    printf 'portable\tci-control-contracts\n' > "$temporary/reasons.tsv"
 fi
 
 # Ordinary feedback retains behavioral validation. Specialized assurance is
@@ -177,8 +163,8 @@ if [ "$assurance" = true ]; then
         printf 'native_mutation\tmanual-native-assurance\n' >> "$temporary/reasons.tsv"
     fi
 else
-    coverage=false mutation=false kani=false miri=false tla=false
-    awk -F '\t' '$1 == "metal" || $1 == "portable"' "$temporary/reasons.tsv" > "$temporary/ordinary-reasons.tsv"
+    coverage=false mutation=false kani=false miri=false
+    awk -F '\t' '$1 == "metal"' "$temporary/reasons.tsv" > "$temporary/ordinary-reasons.tsv"
     mv "$temporary/ordinary-reasons.tsv" "$temporary/reasons.tsv"
 fi
 
@@ -206,14 +192,13 @@ if [ -n "${ALPINE_CI_PLAN:-}" ]; then
         --rawfile reasons "$temporary/reasons.tsv" \
         --argjson code "$code" --argjson coverage "$coverage" --argjson mutation "$mutation" \
         --argjson kani "$kani" --argjson miri "$miri" --argjson metal "$metal" \
-        --argjson tla "$tla" --argjson portable "$portable" \
         '{schema: "alpine-ci-gate-plan/v1", base_sha: $base, head_sha: $head,
           merge_base: $merge_base, change_source: $change_source,
           changed_paths: ($paths | split("\n") | map(select(length > 0))),
           unmapped_paths: ($unknown | split("\n") | map(select(length > 0))),
           ci_control_only: $ci_control_only, assurance: $assurance,
           gates: {code: $code, native_mutation: $native_mutation, coverage: $coverage, mutation: $mutation, kani: $kani,
-                  miri: $miri, metal: $metal, tla: $tla, portable: $portable},
+                  miri: $miri, metal: $metal},
           reasons: ($reasons | split("\n") | map(select(length > 0) | split("\t") |
                     {gate: .[0], rule: .[1]}) | unique),
           inventory_status: "not-discovered", acceptance: "not-evaluated",
@@ -231,8 +216,6 @@ fi
     printf 'kani=%s\n' "$kani"
     printf 'miri=%s\n' "$miri"
     printf 'metal=%s\n' "$metal"
-    printf 'tla=%s\n' "$tla"
-    printf 'portable=%s\n' "$portable"
     printf 'ci_control_only=%s\n' "$ci_control_only"
 } > "$temporary/outputs"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

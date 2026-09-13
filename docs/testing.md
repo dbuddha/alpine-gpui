@@ -53,13 +53,13 @@ performance or replace a physical keyboard/VoiceOver check.
 Ordinary CI skips code builds only for changes confined to Markdown under `docs/`
 and the named root guidance files. Policy still runs; mixed, unknown and empty
 change sets retain code checks, as do explicit manual assurance requests.
-CI selects native/portable checks from source changes and fails `ci-pass`
+CI selects macOS product and native checks from source changes and fails `ci-pass`
 if an applicable job fails or is unexpectedly skipped. PR opening, source updates
 and reopening trigger code CI; title/body/label edits do not. Retain the tested
 source and base identities, native execution and failure artifacts. The current
 runtime target is at most 15 minutes including queueing, without reruns to obtain green.
 
-Kani, Miri, TLA+, mutation and coverage are manual assurance choices for a concrete
+Kani, Miri, mutation and coverage are manual assurance choices for a concrete
 risk. Do not substitute them for behavioral tests or require them for every PR.
 A failed check requires investigation, not a weaker threshold or blind rerun.
 
@@ -85,3 +85,9 @@ scheduler or new runner only when a measured gap justifies it.
 
 Review is judgment, not a phrase-presence test. Copilot may provide independent
 feedback, but its absence or approval is not evidence that native behavior passed.
+
+TLA+ models and their execution gates are retired. Their last active source is
+[the pre-retirement revision](https://github.com/dbuddha/alpine-gpui/tree/a52fc06763f1cb36fa090d2dbac3d4c1bdfd0a29/formal/tla).
+Rust state-transition, stale-result, dirty-close, frame-drain and measurement-admission
+tests remain required where relevant. Removing the models does not make these
+bounded tests exhaustive proofs. Historical AEP references do not restore gates.

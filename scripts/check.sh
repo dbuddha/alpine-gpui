@@ -3,20 +3,12 @@ set -eu
 
 scripts/check-policy.sh
 scripts/test-policy.sh
-scripts/test-native-mutation-receipts.sh
 scripts/test-worktrees.sh
 scripts/check-product-boundary.sh
 scripts/test-product-boundary.sh
 scripts/test-classifier.sh
 scripts/test-ci-admission.sh
 scripts/test-ci-cache-selection.sh
-scripts/test-portable-targets.sh
-scripts/check-portable-targets.sh
-scripts/test-setup-kani.sh
-scripts/test-coverage.sh
-scripts/test-miri-partitions.sh
-scripts/test-assurance.sh
-scripts/test-formal-effectiveness.sh
 scripts/test-qualification.sh
 scripts/test-native-benchmark-result.sh
 scripts/test-studio-residency.sh

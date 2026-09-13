@@ -42,9 +42,8 @@ exhaust bounded geometry and color domains, complete `u16` readback extents, and
 six arbitrary lifecycle actions plus symbolic frame-accounting updates against
 the Rust implementation. The trace decoder additionally proves two-operation
 painter-order and value preservation over bounded symbolic colors and extents,
-plus fail-closed rejection of noncontiguous indices. TLA+ models
-check finite value-admission, assurance, qualification, and renderer-lifecycle
-designs, including known-fault controls. The evidence registry maps atomic AEP
+plus fail-closed rejection of noncontiguous indices. Rust state/action tests check value admission, qualification and renderer
+lifecycle transitions, including injected failures. The evidence registry maps atomic AEP
 claims to qualified artifacts, bounds, assumptions, exclusions, and dynamic
 companions. Calibration fixtures exercise exact artifact identity, environment
 qualification, minimum window and run counts, paired-order balance, and stable
@@ -113,8 +112,8 @@ Hosted CI selects checks from changed source paths and explicit manual inputs,
 then propagates every applicable failure through `ci-pass`. PR opening, source
 updates and reopening trigger code CI; title, body and label changes do not.
 Ordinary CI retains workspace tests, doctests, rustdoc, dependency/license checks,
-the source-selected Linux/macOS arm64/Windows matrix and native Metal validation.
-Coverage, mutation, Kani, Miri and TLA+ are opt-in manual assurance; their bounded
+Apple Silicon macOS product checks and source-selected native Metal validation.
+Coverage, mutation, Kani and Miri are opt-in manual assurance; their bounded
 claims do not substitute for native tests or physical acceptance. Nightly
 assurance is manual, and only dependency advisories recur on the weekly schedule.
 
@@ -136,8 +135,8 @@ manage issue parents or declare product acceptance.
 ```mermaid
 flowchart TB
     source["Source paths"] --> quality["Policy, dependencies, tests, rustdoc"]
-    source --> native["Selected native matrix and Metal validation"]
-    manual["Explicit manual assurance"] --> specialized["Coverage, mutation, Kani, Miri, TLA+"]
+    source --> native["macOS native and Metal validation"]
+    manual["Explicit manual assurance"] --> specialized["Coverage, mutation, Kani, Miri"]
     quality --> aggregate["ci-pass: require every applicable check"]
     native --> aggregate
     specialized --> aggregate

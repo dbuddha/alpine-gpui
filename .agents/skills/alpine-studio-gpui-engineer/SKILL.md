@@ -50,7 +50,7 @@ authorized in the session, with the rationale and risks in the PR.
 
 Use the existing harness and exact artifact identities, not reconstructed ad hoc
 commands. Discover required tests and reject zero selection. Pair production-path
-tests with discriminating negative controls; connect Kani/TLA+ properties to real
+tests with discriminating negative controls; connect optional bounded proofs to real
 events and assumptions rather than claiming they verify all native behavior.
 Hosted tests, physical interaction, residency and dogfood have different ceilings.
 

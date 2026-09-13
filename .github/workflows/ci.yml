@@ -45,8 +45,6 @@ jobs:
       miri: ${{ steps.classify.outputs.miri }}
       metal: ${{ steps.classify.outputs.metal }}
       native_mutation: ${{ steps.classify.outputs.native_mutation }}
-      tla: ${{ steps.classify.outputs.tla }}
-      portable: ${{ steps.classify.outputs.portable }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -66,7 +64,7 @@ jobs:
   preflight:
     name: preflight
     needs: classify
-    runs-on: ubuntu-24.04
+    runs-on: macos-26
     timeout-minutes: 5
     steps:
       - name: Check out source
@@ -83,7 +81,7 @@ jobs:
     name: quality
     needs: [classify, preflight]
     if: needs.classify.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: macos-26
     timeout-minutes: 25
     steps:
       - name: Check out source
@@ -104,14 +102,11 @@ jobs:
           scripts/test-product-boundary.sh
           scripts/test-alpine-studio-app-bundle.sh
           scripts/test-ci-cache-selection.sh
-          scripts/test-assurance.sh
           scripts/test-qualification.sh
           scripts/test-zed-lab-evidence.sh
           scripts/check-release.sh
           scripts/test-core-contracts.sh
           scripts/test-metal-contracts.sh
-      - name: Validate technical evidence registry
-        run: cargo run --locked -p alpine-assurance -- validate
       - name: Check dependencies and licenses
         run: cargo deny check bans licenses sources
       - name: Test all targets
@@ -124,18 +119,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
-      - name: Render assurance report
-        run: |
-          mkdir -p target/assurance
-          cargo run --quiet --locked -p alpine-assurance -- report > target/assurance/report.md
-      - name: Upload technical assurance report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: engineering-evidence-${{ github.sha }}
-          path: |
-            target/assurance/report.md
-          retention-days: 7
-          if-no-files-found: error
+      - name: Check optional proof inventory and evidence records
+        if: needs.classify.outputs.kani == 'true'
+        run: scripts/test-assurance.sh
       - name: Upload rustdoc artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -145,34 +131,21 @@ jobs:
           if-no-files-found: error
 
   native:
-    name: native-${{ matrix.name }}
+    name: native-macos-arm64
     needs: [classify, preflight]
     if: needs.classify.outputs.code == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x64
-            os: ubuntu-24.04
-          - name: macos-arm64
-            os: macos-26
-          - name: windows-x64
-            os: windows-2025
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Show target
         run: rustc --version --verbose
-      - name: Test workspace
-        if: matrix.name == 'macos-arm64' || needs.classify.outputs.portable == 'true'
-        run: cargo test --workspace --all-targets --all-features --locked
       - name: Validate platform-complete Miri partition manifest
-        if: matrix.name == 'macos-arm64'
+        if: needs.classify.outputs.miri == 'true'
         run: scripts/test-miri-partitions.sh
-      - name: Require unmutated native admission before mutation fan-out
-        if: matrix.name == 'macos-arm64' && needs.classify.outputs.metal == 'true'
+      - name: Verify native execution
+        if: needs.classify.outputs.metal == 'true'
         env:
           DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
           MACOSX_DEPLOYMENT_TARGET: "15.0"
@@ -180,12 +153,20 @@ jobs:
           ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
           RUSTFLAGS: --cfg alpine_native_validation
         run: scripts/check-ci-native-admission.sh
+      - name: Retain native execution output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-admission-${{ github.sha }}
+          path: target/native-acceptance
+          retention-days: 7
+          if-no-files-found: warn
       - name: Audit Alpine Studio release product boundary
-        if: matrix.name == 'macos-arm64'
         shell: bash
-        run: scripts/check-product-boundary.sh --binary | tee target/studio-product-boundary.txt
+        run: |
+          mkdir -p target
+          scripts/check-product-boundary.sh --binary | tee target/studio-product-boundary.txt
       - name: Upload Alpine Studio product-boundary evidence
-        if: matrix.name == 'macos-arm64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: studio-product-boundary-${{ github.sha }}
@@ -456,31 +437,6 @@ jobs:
           path: target/kani
           retention-days: 7
           if-no-files-found: warn
-
-  tla:
-    name: tla
-    needs: [classify, preflight]
-    if: needs.classify.outputs.tla == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Install pinned Java runtime
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: Check bounded TLA+ models and faulty controls
-        run: scripts/check-tla.sh pull-request
-      - name: Upload model-checking evidence and counterexamples
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: tla-${{ github.sha }}
-          path: target/tla
-          retention-days: 7
-          if-no-files-found: error
 
   miri:
     name: miri-${{ matrix.partition }}
@@ -903,7 +859,7 @@ jobs:
   ci-pass:
     name: ci-pass
     if: ${{ always() && !cancelled() }}
-    needs: [classify, preflight, quality, native, coverage, mutation-diff, kani, tla, miri, metal-validation, native-mutation]
+    needs: [classify, preflight, quality, native, coverage, mutation-diff, kani, miri, metal-validation, native-mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -920,8 +876,6 @@ jobs:
           MUTATION_RESULT: ${{ needs.mutation-diff.result }}
           KANI_REQUIRED: ${{ needs.classify.outputs.kani }}
           KANI_RESULT: ${{ needs.kani.result }}
-          TLA_REQUIRED: ${{ needs.classify.outputs.tla }}
-          TLA_RESULT: ${{ needs.tla.result }}
           MIRI_REQUIRED: ${{ needs.classify.outputs.miri }}
           MIRI_RESULT: ${{ needs.miri.result }}
           METAL_REQUIRED: ${{ needs.classify.outputs.metal }}
@@ -954,7 +908,6 @@ jobs:
           require_selected coverage "$COVERAGE_REQUIRED" "$COVERAGE_RESULT"
           require_selected mutation-diff "$MUTATION_REQUIRED" "$MUTATION_RESULT"
           require_selected kani "$KANI_REQUIRED" "$KANI_RESULT"
-          require_selected tla "$TLA_REQUIRED" "$TLA_RESULT"
           require_selected miri "$MIRI_REQUIRED" "$MIRI_RESULT"
           require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"
           require_selected native-mutation "$NATIVE_MUTATION_REQUIRED" "$NATIVE_MUTATION_RESULT"

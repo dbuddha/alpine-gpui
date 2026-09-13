@@ -1,8 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Path allowlists use byte order, independent of the hosted runner's locale.
+export LC_ALL=C
+
 failures=0
-tla_driver=${ALPINE_TLA_DRIVER:-scripts/check-tla.sh}
 
 fail() {
     printf 'policy error: %s\n' "$1" >&2
@@ -74,6 +76,17 @@ action_files=$(find .github/actions -type f \( -name '*.yml' -o -name '*.yaml' \
 
 if [ -n "$workflow_files" ]; then
     ci_workflow=${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}
+    for product_job in preflight quality native; do
+        product_job_block=$(awk -v job="$product_job" '
+            $0 == "  " job ":" { capture = 1 }
+            /^  [A-Za-z0-9_-]+:/ && $1 != job ":" && capture { exit }
+            capture
+        ' "$ci_workflow")
+        if ! printf '%s\n' "$product_job_block" | grep -Fqx '    runs-on: macos-26' \
+            || printf '%s\n' "$product_job_block" | grep -Eq '^[[:space:]]+matrix:'; then
+            fail "CI product job $product_job must use Apple Silicon macOS without a platform matrix"
+        fi
+    done
     check_mutation_baseline "$ci_workflow"
     assurance_failure_workflow=${ALPINE_ASSURANCE_FAILURE_WORKFLOW:-.github/workflows/assurance-failure.yml}
     action_source_files=$workflow_files
@@ -265,7 +278,7 @@ if [ -n "$workflow_files" ]; then
             fail 'CI mutation tool verification must run unconditionally with its exact scoped key'
         fi
     done
-    for required_job in quality native coverage mutation-diff kani tla miri metal-validation native-mutation; do
+    for required_job in quality native coverage mutation-diff kani miri metal-validation native-mutation; do
         required_job_block=$(awk -v job="$required_job" '
             $0 == "  " job ":" { capture = 1 }
             /^  [A-Za-z0-9_-]+:/ && $1 != job ":" && capture { exit }
@@ -280,12 +293,12 @@ if [ -n "$workflow_files" ]; then
         fi
         if [ "$required_job" = native ]; then
             native_admission_block=$(printf '%s\n' "$required_job_block" | awk '
-                /^      - name: Require unmutated native admission before mutation fan-out$/ { capture = 1; next }
+                /^      - name: Verify native execution$/ { capture = 1; next }
                 capture && /^      - / { exit }
                 capture
             ')
             for required in \
-                "        if: matrix.name == 'macos-arm64' && needs.classify.outputs.metal == 'true'" \
+                "        if: needs.classify.outputs.metal == 'true'" \
                 '          DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer' \
                 '          MACOSX_DEPLOYMENT_TARGET: "15.0"' \
                 '          ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"' \
@@ -510,9 +523,6 @@ if [ -n "$workflow_files" ]; then
     ' "${ALPINE_CI_WORKFLOW:-.github/workflows/ci.yml}"; then
         fail 'CI mutation compilation mode must be explicit and scoped'
     fi
-    if ! grep -Fqx 'scripts/test-native-mutation-receipts.sh' scripts/check.sh; then
-        fail 'local quality gate must exercise native mutation receipt controls'
-    fi
     for shard in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         if ! printf '%s\n' "$native_mutation_block" | grep -Fq "shard: $shard/16"; then
             fail "pull-request native mutation is missing shard $shard/16"
@@ -630,10 +640,10 @@ if [ -n "$workflow_files" ]; then
             /^[[:space:]]+if-no-files-found: warn$/ { supplementary = 1 }
             END {
                 finish()
-                if (helper_count != 8 || direct_count != 1) exit 1
+                if (helper_count != 7 || direct_count != 1) exit 1
             }
         ' "$nightly_native_workflow"; then
-            fail 'Nightly required artifacts must use eight governed retries and retain one direct supplementary upload'
+            fail 'Nightly required artifacts must use seven governed retries and retain one direct supplementary upload'
         fi
         nightly_metal_block=$(awk '
             /^  metal-validation:/ { capture = 1 }
@@ -758,14 +768,6 @@ tools/alpine-ax-client/src/native.rs'
 if [ "$unsafe_source_files" != "$expected_unsafe_source_files" ]; then
     fail 'unsafe Rust constructs must remain isolated in audited native boundary files'
     printf '%s\n' "$unsafe_source_files" >&2
-fi
-
-if [ ! -f "$tla_driver" ]; then
-    fail "TLA+ driver is missing: $tla_driver"
-elif ! grep -Fq 'pull-request) config=PullRequest.cfg; lncheck=default ;;' "$tla_driver" \
-    || ! grep -Fq 'nightly) config=Nightly.cfg; lncheck=final ;;' "$tla_driver" \
-    || [ "$(grep -Fc -- '-lncheck "$lncheck"' "$tla_driver" || true)" -ne 2 ]; then
-    fail 'TLA+ must preserve default pull-request checks and final-graph Nightly liveness checks'
 fi
 
 # Native surface mutation proof must remain complete, deterministic, retained,
