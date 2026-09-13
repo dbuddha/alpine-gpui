@@ -824,9 +824,7 @@ fn run_native(app: EditorApp) -> Result<(), RuntimeError> {
     let mut app = app;
     #[cfg(not(alpine_native_validation))]
     let mut app = app;
-    // Discovery runs here, not in construction, so the test constructors do
-    // not probe the developer's installation or pay for spawning a process.
-    app.rust_diagnostics = rust_diagnostics::discovered();
+    app.adopt_discovered_language_server();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
         .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
     if let Some(capture) = capture.as_ref() {
@@ -2104,6 +2102,15 @@ impl EditorApp {
             ))));
         }
         Ok(app)
+    }
+
+    /// Adopts whatever language server this machine has.
+    ///
+    /// Called from the entry points that actually run the editor, never from
+    /// construction, so test constructors do not probe the host or pay to
+    /// spawn a process.
+    pub(crate) fn adopt_discovered_language_server(&mut self) {
+        self.rust_diagnostics = rust_diagnostics::discovered();
     }
 
     fn prime_workspace_launch(&mut self) -> Result<(), EditorError> {
