@@ -882,8 +882,9 @@ mod tests {
         let blocked_sink = blocked_controller.sink();
         let mut blocked_app =
             EditorApp::new(crate::tests::TestTextSystem).map_err(|error| error.to_string())?;
-        let changed = blocked_app.replace_selection("dirty");
-        assert!(changed.document_changed);
+        blocked_app.last_file_error = Some(alpine_text::FileError::Conflict(
+            alpine_text::ExternalChange::Modified,
+        ));
         blocked_app.dogfood_capture = Some(blocked_sink.clone());
 
         let blocked = blocked_app.handle_close_request();
