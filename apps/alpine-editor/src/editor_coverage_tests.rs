@@ -1891,9 +1891,15 @@ fn dirty_untitled_close_is_allowed_because_command_s_cannot_persist_it()
             .visual_changed
     );
     assert!(app.document.is_dirty());
+    let label = app
+        .tabs
+        .label(app.tabs.active_index())
+        .ok_or("active tab label")?;
+    let expected =
+        format!("{label} has no path. Use File > Save As to keep it, or close to discard.");
     assert_eq!(
         app.local_status.as_ref().map(LocalStatus::message),
-        Some("Untitled has no path. Use File > Save As to keep it, or close to discard.")
+        Some(expected.as_str())
     );
     assert!(
         !app.handle_event_with_response(&SurfaceEvent::CloseRequested {

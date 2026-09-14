@@ -7044,9 +7044,13 @@ impl EditorApp {
                 self.clear_close_status()
             }
             Ok(None) if self.document.is_dirty() => {
-                self.set_local_status(LocalStatus::Command(Arc::from(
-                    "Untitled has no path. Use File > Save As to keep it, or close to discard.",
-                )))
+                let label = self
+                    .tabs
+                    .label(self.tabs.active_index())
+                    .unwrap_or_else(|| Arc::from("Untitled"));
+                self.set_local_status(LocalStatus::Command(Arc::from(format!(
+                    "{label} has no path. Use File > Save As to keep it, or close to discard."
+                ))))
             }
             Ok(None) => EventEffect::default(),
             Err(error) => {
