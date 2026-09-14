@@ -1161,7 +1161,7 @@ fn editor_scene_contains_clipped_glyphs_atlas_and_caret() -> Result<(), EditorRe
         viewport().map_err(|_| EditorRenderError::Domain)?,
     )?;
     assert_eq!(scene.revision(), SceneRevision::new(1));
-    assert_eq!(scene.clips().len(), 2);
+    assert!(scene.clips().len() >= 4);
     assert!(!scene.glyphs().is_empty());
     assert!(scene.glyph_atlas().is_some());
     assert!(scene.quads().len() >= 3);
@@ -1915,15 +1915,16 @@ fn close_blockers_preserve_file_error_recovery_and_activation_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut file_error = test_app()?;
     file_error.last_file_error = Some(FileError::Conflict(ExternalChange::Modified));
-    let label = file_error
-        .tabs
-        .label(file_error.tabs.active_index())
-        .ok_or("active label")?;
-    let blocked = file_error.handle_close_request();
-    assert!(blocked.cancel_close);
+    assert!(
+        file_error
+            .handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let allowed = file_error.handle_close_request();
+    assert!(!allowed.cancel_close);
     assert_eq!(
         file_error.local_status.as_ref().map(LocalStatus::message),
-        Some(format!("Resolve the file error in {label} before closing.").as_str())
+        None
     );
 
     let root = TestWorkspace::new()?;
@@ -1942,6 +1943,8 @@ fn close_blockers_preserve_file_error_recovery_and_activation_identity()
             "Recovered changes in recovered.rs conflict with disk; copy them to safety before closing."
         )
     );
+    let forced = recovered.handle_close_request();
+    assert!(!forced.cancel_close);
 
     root.write("alpha.rs", "alpha")?;
     root.write("beta.rs", "beta")?;
@@ -1965,6 +1968,135 @@ fn close_blockers_preserve_file_error_recovery_and_activation_identity()
         activation_error.local_status,
         Some(LocalStatus::CloseBlocked(_))
     ));
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_family = "windows"))]
+fn deleted_file_save_error_does_not_pin_quit() -> Result<(), Box<dyn std::error::Error>> {
+    let file = TestFile::new("hello")?;
+    let mut app = EditorApp::open_file(TestTextSystem, file.path())?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    fs::remove_file(file.path())?;
+    assert!(
+        app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)))
+            .visual_changed
+            || app.last_file_error.is_some()
+    );
+    assert!(app.last_file_error.is_some());
+    assert!(app.document.is_dirty());
+    assert!(!app.handle_close_request().cancel_close);
+    Ok(())
+}
+
+#[test]
+fn second_quit_discards_a_dirty_persistable_file() -> Result<(), Box<dyn std::error::Error>> {
+    let file = TestFile::new("hello")?;
+    let mut app = EditorApp::open_file(TestTextSystem, file.path())?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    let first = app.handle_close_request();
+    assert!(first.cancel_close);
+    assert!(matches!(
+        app.local_status,
+        Some(LocalStatus::CloseBlocked(ref message)) if message.contains("Command-S")
+    ));
+    let second = app.handle_close_request();
+    assert!(!second.cancel_close);
+    Ok(())
+}
+
+#[test]
+fn unavailable_dirty_buffer_does_not_pin_quit() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    let buffer = Buffer::new("kept");
+    app.document = EditorDocument::Unavailable {
+        clean_revision: buffer.revision().get().saturating_add(1),
+        recovery_base: buffer.snapshot(),
+        buffer,
+        conflict: ExternalChange::Deleted,
+    };
+    assert!(app.document.is_dirty());
+    assert!(!app.document.persistable_with_command_s());
+    assert!(!app.handle_close_request().cancel_close);
+    Ok(())
+}
+
+#[test]
+fn long_tab_labels_are_clipped_to_their_slot() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let long = "alpine-profile-normal-typing-with-a-very-long-name.rs";
+    root.write(long, "fn main() {}\n")?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let workspace = app.workspace.as_ref().ok_or("workspace")?;
+    let long_index = workspace.index_named(long).ok_or("long")?;
+    let main_index = workspace.index_named("main.rs").ok_or("main")?;
+    app.open_workspace_entry(long_index)?;
+    app.open_workspace_entry(main_index)?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let sidebar = app.sidebar_width(viewport);
+    let tab_bar = Rect::new(
+        Point::new(sidebar, 0.0).ok_or("tab origin")?,
+        Size::new((viewport.width() - sidebar).max(1.0), TAB_BAR_HEIGHT).ok_or("tab size")?,
+    );
+    let slot = tab_slot_bounds(sidebar, 1, app.tab_scroll_x)?;
+    let visible_slot = slot.intersection(tab_bar).ok_or("visible slot")?;
+    assert!(
+        scene
+            .clips()
+            .iter()
+            .any(|clip| clip.bounds() == visible_slot),
+        "each tab must clip glyphs to its own slot, not only the tab bar"
+    );
+    let slot_clip_index = scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == visible_slot)
+        .ok_or("slot clip index")?;
+    assert!(scene.glyphs().iter().any(|glyph| {
+        glyph
+            .clip()
+            .is_some_and(|clip| clip.index() == slot_clip_index)
+    }));
+    Ok(())
+}
+
+#[test]
+fn editor_scene_paints_line_numbers_and_a_scroll_thumb() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app()?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let pane = app.active_pane_bounds()?;
+    let gutter = Rect::new(
+        Point::new(pane.origin().x(), pane.origin().y()).ok_or("gutter origin")?,
+        Size::new(GUTTER_WIDTH, pane.size().height()).ok_or("gutter size")?,
+    );
+    let gutter_clip_index = scene
+        .clips()
+        .iter()
+        .position(|clip| clip.bounds() == gutter)
+        .ok_or("gutter clip")?;
+    assert!(
+        scene.glyphs().iter().any(|glyph| {
+            glyph
+                .clip()
+                .is_some_and(|clip| clip.index() == gutter_clip_index)
+        }),
+        "visible lines must paint a gutter line number"
+    );
+    let thumb = scroll_thumb_bounds(pane, app.scroll_y, app.buffer().snapshot().line_count())?
+        .ok_or("thumb")?;
+    assert!(
+        scene.quads().iter().any(|quad| quad.bounds() == thumb),
+        "the editor must paint a scroll thumb so the viewport position is visible"
+    );
     Ok(())
 }
 
@@ -2457,6 +2589,8 @@ fn bounded_workspace_is_sorted_capped_and_projects_only_visible_rows()
     let expected_shapes = u64::try_from(
         projected_tree_rows
             .saturating_add(app.tabs.len())
+            .saturating_add(1)
+            .saturating_add(editor_rows)
             .saturating_add(editor_rows),
     )?;
     TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), expected_shapes));
@@ -2803,7 +2937,9 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
         Some(ByteOffset::new(0))
     );
     assert_eq!(
-        app.offset_at_point(Point::new(268.0, CONTENT_INSET).ok_or("editor glyph")?),
+        app.offset_at_point(
+            Point::new(260.0 + GUTTER_WIDTH + 8.0, CONTENT_INSET).ok_or("editor glyph")?
+        ),
         Some(ByteOffset::new(1))
     );
     let tiny = Size::new(100.0, WINDOW_HEIGHT).ok_or("tiny viewport")?;
@@ -2857,11 +2993,11 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
     exact_paint.selection = Selection::new(ByteOffset::new(1), ByteOffset::new(2));
     let exact_scene = exact_paint.try_scene(SceneRevision::new(1), viewport)?;
     let expected_selection = Rect::new(
-        Point::new(32.0, CONTENT_INSET).ok_or("selection origin")?,
+        Point::new(CONTENT_INSET + GUTTER_WIDTH + 8.0, CONTENT_INSET).ok_or("selection origin")?,
         Size::new(8.0, LINE_HEIGHT).ok_or("selection size")?,
     );
     let expected_caret = Rect::new(
-        Point::new(40.0, CONTENT_INSET).ok_or("caret origin")?,
+        Point::new(CONTENT_INSET + GUTTER_WIDTH + 16.0, CONTENT_INSET).ok_or("caret origin")?,
         Size::new(CARET_WIDTH, LINE_HEIGHT).ok_or("caret size")?,
     );
     assert!(
@@ -2933,7 +3069,8 @@ fn split_views_render_focus_and_close_with_bounded_independent_scroll()
     ];
     for (entry, expected_top) in entries.iter().zip(expected_tops) {
         let expected_selection = Rect::new(
-            Point::new(entry.bounds.origin().x(), expected_top).ok_or("pane selection origin")?,
+            Point::new(entry.bounds.origin().x() + GUTTER_WIDTH, expected_top)
+                .ok_or("pane selection origin")?,
             Size::new(32.0, LINE_HEIGHT).ok_or("pane selection size")?,
         );
         assert!(
@@ -3045,7 +3182,11 @@ fn pane_projection_uses_half_open_bounds_and_relative_lines()
     );
     assert!(
         app.offset_at_point(
-            Point::new(origin.x() + size.width() - 0.5, origin.y()).ok_or("right inside")?
+            Point::new(
+                origin.x() + size.width() - SCROLLBAR_WIDTH - 0.5,
+                origin.y(),
+            )
+            .ok_or("right inside")?,
         )
         .is_some()
     );
@@ -3710,9 +3851,13 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
         .filter(|glyph| glyph.bounds().origin().y() < TAB_BAR_HEIGHT)
         .collect();
     assert!(!tab_glyphs.is_empty());
-    assert!(tab_glyphs.iter().any(|glyph| {
-        glyph.bounds().origin().x().to_bits() == (-76.0_f32).to_bits()
-            && glyph.bounds().origin().y().to_bits() == 16.0_f32.to_bits()
+    assert!(tab_glyphs.iter().all(|glyph| {
+        glyph.clip().is_some_and(|clip| {
+            let bounds = scene.clips()[clip.index()].bounds();
+            bounds.origin().y().to_bits() == 0.0_f32.to_bits()
+                && bounds.origin().x() + bounds.size().width() > SIDEBAR_WIDTH
+                && bounds.origin().x() < SIDEBAR_WIDTH + 320.0
+        })
     }));
     assert!(tab_glyphs.iter().any(|glyph| {
         glyph.bounds().origin().x().to_bits() == 404.0_f32.to_bits()
@@ -3722,7 +3867,7 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
     app.tab_scroll_x = 320.0;
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let mid_scene = app.try_scene(SceneRevision::new(21), small_viewport)?;
-    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 17));
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 14));
     let first_mid_tab = mid_scene
         .glyphs()
         .iter()
@@ -3730,7 +3875,7 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
         .ok_or("first mid tab glyph")?;
     assert_eq!(
         first_mid_tab.bounds().origin().x().to_bits(),
-        (-76.0_f32).to_bits()
+        244.0_f32.to_bits()
     );
     assert_eq!(
         first_mid_tab.bounds().origin().y().to_bits(),
@@ -3810,6 +3955,120 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
             .document_identity_advanced
     );
     assert_eq!(app.tabs.len(), before_close - 1);
+    Ok(())
+}
+
+#[test]
+fn adjacent_tab_keys_cycle_and_close_control_discards_a_tab()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("a.rs", "a")?;
+    root.write("b.rs", "b")?;
+    root.write("c.rs", "c")?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        let index = app
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.index_named(name))
+            .ok_or("workspace entry")?;
+        app.open_workspace_entry(index)?;
+    }
+    assert_eq!(app.tabs.len(), 4);
+    assert_eq!(app.tabs.active_index(), 3);
+    assert!(
+        app.handle_key(
+            KEY_LEFT_BRACKET,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT)
+        )
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 2);
+    assert!(
+        app.handle_key(
+            KEY_RIGHT_BRACKET,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT)
+        )
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 3);
+    assert!(
+        app.handle_key(
+            KEY_LEFT,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION)
+        )
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 2);
+    assert!(
+        app.handle_key(
+            KEY_RIGHT,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION)
+        )
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.active_index(), 3);
+
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    app.last_viewport = viewport;
+    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let sidebar = app.sidebar_width(viewport);
+    let slot = tab_slot_bounds(sidebar, 3, app.tab_scroll_x)?;
+    let close = tab_close_bounds(slot)?;
+    assert!(tab_label_bounds(slot)?.size().width() < TAB_WIDTH);
+    let close_point = Point::new(
+        close.origin().x() + close.size().width() * 0.5,
+        close.origin().y() + close.size().height() * 0.5,
+    )
+    .ok_or("close point")?;
+    let before = app.tabs.len();
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            close_point,
+            PointerButton::Primary,
+            Modifiers::default(),
+        )
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.len(), before - 1);
+
+    app.activate_document_tab(app.tabs.len() - 1)?;
+    let slot = tab_slot_bounds(sidebar, app.tabs.active_index(), app.tab_scroll_x)?;
+    let middle = Point::new(slot.origin().x() + 8.0, TAB_BAR_HEIGHT * 0.5).ok_or("middle")?;
+    let before = app.tabs.len();
+    assert!(
+        app.handle_pointer(
+            PointerAction::Down,
+            middle,
+            PointerButton::Middle,
+            Modifiers::default(),
+        )
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.len(), before - 1);
+    Ok(())
+}
+
+#[test]
+fn closing_the_last_file_tab_leaves_an_untitled_scratch() -> Result<(), Box<dyn std::error::Error>>
+{
+    let file = TestFile::new("fn main() {}")?;
+    let mut app = EditorApp::open_file(TestTextSystem, file.path())?;
+    assert_eq!(app.tabs.len(), 1);
+    assert!(app.tabs.path_at(0).is_some());
+    assert!(
+        app.handle_event(&SurfaceEvent::Menu {
+            timestamp: EventTimestamp::new(1),
+            action: MenuAction::CloseTab,
+        })
+        .document_identity_advanced
+    );
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.tabs.label(0).as_deref(), Some("Untitled"));
+    assert!(app.tabs.path_at(0).is_none());
+    assert!(!app.document.is_file());
+    assert_eq!(app.buffer().snapshot().text(), "");
     Ok(())
 }
 

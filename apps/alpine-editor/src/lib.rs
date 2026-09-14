@@ -190,7 +190,6 @@ use settings::{FONT_SCALE as DEFAULT_SCALE, KEY_A, KEY_E, KEY_F, KEY_P, KEY_S};
 use settings::{
     KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
 };
-#[cfg(test)]
 use syntax::SyntaxClass;
 use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLanguage, SyntaxLine};
 use workspace::Workspace;
@@ -213,6 +212,82 @@ const TREE_OVERSCAN_ROWS: usize = 3;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 const TAB_WIDTH: f32 = 160.0;
 const TAB_OVERSCAN: usize = 2;
+const TAB_CLOSE_INSET: f32 = 4.0;
+const TAB_CLOSE_SIZE: f32 = 16.0;
+const GUTTER_WIDTH: f32 = 48.0;
+const GUTTER_NUMBER_INSET: f32 = 8.0;
+const SCROLLBAR_WIDTH: f32 = 8.0;
+const SCROLLBAR_MIN_THUMB: f32 = 24.0;
+
+fn editor_text_origin_x(pane_origin_x: f32) -> f32 {
+    pane_origin_x + GUTTER_WIDTH
+}
+
+fn editor_text_width(pane_width: f32) -> f32 {
+    (pane_width - GUTTER_WIDTH - SCROLLBAR_WIDTH).max(1.0)
+}
+
+fn tab_slot_bounds(sidebar: f32, index: usize, scroll_x: f32) -> Result<Rect, EditorRenderError> {
+    let left = sidebar + usize_as_f32(index) * TAB_WIDTH - scroll_x;
+    Ok(Rect::new(
+        Point::new(left, 0.0).ok_or(EditorRenderError::Domain)?,
+        Size::new(TAB_WIDTH, TAB_BAR_HEIGHT).ok_or(EditorRenderError::Domain)?,
+    ))
+}
+
+fn tab_close_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
+    let width = TAB_CLOSE_SIZE.min(slot.size().width());
+    let left = slot.origin().x() + slot.size().width() - width - TAB_CLOSE_INSET;
+    let top = ((TAB_BAR_HEIGHT - width) * 0.5).max(0.0);
+    Ok(Rect::new(
+        Point::new(left, top).ok_or(EditorRenderError::Domain)?,
+        Size::new(width, width).ok_or(EditorRenderError::Domain)?,
+    ))
+}
+
+#[cfg(test)]
+fn tab_label_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
+    let reserved = TAB_CLOSE_SIZE + TAB_CLOSE_INSET * 2.0;
+    let width = (slot.size().width() - reserved).max(1.0);
+    Ok(Rect::new(
+        slot.origin(),
+        Size::new(width, slot.size().height()).ok_or(EditorRenderError::Domain)?,
+    ))
+}
+
+fn point_in_rect(rect: Rect, point: Point) -> bool {
+    let origin = rect.origin();
+    let size = rect.size();
+    point.x() >= origin.x()
+        && point.x() < origin.x() + size.width()
+        && point.y() >= origin.y()
+        && point.y() < origin.y() + size.height()
+}
+
+fn scroll_thumb_bounds(
+    pane: Rect,
+    scroll_y: f32,
+    line_count: usize,
+) -> Result<Option<Rect>, EditorRenderError> {
+    let track_height = (pane.size().height() - LINE_HEIGHT).max(1.0);
+    let content_height = (usize_as_f32(line_count.max(1)) * LINE_HEIGHT).max(track_height);
+    let thumb_height =
+        (track_height * (track_height / content_height)).clamp(SCROLLBAR_MIN_THUMB, track_height);
+    let max_scroll = (content_height - track_height).max(0.0);
+    let travel = (track_height - thumb_height).max(0.0);
+    let thumb_top = if max_scroll <= 0.0 {
+        pane.origin().y()
+    } else {
+        pane.origin().y() + (scroll_y / max_scroll).clamp(0.0, 1.0) * travel
+    };
+    let origin = Point::new(
+        pane.origin().x() + pane.size().width() - SCROLLBAR_WIDTH,
+        thumb_top,
+    )
+    .ok_or(EditorRenderError::Domain)?;
+    let size = Size::new(SCROLLBAR_WIDTH, thumb_height).ok_or(EditorRenderError::Domain)?;
+    Ok(Some(Rect::new(origin, size)))
+}
 const FIND_BAR_WIDTH: f32 = 420.0;
 const FIND_BAR_HEIGHT: f32 = 30.0;
 const FIND_BAR_INSET: f32 = 8.0;
@@ -1802,6 +1877,15 @@ impl EditorDocument {
     const fn is_unavailable(&self) -> bool {
         matches!(self, Self::Unavailable { .. })
     }
+
+    /// Command-S can persist only a path-backed file that is still writable.
+    ///
+    /// Scratch has no path. Recovered and unavailable documents return a
+    /// conflict from `save`, so blocking quit on Command-S leaves the process
+    /// running with no way to persist or exit.
+    const fn persistable_with_command_s(&self) -> bool {
+        matches!(self, Self::File { .. })
+    }
 }
 
 #[cfg(test)]
@@ -1930,6 +2014,7 @@ struct EditorApp {
     clipboard_failures: u64,
     last_save: Option<SaveReport>,
     last_file_error: Option<FileError>,
+    close_attempts: u8,
     last_clipboard_error: Option<ClipboardError>,
     workspace_failures: u64,
     last_workspace_error: Option<Arc<str>>,
@@ -2258,6 +2343,7 @@ impl EditorApp {
             clipboard_failures: 0,
             last_save: None,
             last_file_error: None,
+            close_attempts: 0,
             last_clipboard_error: None,
             workspace_failures: 0,
             last_workspace_error: None,
@@ -2388,6 +2474,8 @@ impl EditorApp {
         if app.workspace.is_some() {
             app.file_tree
                 .restore_session(1, &file_tree)
+                .map_err(|_| SessionRestoreError::FileTree)?;
+            app.prime_workspace_launch()
                 .map_err(|_| SessionRestoreError::FileTree)?;
         }
         let restored_tabs = tabs
@@ -2885,6 +2973,7 @@ impl EditorApp {
             .map_err(|_| EditorRenderError::Domain)?;
         let active_pane = pane_layout.active().ok_or(EditorRenderError::Domain)?;
         let editor_origin_x = active_pane.bounds.origin().x();
+        let editor_text_x = editor_text_origin_x(editor_origin_x);
         let content_size = active_pane.bounds.size();
         let line_height = PositiveFinite::new(LINE_HEIGHT).ok_or(EditorRenderError::Domain)?;
         let font = self.resolved_font()?;
@@ -2992,16 +3081,30 @@ impl EditorApp {
             builder.push_quad(active_quad)?;
         }
 
+        let close_layout = self.text_system.shape("x", font)?;
         for (index, label) in &tab_labels {
-            let left = sidebar_width + usize_as_f32(*index) * TAB_WIDTH - self.tab_scroll_x;
+            let slot = tab_slot_bounds(sidebar_width, *index, self.tab_scroll_x)?;
+            let Some(visible_slot) = slot.intersection(tab_bounds) else {
+                continue;
+            };
+            let slot_clip = builder.push_clip(Clip::new(visible_slot));
             let layout = self.text_system.shape(label, font)?;
             pending_glyphs.extend(self.collect_glyphs(
                 &layout,
                 font,
-                left + 8.0,
+                slot.origin().x() + 8.0,
                 layout.ascent() + 4.0,
-                tab_clip,
+                slot_clip,
             )?);
+            if tab_close_bounds(slot)?.intersection(visible_slot).is_some() {
+                pending_glyphs.extend(self.collect_glyphs(
+                    &close_layout,
+                    font,
+                    slot.origin().x() + TAB_WIDTH - TAB_CLOSE_SIZE - TAB_CLOSE_INSET + 2.0,
+                    close_layout.ascent() + 4.0,
+                    slot_clip,
+                )?);
+            }
         }
         self.record_profile(EditorSignpostStage::VisibleLayoutBegin, revision, [0; 3]);
         let projection = self
@@ -3029,8 +3132,8 @@ impl EditorApp {
             let pane_scroll = pane_view.scroll_y;
             let viewport_height = PositiveFinite::new(pane.bounds.size().height())
                 .ok_or(EditorRenderError::Domain)?;
-            let wrap_width =
-                PositiveFinite::new(pane.bounds.size().width()).ok_or(EditorRenderError::Domain)?;
+            let wrap_width = PositiveFinite::new(editor_text_width(pane.bounds.size().width()))
+                .ok_or(EditorRenderError::Domain)?;
             let pane_projection = projection.as_ref().filter(|_| pane.active);
             let visible = VisibleLines::new(
                 pane_projection.map_or_else(
@@ -3043,7 +3146,15 @@ impl EditorApp {
                 DEFAULT_OVERSCAN_LINES,
             )?;
             let pane_origin_x = pane.bounds.origin().x();
+            let text_origin_x = editor_text_origin_x(pane_origin_x);
             let pane_selection = pane_view.selection.range();
+            let gutter_clip = builder.push_clip(Clip::new(Rect::new(
+                Point::new(pane_origin_x, pane.bounds.origin().y())
+                    .ok_or(EditorRenderError::Domain)?,
+                Size::new(GUTTER_WIDTH, pane.bounds.size().height())
+                    .ok_or(EditorRenderError::Domain)?,
+            )));
+            let gutter_color = syntax_palette.color(SyntaxClass::Comment);
             for line in visible.laid_out() {
                 let projected_line = pane_projection
                     .map(|projection| projection.line(line))
@@ -3087,7 +3198,7 @@ impl EditorApp {
                             &layout,
                             found.clone(),
                             find_match_color,
-                            pane_origin_x,
+                            text_origin_x,
                         )?;
                     }
                 }
@@ -3101,7 +3212,7 @@ impl EditorApp {
                         &layout,
                         pane_selection.clone(),
                         selection_color,
-                        pane_origin_x,
+                        text_origin_x,
                     );
                     selection_result?;
                 }
@@ -3122,7 +3233,7 @@ impl EditorApp {
                         unused_mut,
                         reason = "test fault injection replaces this validated pane origin"
                     )]
-                    let mut diagnostic_origin_x = pane_origin_x;
+                    let mut diagnostic_origin_x = text_origin_x;
                     #[cfg(test)]
                     if let Some(override_origin_x) = self.diagnostic_origin_x_override {
                         diagnostic_origin_x = override_origin_x;
@@ -3150,16 +3261,27 @@ impl EditorApp {
                     self.collect_syntax_glyphs(
                         &layout,
                         font,
-                        pane_origin_x,
+                        text_origin_x,
                         baseline,
                         pane_clip,
                         syntax_line,
                         syntax_palette,
                     )?
                 } else {
-                    self.collect_glyphs(&layout, font, pane_origin_x, baseline, pane_clip)?
+                    self.collect_glyphs(&layout, font, text_origin_x, baseline, pane_clip)?
                 };
                 pending_glyphs.extend(glyphs);
+                let line_number = line.saturating_add(1).to_string();
+                let number_layout = self.text_system.shape(&line_number, font)?;
+                let number_x =
+                    (pane_origin_x + GUTTER_WIDTH - GUTTER_NUMBER_INSET - number_layout.width())
+                        .max(pane_origin_x);
+                let mut number_glyphs =
+                    self.collect_glyphs(&number_layout, font, number_x, baseline, gutter_clip)?;
+                for glyph in &mut number_glyphs {
+                    glyph.color = Some(gutter_color);
+                }
+                pending_glyphs.extend(number_glyphs);
                 if pane.active {
                     rendered_lines.push(RenderedLine {
                         line,
@@ -3168,6 +3290,16 @@ impl EditorApp {
                         layout,
                     });
                 }
+            }
+            if let Some(thumb) = scroll_thumb_bounds(
+                pane.bounds,
+                pane_scroll,
+                pane_projection.map_or_else(
+                    || pane_snapshot.line_count(),
+                    composition::Projection::line_count,
+                ),
+            )? {
+                builder.push_quad(Quad::new(thumb, active_tab_color).clipped(pane_clip))?;
             }
         }
         self.record_profile(
@@ -3201,7 +3333,7 @@ impl EditorApp {
                     start..end,
                 )? {
                     let origin = Point::new(
-                        editor_origin_x + left,
+                        editor_text_x + left,
                         rendered.baseline + rendered.layout.descent() + 1.0,
                     )
                     .ok_or(EditorRenderError::Domain)?;
@@ -3223,7 +3355,7 @@ impl EditorApp {
                         selected,
                     )? {
                         let bounds = Rect::new(
-                            Point::new(editor_origin_x + left, rendered.top)
+                            Point::new(editor_text_x + left, rendered.top)
                                 .ok_or(EditorRenderError::Domain)?,
                             Size::new((right - left).max(1.0), LINE_HEIGHT)
                                 .ok_or(EditorRenderError::Domain)?,
@@ -3247,7 +3379,7 @@ impl EditorApp {
             && !self.project_search.is_open()
             && !self.command_palette.is_open()
             && !self.file_tree.is_focused()
-            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_origin_x)?
+            && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_text_x)?
         {
             builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
         }
@@ -4288,6 +4420,17 @@ impl EditorApp {
             self.close_blocking_document()
         };
         if let Some((index, message)) = blocker {
+            // A second Cmd-Q or Force Quit discards. The first attempt already
+            // showed why close was refused; pinning the process after that is
+            // how Force Quit of a responding app became a no-op.
+            if self.close_attempts >= 1 {
+                self.close_attempts = 0;
+                if let Some(capture) = self.dogfood_capture.as_ref() {
+                    capture.capture(self);
+                }
+                return EditorTransition::default();
+            }
+            self.close_attempts = 1;
             let mut effect = EventEffect::default();
             if index != self.tabs.active_index() {
                 effect = match self.activate_document_tab(index) {
@@ -4302,6 +4445,7 @@ impl EditorApp {
                 cancel_close: true,
             }
         } else {
+            self.close_attempts = 0;
             if let Some(capture) = self.dogfood_capture.as_ref() {
                 capture.capture(self);
             }
@@ -4315,29 +4459,41 @@ impl EditorApp {
             .chain((0..self.tabs.len()).filter(|index| *index != active))
             .find_map(|index| {
                 let document = self.tabs.document_at(index, &self.document).ok()?;
-                let file_error = index == active && self.last_file_error.is_some();
-                if !document.is_dirty() && !file_error {
+                if document.has_recovery_conflict() {
+                    let label = self
+                        .tabs
+                        .label(index)
+                        .unwrap_or_else(|| Arc::from("this document"));
+                    return Some((
+                        index,
+                        Arc::from(format!(
+                            "Recovered changes in {label} conflict with disk; copy them to safety before closing."
+                        )),
+                    ));
+                }
+                if !document.is_dirty() {
                     return None;
                 }
-                // Scratch has no path. Command-S is a no-op, so blocking quit
-                // leaves the process running with no way to persist or exit.
-                if !document.is_file() && !file_error {
+                // Scratch, unavailable buffers, and a file whose last save
+                // failed cannot be persisted with Command-S. Blocking quit
+                // leaves the process running: AppKit Force Quit of a
+                // responding app takes the same terminate path we cancel.
+                if !document.persistable_with_command_s() {
+                    return None;
+                }
+                if index == active && self.last_file_error.is_some() {
                     return None;
                 }
                 let label = self
                     .tabs
                     .label(index)
                     .unwrap_or_else(|| Arc::from("this document"));
-                let message = if file_error {
-                    format!("Resolve the file error in {label} before closing.")
-                } else if document.has_recovery_conflict() {
-                    format!(
-                        "Recovered changes in {label} conflict with disk; copy them to safety before closing."
-                    )
-                } else {
-                    format!("Save changes in {label} with Command-S before closing.")
-                };
-                Some((index, Arc::from(message)))
+                Some((
+                    index,
+                    Arc::from(format!(
+                        "Save changes in {label} with Command-S before closing."
+                    )),
+                ))
             })
     }
 
@@ -5179,9 +5335,10 @@ impl EditorApp {
         let editor_bounds = self.editor_region(self.last_viewport).ok();
         CommandContext {
             can_save: self.document.is_file() && self.document.is_dirty(),
-            can_close_tab: self.tabs.len() > 1 && self.last_file_error.is_none(),
+            can_close_tab: self.last_file_error.is_none(),
             can_navigate_back: self.tabs.can_navigate_back(),
             can_navigate_forward: self.tabs.can_navigate_forward(),
+            can_cycle_tabs: self.tabs.len() > 1,
             has_workspace: self.workspace.is_some(),
             can_split_right: editor_bounds
                 .is_some_and(|bounds| self.panes.can_split(SplitAxis::Columns, bounds)),
@@ -5199,6 +5356,8 @@ impl EditorApp {
             EditorCommand::CloseTab => self.close_active_tab_or_record(),
             EditorCommand::NavigateBack => self.navigate_document_history(false),
             EditorCommand::NavigateForward => self.navigate_document_history(true),
+            EditorCommand::ActivatePreviousTab => self.activate_adjacent_tab(false),
+            EditorCommand::ActivateNextTab => self.activate_adjacent_tab(true),
             EditorCommand::OpenFind => {
                 self.pointer_selecting = false;
                 self.go_to_line.close();
@@ -6137,22 +6296,11 @@ impl EditorApp {
             return EventEffect::default();
         }
         if action == PointerAction::Down
-            && button == PointerButton::Primary
+            && matches!(button, PointerButton::Primary | PointerButton::Middle)
             && position.y() < TAB_BAR_HEIGHT
             && position.x() >= self.sidebar_width(self.last_viewport)
         {
-            self.pointer_selecting = false;
-            self.file_tree.unfocus();
-            let tab_position = (position.x() - self.sidebar_width(self.last_viewport)
-                + self.tab_scroll_x)
-                / TAB_WIDTH;
-            let Some(index) = floor_f32_to_usize(tab_position) else {
-                return EventEffect::default();
-            };
-            return match self.activate_document_tab(index) {
-                Ok(effect) => effect,
-                Err(error) => self.record_workspace_error(&error),
-            };
+            return self.handle_tab_strip_pointer(position, button);
         }
         if action == PointerAction::Down
             && button == PointerButton::Primary
@@ -6212,6 +6360,36 @@ impl EditorApp {
         pane_focus.merge(pointer_effect)
     }
 
+    fn handle_tab_strip_pointer(&mut self, position: Point, button: PointerButton) -> EventEffect {
+        self.pointer_selecting = false;
+        self.file_tree.unfocus();
+        let tab_position =
+            (position.x() - self.sidebar_width(self.last_viewport) + self.tab_scroll_x) / TAB_WIDTH;
+        let Some(index) = floor_f32_to_usize(tab_position) else {
+            return EventEffect::default();
+        };
+        if index >= self.tabs.len() {
+            return self.record_workspace_error(&WorkspaceSelectionError::Tabs(
+                DocumentTabError::MissingTab(index),
+            ));
+        }
+        let Ok(slot) = tab_slot_bounds(
+            self.sidebar_width(self.last_viewport),
+            index,
+            self.tab_scroll_x,
+        ) else {
+            return EventEffect::default();
+        };
+        let close_hit = tab_close_bounds(slot).is_ok_and(|bounds| point_in_rect(bounds, position));
+        if button == PointerButton::Middle || close_hit {
+            return self.close_document_tab(index);
+        }
+        match self.activate_document_tab(index) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
     fn focus_pane_for_pointer(
         &mut self,
         action: PointerAction,
@@ -6237,8 +6415,10 @@ impl EditorApp {
     fn offset_at_point(&mut self, position: Point) -> Option<ByteOffset> {
         let bounds = self.active_pane_bounds().ok()?;
         let origin_x = bounds.origin().x();
+        let text_origin_x = editor_text_origin_x(origin_x);
+        let right = origin_x + bounds.size().width() - SCROLLBAR_WIDTH;
         if position.x() < origin_x
-            || position.x() >= origin_x + bounds.size().width()
+            || position.x() >= right
             || position.y() >= bounds.origin().y() + bounds.size().height()
             || (self.panes.len() > 1 && position.y() < bounds.origin().y())
         {
@@ -6272,7 +6452,7 @@ impl EditorApp {
         let line_range = display_snapshot.line_byte_range(local).ok()?;
         let text = display_snapshot.slice(line_range.clone()).ok()?;
         let content = text.trim_end_matches(['\r', '\n']);
-        let x = (position.x() - origin_x).max(0.0);
+        let x = (position.x() - text_origin_x).max(0.0);
         let target_utf16 = self
             .rendered_lines
             .iter()
@@ -6881,6 +7061,39 @@ impl EditorApp {
         }
     }
 
+    fn activate_adjacent_tab(&mut self, forward: bool) -> EventEffect {
+        let len = self.tabs.len();
+        if len <= 1 {
+            return EventEffect::default();
+        }
+        let active = self.tabs.active_index();
+        let index = if forward {
+            let next = active.saturating_add(1);
+            if next < len { next } else { 0 }
+        } else if active == 0 {
+            len.saturating_sub(1)
+        } else {
+            active.saturating_sub(1)
+        };
+        match self.activate_document_tab(index) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
+    fn close_document_tab(&mut self, index: usize) -> EventEffect {
+        if index >= self.tabs.len() {
+            return EventEffect::default();
+        }
+        if index != self.tabs.active_index() {
+            match self.activate_document_tab(index) {
+                Ok(_) => {}
+                Err(error) => return self.record_workspace_error(&error),
+            }
+        }
+        self.close_active_tab_or_record()
+    }
+
     fn close_active_tab_or_record(&mut self) -> EventEffect {
         match self.close_active_tab() {
             Ok(effect) => effect,
@@ -6889,18 +7102,31 @@ impl EditorApp {
     }
 
     fn close_active_tab(&mut self) -> Result<EventEffect, WorkspaceSelectionError> {
-        if self.document.is_dirty() || self.last_file_error.is_some() {
+        if (self.document.persistable_with_command_s() && self.document.is_dirty())
+            || self.last_file_error.is_some()
+        {
             return Err(WorkspaceSelectionError::DirtyDocument);
+        }
+        let next_revision = self
+            .runtime_document_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        if self.tabs.len() == 1 {
+            self.tabs
+                .reset_active_to_scratch()
+                .map_err(WorkspaceSelectionError::Tabs)?;
+            self.document = EditorDocument::scratch("");
+            self.runtime_document_revision = next_revision;
+            self.active_workspace_entry = None;
+            self.last_file_error = None;
+            self.apply_document_view(DocumentViewState::default());
+            return Ok(EventEffect::document_replacement());
         }
         let target = self
             .tabs
             .close_target()
             .map_err(WorkspaceSelectionError::Tabs)?;
         self.ensure_document_tab_loaded(target)?;
-        let next_revision = self
-            .runtime_document_revision
-            .checked_add(1)
-            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
         let closed = self
             .tabs
             .active_id()
@@ -6951,6 +7177,7 @@ impl EditorApp {
             MenuAction::OpenPath(path) => self.open_menu_path(path),
             MenuAction::Save => self.save_document(),
             MenuAction::SaveAsPath(path) => self.save_document_as(path),
+            MenuAction::CloseTab => self.close_active_tab_or_record(),
         }
     }
 
@@ -10194,6 +10421,9 @@ mod session_integration_tests {
 
         let mut app = EditorApp::from_session(tests::TestTextSystem, state.clone())
             .map_err(|error| error.to_string())?;
+        assert!(app.file_tree.is_visible());
+        assert!(app.file_tree.is_active());
+        assert!(!app.file_tree.is_focused());
         assert_eq!(app.tabs.is_deferred(2), Ok(true));
         assert!(matches!(
             app.activate_document_tab(2),

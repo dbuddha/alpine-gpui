@@ -85,6 +85,11 @@ define_class!(
                 self.emit(MenuAction::SaveAsPath(path));
             }
         }
+
+        #[unsafe(method(alpineCloseTab:))]
+        fn close_tab(&self, _sender: Option<&AnyObject>) {
+            self.emit(MenuAction::CloseTab);
+        }
     }
 );
 
@@ -279,10 +284,12 @@ fn file_menu(mtm: MainThreadMarker, main: &NSMenu, target: &MenuTarget) {
         main,
         "File",
         &[
-            // New File is absent on purpose: DocumentTabs::insert_and_activate
-            // requires a path, so a scratch tab cannot be inserted without a
-            // pathless insert API. Replacing the active document in place left
-            // the tab pointing at the old file, which lost work on tab switch.
+            // New File and New Window are absent on purpose. A scratch
+            // tab cannot be inserted without a pathless insert API, and
+            // a second window is Phase 5.1 (independent projects).
+            // Until New Window exists, quit must not pin the process:
+            // AppKit Force Quit of a responding app takes the same
+            // terminate path as Cmd-Q.
             //
             // One Open, accepting a file or a folder, as Zed does. A separate
             // Cmd+Shift+O would take the outline shortcut: AppKit consumes menu
@@ -318,10 +325,17 @@ fn file_menu(mtm: MainThreadMarker, main: &NSMenu, target: &MenuTarget) {
             }),
             None,
             Some(Item {
+                title: "Close Tab",
+                selector: sel!(alpineCloseTab:),
+                key: "w",
+                shift: false,
+                owned: true,
+            }),
+            Some(Item {
                 title: "Close Window",
                 selector: sel!(performClose:),
                 key: "w",
-                shift: false,
+                shift: true,
                 owned: false,
             }),
         ],
