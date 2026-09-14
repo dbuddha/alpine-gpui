@@ -271,8 +271,9 @@ fn scroll_thumb_bounds(
 ) -> Result<Option<Rect>, EditorRenderError> {
     let track_height = (pane.size().height() - LINE_HEIGHT).max(1.0);
     let content_height = (usize_as_f32(line_count.max(1)) * LINE_HEIGHT).max(track_height);
+    let min_thumb = SCROLLBAR_MIN_THUMB.min(track_height);
     let thumb_height =
-        (track_height * (track_height / content_height)).clamp(SCROLLBAR_MIN_THUMB, track_height);
+        (track_height * (track_height / content_height)).clamp(min_thumb, track_height);
     let max_scroll = (content_height - track_height).max(0.0);
     let travel = (track_height - thumb_height).max(0.0);
     let thumb_top = if max_scroll <= 0.0 {
@@ -4213,6 +4214,7 @@ impl EditorApp {
     }
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> EditorTransition {
+        self.clear_armed_close_on_interaction(event);
         let dismissed_recovery = self.dismiss_recovery_on_interaction(event);
         if matches!(
             event,
@@ -4567,6 +4569,27 @@ impl EditorApp {
             EventEffect::visual()
         } else {
             EventEffect::default()
+        }
+    }
+
+    fn clear_armed_close_on_interaction(&mut self, event: &SurfaceEvent) {
+        if self.close_attempts == 0 {
+            return;
+        }
+        let user_interaction = matches!(
+            event,
+            SurfaceEvent::Keyboard {
+                state: KeyState::Down,
+                ..
+            } | SurfaceEvent::Pointer {
+                action: PointerAction::Down,
+                ..
+            } | SurfaceEvent::Menu { .. }
+                | SurfaceEvent::Ime { .. }
+                | SurfaceEvent::Scroll { .. }
+        );
+        if user_interaction {
+            self.close_attempts = 0;
         }
     }
 
@@ -7085,13 +7108,14 @@ impl EditorApp {
         if index >= self.tabs.len() {
             return EventEffect::default();
         }
+        let mut effect = EventEffect::default();
         if index != self.tabs.active_index() {
             match self.activate_document_tab(index) {
-                Ok(_) => {}
+                Ok(activate) => effect = effect.merge(activate),
                 Err(error) => return self.record_workspace_error(&error),
             }
         }
-        self.close_active_tab_or_record()
+        effect.merge(self.close_active_tab_or_record())
     }
 
     fn close_active_tab_or_record(&mut self) -> EventEffect {

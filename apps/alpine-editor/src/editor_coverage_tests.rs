@@ -2012,6 +2012,27 @@ fn second_quit_discards_a_dirty_persistable_file() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn editing_after_a_blocked_quit_requires_a_fresh_warning() -> Result<(), Box<dyn std::error::Error>>
+{
+    let file = TestFile::new("hello")?;
+    let mut app = EditorApp::open_file(TestTextSystem, file.path())?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    assert!(app.handle_close_request().cancel_close);
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("y".into())))
+            .document_changed
+    );
+    let after_edit = app.handle_close_request();
+    assert!(after_edit.cancel_close);
+    let discard = app.handle_close_request();
+    assert!(!discard.cancel_close);
+    Ok(())
+}
+
+#[test]
 fn unavailable_dirty_buffer_does_not_pin_quit() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = test_app()?;
     let buffer = Buffer::new("kept");
@@ -2097,6 +2118,20 @@ fn editor_scene_paints_line_numbers_and_a_scroll_thumb() -> Result<(), Box<dyn s
         scene.quads().iter().any(|quad| quad.bounds() == thumb),
         "the editor must paint a scroll thumb so the viewport position is visible"
     );
+    Ok(())
+}
+
+#[test]
+fn scroll_thumb_fits_a_shorter_track_than_the_minimum_thumb()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pane = Rect::new(
+        Point::new(0.0, 0.0).ok_or("origin")?,
+        Size::new(120.0, 10.0).ok_or("tiny pane")?,
+    );
+    let thumb = scroll_thumb_bounds(pane, 0.0, 64)?.ok_or("thumb")?;
+    let track_height = (pane.size().height() - LINE_HEIGHT).max(1.0);
+    assert!(thumb.size().height() <= track_height);
+    assert!(thumb.size().height() >= 1.0);
     Ok(())
 }
 
@@ -4047,6 +4082,48 @@ fn adjacent_tab_keys_cycle_and_close_control_discards_a_tab()
         .document_identity_advanced
     );
     assert_eq!(app.tabs.len(), before - 1);
+    Ok(())
+}
+
+#[test]
+fn closing_a_dirty_background_tab_activates_it_and_repaints()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("a.rs", "alpha")?;
+    root.write("b.rs", "beta")?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let a = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("a.rs"))
+        .ok_or("a.rs")?;
+    let b = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("b.rs"))
+        .ok_or("b.rs")?;
+    app.open_workspace_entry(a)?;
+    app.open_workspace_entry(b)?;
+    let dirty = (0..app.tabs.len())
+        .find(|index| app.tabs.label(*index).as_deref() == Some("a.rs"))
+        .ok_or("a.rs tab")?;
+    let clean = (0..app.tabs.len())
+        .find(|index| app.tabs.label(*index).as_deref() == Some("b.rs"))
+        .ok_or("b.rs tab")?;
+    app.activate_document_tab(dirty)?;
+    assert!(
+        app.handle_event(&ime(ImeEvent::Committed("x".into())))
+            .document_changed
+    );
+    app.activate_document_tab(clean)?;
+    assert_ne!(dirty, app.tabs.active_index());
+    let tab_count = app.tabs.len();
+    let effect = app.close_document_tab(dirty);
+    assert_eq!(app.tabs.len(), tab_count);
+    assert_eq!(app.tabs.active_index(), dirty);
+    assert!(app.document.is_dirty());
+    assert!(effect.visual_changed);
+    assert!(effect.document_identity_advanced);
     Ok(())
 }
 
