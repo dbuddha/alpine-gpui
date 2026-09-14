@@ -590,7 +590,7 @@ fn command_context_distinguishes_scratch_dirty_and_each_close_guard()
     );
     let scratch_context = scratch.command_context();
     assert!(!scratch_context.can_save);
-    assert!(!scratch_context.can_close_tab);
+    assert!(scratch_context.can_close_tab);
 
     let file = TempFile::new("first")?;
     let second = file.root.join("second.rs");
@@ -676,7 +676,7 @@ fn command_focus_distinguishes_modifiers_and_suppresses_clipboard()
             .into_iter()
             .find(|row| row.selected)
             .map(|row| row.command),
-        Some(EditorCommand::OpenFind)
+        Some(EditorCommand::CloseTab)
     );
 
     let executions = app.command_palette.report().executions;

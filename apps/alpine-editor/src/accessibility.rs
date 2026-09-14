@@ -1032,7 +1032,7 @@ mod native_text_geometry_tests {
             if glyph.advance() <= 0.0 {
                 continue;
             }
-            let midpoint = origin.x() + glyph.x() + glyph.advance() * 0.5;
+            let midpoint = origin.x() + crate::GUTTER_WIDTH + glyph.x() + glyph.advance() * 0.5;
             let highlighted = selected.iter().any(|rect| {
                 midpoint >= rect.origin().x() && midpoint < rect.origin().x() + rect.size().width()
             });
@@ -2364,6 +2364,7 @@ mod tests {
             can_close_tab: true,
             can_navigate_back: true,
             can_navigate_forward: true,
+            can_cycle_tabs: true,
             has_workspace: true,
             can_split_right: true,
             can_split_down: true,

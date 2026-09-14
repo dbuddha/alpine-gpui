@@ -862,14 +862,13 @@ fn diagnostic_scene_adds_clipped_marker_and_bounded_message_then_clears()
         .active()
         .ok_or("active pane")?
         .bounds;
-    let exact = Rect::new(
-        Point::new(pane.origin().x() + 24.0, pane.origin().y() + 20.0).ok_or("underline origin")?,
-        Size::new(48.0, 1.0).ok_or("underline size")?,
-    );
-    let to_line_end = Rect::new(
-        Point::new(pane.origin().x() + 24.0, pane.origin().y() + 20.0).ok_or("span origin")?,
-        Size::new(88.0, 1.0).ok_or("span size")?,
-    );
+    let marker_origin = Point::new(
+        pane.origin().x() + GUTTER_WIDTH + 24.0,
+        pane.origin().y() + 20.0,
+    )
+    .ok_or("marker origin")?;
+    let exact = Rect::new(marker_origin, Size::new(48.0, 1.0).ok_or("underline size")?);
+    let to_line_end = Rect::new(marker_origin, Size::new(88.0, 1.0).ok_or("span size")?);
     assert_eq!(
         underlines
             .iter()

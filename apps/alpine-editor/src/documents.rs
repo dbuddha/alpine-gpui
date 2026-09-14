@@ -352,6 +352,26 @@ impl<T> DocumentTabs<T> {
         })
     }
 
+    /// Turns the active tab into an empty untitled scratch without removing it.
+    ///
+    /// The tab set never goes empty: closing the last file tab lands here.
+    pub(crate) fn reset_active_to_scratch(&mut self) -> Result<(), DocumentTabError> {
+        let tab = self
+            .tabs
+            .get_mut(self.active)
+            .ok_or(DocumentTabError::MissingTab(self.active))?;
+        self.retained_path_bytes = self
+            .retained_path_bytes
+            .saturating_sub(tab.retained_path_bytes);
+        tab.path = None;
+        tab.label = Arc::from("Untitled");
+        tab.retained_path_bytes = 0;
+        tab.workspace_entry = None;
+        tab.deferred = false;
+        tab.view = DocumentViewState::default();
+        Ok(())
+    }
+
     pub(crate) fn view_at(
         &self,
         index: usize,
@@ -728,6 +748,24 @@ mod tests {
             selection: Selection::caret(ByteOffset::new(offset)),
             scroll_y,
         }
+    }
+
+    #[test]
+    fn last_tab_resets_to_untitled_scratch_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tabs = DocumentTabs::<String>::new(
+            Some(Path::new("/root/a.rs")),
+            Some(1),
+            DocumentTabLimits::new(4, 1_024, 4),
+        )?;
+        assert_eq!(tabs.close_target(), Err(DocumentTabError::LastTab));
+        assert_eq!(tabs.label(0).as_deref(), Some("a.rs"));
+        tabs.reset_active_to_scratch()?;
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.label(0).as_deref(), Some("Untitled"));
+        assert_eq!(tabs.path_at(0), None);
+        assert_eq!(tabs.active_workspace_entry(), None);
+        assert_eq!(tabs.retained_path_bytes(), 0);
+        Ok(())
     }
 
     #[test]

@@ -388,6 +388,8 @@ pub enum MenuAction {
     Save,
     /// Write the active document to this path, chosen in a save panel.
     SaveAsPath(std::path::PathBuf),
+    /// Close the active editor tab, matching Zed Cmd+W.
+    CloseTab,
 }
 
 /// Handle-free event vocabulary crossing the native surface boundary.

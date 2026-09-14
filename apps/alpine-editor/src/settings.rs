@@ -242,7 +242,7 @@ struct KeyBinding {
 /// are all held, and `validate_bindings` rejects a binding shadowed by an
 /// earlier one on the same key. Both require the more specific combination
 /// first, which is why Opt+Shift+F12 precedes F12.
-static DEFAULT_BINDINGS: [KeyBinding; 22] = [
+static DEFAULT_BINDINGS: [KeyBinding; 26] = [
     binding(
         KEY_F12,
         OPTION_SHIFT,
@@ -347,6 +347,30 @@ static DEFAULT_BINDINGS: [KeyBinding; 22] = [
         Modifiers::COMMAND,
         KeyAction::Command(EditorCommand::CloseTab),
         "Cmd+W",
+    ),
+    binding(
+        KEY_LEFT_BRACKET,
+        COMMAND_SHIFT,
+        KeyAction::Command(EditorCommand::ActivatePreviousTab),
+        "Cmd+Shift+[",
+    ),
+    binding(
+        KEY_RIGHT_BRACKET,
+        COMMAND_SHIFT,
+        KeyAction::Command(EditorCommand::ActivateNextTab),
+        "Cmd+Shift+]",
+    ),
+    binding(
+        KEY_LEFT,
+        COMMAND_OPTION,
+        KeyAction::Command(EditorCommand::ActivatePreviousTab),
+        "Opt+Cmd+Left",
+    ),
+    binding(
+        KEY_RIGHT,
+        COMMAND_OPTION,
+        KeyAction::Command(EditorCommand::ActivateNextTab),
+        "Opt+Cmd+Right",
     ),
     binding(
         KEY_LEFT_BRACKET,
@@ -954,7 +978,7 @@ mod tests {
         let settings = AppSettings::compiled()?;
         assert_eq!(settings.editor.font_name.as_ref(), "Menlo-Regular");
         assert_eq!(settings.editor.tab_columns, 4);
-        assert_eq!(settings.keymap.bindings.len(), 22);
+        assert_eq!(settings.keymap.bindings.len(), 26);
         assert!(std::mem::size_of::<AppSettings>() <= 512);
         let classes = [
             SyntaxClass::Comment,
@@ -1036,6 +1060,26 @@ mod tests {
                 KEY_W,
                 Modifiers::COMMAND,
                 KeyAction::Command(EditorCommand::CloseTab),
+            ),
+            (
+                KEY_LEFT_BRACKET,
+                COMMAND_SHIFT,
+                KeyAction::Command(EditorCommand::ActivatePreviousTab),
+            ),
+            (
+                KEY_RIGHT_BRACKET,
+                COMMAND_SHIFT,
+                KeyAction::Command(EditorCommand::ActivateNextTab),
+            ),
+            (
+                KEY_LEFT,
+                COMMAND_OPTION,
+                KeyAction::Command(EditorCommand::ActivatePreviousTab),
+            ),
+            (
+                KEY_RIGHT,
+                COMMAND_OPTION,
+                KeyAction::Command(EditorCommand::ActivateNextTab),
             ),
             (
                 KEY_LEFT_BRACKET,

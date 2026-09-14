@@ -880,11 +880,23 @@ mod tests {
         )
         .map_err(|error| error.to_string())?;
         let blocked_sink = blocked_controller.sink();
-        let mut blocked_app =
-            EditorApp::new(crate::tests::TestTextSystem).map_err(|error| error.to_string())?;
-        blocked_app.last_file_error = Some(alpine_text::FileError::Conflict(
-            alpine_text::ExternalChange::Modified,
+        let blocked_path = std::env::temp_dir().join(format!(
+            "alpine-editor-blocked-close-{}.rs",
+            std::process::id()
         ));
+        fs::write(&blocked_path, "fn main() {}\n").map_err(|error| error.to_string())?;
+        let mut blocked_app = EditorApp::open_file(crate::tests::TestTextSystem, &blocked_path)
+            .map_err(|error| error.to_string())?;
+        let _ = fs::remove_file(&blocked_path);
+        assert!(
+            blocked_app
+                .handle_event(&alpine_platform_macos::SurfaceEvent::Ime {
+                    timestamp: alpine_platform_macos::EventTimestamp::new(1),
+                    input_epoch: alpine_platform_macos::InputEpoch::INITIAL,
+                    event: alpine_platform_macos::ImeEvent::Committed("x".into()),
+                })
+                .document_changed
+        );
         blocked_app.dogfood_capture = Some(blocked_sink.clone());
 
         let blocked = blocked_app.handle_close_request();

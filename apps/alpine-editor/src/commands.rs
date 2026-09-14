@@ -20,6 +20,8 @@ pub(crate) enum EditorCommand {
     CloseTab,
     NavigateBack,
     NavigateForward,
+    ActivatePreviousTab,
+    ActivateNextTab,
     OpenQuickOpen,
     OpenProjectSearch,
     OpenFind,
@@ -51,6 +53,7 @@ pub(crate) struct CommandContext {
     pub(crate) can_close_tab: bool,
     pub(crate) can_navigate_back: bool,
     pub(crate) can_navigate_forward: bool,
+    pub(crate) can_cycle_tabs: bool,
     pub(crate) has_workspace: bool,
     pub(crate) can_split_right: bool,
     pub(crate) can_split_down: bool,
@@ -65,6 +68,9 @@ impl CommandContext {
             EditorCommand::CloseTab => self.can_close_tab,
             EditorCommand::NavigateBack => self.can_navigate_back,
             EditorCommand::NavigateForward => self.can_navigate_forward,
+            EditorCommand::ActivatePreviousTab | EditorCommand::ActivateNextTab => {
+                self.can_cycle_tabs
+            }
             EditorCommand::OpenQuickOpen
             | EditorCommand::OpenProjectSearch
             | EditorCommand::ToggleFileTree => self.has_workspace,
@@ -94,7 +100,7 @@ struct CommandSpec {
     search_terms: &'static str,
 }
 
-const REGISTRY: [CommandSpec; 23] = [
+const REGISTRY: [CommandSpec; 25] = [
     CommandSpec {
         command: EditorCommand::SaveFile,
         title: "File: Save",
@@ -114,6 +120,16 @@ const REGISTRY: [CommandSpec; 23] = [
         command: EditorCommand::NavigateForward,
         title: "Navigation: Go Forward",
         search_terms: "history next",
+    },
+    CommandSpec {
+        command: EditorCommand::ActivatePreviousTab,
+        title: "Editor: Previous Tab",
+        search_terms: "cycle adjacent left",
+    },
+    CommandSpec {
+        command: EditorCommand::ActivateNextTab,
+        title: "Editor: Next Tab",
+        search_terms: "cycle adjacent right",
     },
     CommandSpec {
         command: EditorCommand::OpenQuickOpen,
@@ -692,6 +708,7 @@ mod tests {
             can_close_tab: true,
             can_navigate_back: true,
             can_navigate_forward: true,
+            can_cycle_tabs: true,
             has_workspace: true,
             can_split_right: true,
             can_split_down: true,
@@ -719,7 +736,7 @@ mod tests {
 
     #[test]
     fn locked_registry_query_and_memory_limits_are_exact() -> Result<(), Box<dyn Error>> {
-        assert_eq!(REGISTRY.len(), 23);
+        assert_eq!(REGISTRY.len(), 25);
         assert!(REGISTRY.len() <= MAX_COMMANDS);
         let mut palette = CommandPalette::default();
         assert!(palette.open(all_available())?);
@@ -956,7 +973,7 @@ mod tests {
         assert!(ascii_prefix("Workspace", "work"));
         assert!(!ascii_prefix("Work", "workspace"));
         assert_eq!(match_score(&REGISTRY[0], "write"), Some((0, 0)));
-        assert_eq!(match_score(&REGISTRY[4], "quick"), Some((1, 0)));
-        assert_eq!(match_score(&REGISTRY[4], "wqop"), Some((2, 15)));
+        assert_eq!(match_score(&REGISTRY[6], "quick"), Some((1, 0)));
+        assert_eq!(match_score(&REGISTRY[6], "wqop"), Some((2, 15)));
     }
 }
