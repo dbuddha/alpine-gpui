@@ -2624,10 +2624,7 @@ impl RustDiagnostics {
         self.peak_diagnostic_bytes = self
             .peak_diagnostic_bytes
             .max(admitted.batch.retained_bytes());
-        let status = admitted
-            .batch
-            .primary_message()
-            .map(Arc::from);
+        let status = admitted.batch.primary_message().map(Arc::from);
         session.diagnostics = Some(admitted);
         let _ = replace_status(&mut self.status, status);
         true

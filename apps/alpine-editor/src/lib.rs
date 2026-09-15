@@ -7792,11 +7792,8 @@ impl EditorApp {
         &mut self,
         context: &AppContext<'_, EditorWorkerOutput>,
     ) -> LanguageEffect {
-        let open_paths: Vec<PathBuf> = (0..self.tabs.len())
-            .filter_map(|index| self.tabs.path_at(index).map(Path::to_path_buf))
-            .collect();
         self.rust_diagnostics
-            .replace_open_paths(open_paths.iter().map(PathBuf::as_path));
+            .replace_open_paths((0..self.tabs.len()).filter_map(|index| self.tabs.path_at(index)));
         let input = self.active_rust_document();
         let producer = context.external_producer();
         let latch = self.language_wake_latch.clone();

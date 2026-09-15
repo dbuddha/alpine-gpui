@@ -30,6 +30,7 @@ struct Slot {
     last_used: Instant,
     attached: bool,
     idle_since: Option<Instant>,
+    discovered: bool,
     model: RustDiagnostics,
 }
 
@@ -246,7 +247,10 @@ impl LanguageServices {
             keys.push((workspace_root, Box::from(server_id)));
         };
         for path in &self.open_paths {
-            push(path, input.map(RustDocumentInput::workspace_root));
+            let workspace = input
+                .filter(|input| input.path() == path)
+                .map(RustDocumentInput::workspace_root);
+            push(path, workspace);
         }
         if let Some(input) = input {
             push(input.path(), Some(input.workspace_root()));
@@ -297,6 +301,7 @@ impl LanguageServices {
             last_used: now,
             attached: true,
             idle_since: None,
+            discovered: false,
             model,
         });
         Some(self.slots.len().saturating_sub(1))
@@ -310,14 +315,14 @@ impl LanguageServices {
 
     fn prepare_slot(&mut self, index: usize, spec: &LanguageSpec, now: Instant) {
         let language_id = spec.lsp_language_id().unwrap_or(spec.id());
-        let discovered = if self.discovery_enabled {
+        if self.discovery_enabled && !self.slots[index].discovered {
             let pinned = spec.env_override().and_then(env::var_os);
-            discover_binaries(spec.binaries(), pinned, self.discovery_overlay.as_deref())
-        } else {
-            None
-        };
+            let discovered =
+                discover_binaries(spec.binaries(), pinned, self.discovery_overlay.as_deref());
+            self.slots[index].model.bind_discovered_server(discovered);
+            self.slots[index].discovered = true;
+        }
         let slot = &mut self.slots[index];
-        slot.model.bind_discovered_server(discovered);
         slot.model.configure_protocol(language_id, spec.arguments());
         slot.attached = true;
         slot.idle_since = None;
@@ -544,5 +549,54 @@ mod tests {
                 .language_for_path(Some(Path::new("main.py")))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn open_tabs_keep_per_file_workspace_roots() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("alpine-phase2-roots-{}", std::process::id()));
+        let rust_root = root.join("rs");
+        let python_root = root.join("py");
+        std::fs::create_dir_all(rust_root.join("src"))?;
+        std::fs::create_dir_all(&python_root)?;
+        std::fs::write(rust_root.join("Cargo.toml"), "[package]\nname = \"x\"\n")?;
+        std::fs::write(
+            python_root.join("pyproject.toml"),
+            "[project]\nname = \"x\"\n",
+        )?;
+        let rust_file = rust_root.join("src/lib.rs");
+        let python_file = python_root.join("main.py");
+        std::fs::write(&rust_file, "fn x() {}\n")?;
+        std::fs::write(&python_file, "x = 1\n")?;
+
+        let mut services = LanguageServices::default();
+        services.replace_open_paths([&rust_file, &python_file].into_iter().map(PathBuf::as_path));
+        let identity = crate::rust_diagnostics::LanguageIdentity {
+            workspace_id: 1,
+            workspace_revision: 1,
+            document_id: 1,
+            document_revision: 1,
+            buffer_revision: 1,
+            selection_revision: 1,
+        };
+        let snapshot = alpine_text::Buffer::new("fn x() {}\n").snapshot();
+        let input = crate::rust_diagnostics::RustDocumentInput::new(
+            &rust_file, &rust_root, identity, snapshot,
+        );
+        let keys = services.needed_keys(Some(&input));
+        assert!(
+            keys.iter()
+                .any(|(root, server)| root == &rust_root && server.as_ref() == "rust")
+        );
+        assert!(
+            keys.iter()
+                .any(|(root, server)| root == &python_root && server.as_ref() == "python")
+        );
+        assert!(
+            !keys
+                .iter()
+                .any(|(root, server)| root == &rust_root && server.as_ref() == "python")
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 }
