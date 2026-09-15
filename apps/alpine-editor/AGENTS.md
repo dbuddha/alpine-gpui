@@ -66,7 +66,7 @@ framework gets turned into an unbounded application, so:
 - The language server is the largest process in the system. Bound what is
   retained from it and never let its lifetime follow a document's.
 
-Feature target: local editing, tabs, panes, search, and Rust language support.
+Feature target: local editing, tabs, panes, search, and the language registry.
 Not in scope: AI, multiplayer, extensions, terminal, database views, agent dock.
 
 ## Design

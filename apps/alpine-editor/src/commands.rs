@@ -158,33 +158,33 @@ const REGISTRY: [CommandSpec; 25] = [
     },
     CommandSpec {
         command: EditorCommand::TriggerCompletion,
-        title: "Editor: Trigger Rust Completion",
-        search_terms: "language rust analyzer suggest",
+        title: "Editor: Trigger Completion",
+        search_terms: "language analyzer suggest",
     },
     CommandSpec {
         command: EditorCommand::ShowRustHover,
-        title: "Navigation: Show Rust Hover",
-        search_terms: "language rust analyzer documentation type",
+        title: "Navigation: Show Hover",
+        search_terms: "language analyzer documentation type",
     },
     CommandSpec {
         command: EditorCommand::GoToRustDefinition,
-        title: "Navigation: Go to Rust Definition",
-        search_terms: "language rust analyzer source jump",
+        title: "Navigation: Go to Definition",
+        search_terms: "language analyzer source jump",
     },
     CommandSpec {
         command: EditorCommand::FindRustReferences,
-        title: "Navigation: Find Rust References",
-        search_terms: "language rust analyzer usages source",
+        title: "Navigation: Find References",
+        search_terms: "language analyzer usages source",
     },
     CommandSpec {
         command: EditorCommand::ShowRustDocumentSymbols,
-        title: "Navigation: Rust Document Symbols",
-        search_terms: "language rust analyzer outline functions types",
+        title: "Navigation: Document Symbols",
+        search_terms: "language analyzer outline functions types",
     },
     CommandSpec {
         command: EditorCommand::ShowRustWorkspaceSymbols,
-        title: "Navigation: Rust Workspace Symbols",
-        search_terms: "language rust analyzer project functions types",
+        title: "Navigation: Workspace Symbols",
+        search_terms: "language analyzer project functions types",
     },
     CommandSpec {
         command: EditorCommand::ReloadSettings,
@@ -193,13 +193,13 @@ const REGISTRY: [CommandSpec; 25] = [
     },
     CommandSpec {
         command: EditorCommand::PreviewRustRename,
-        title: "Editor: Preview Rust Rename",
-        search_terms: "language rust analyzer symbol refactor",
+        title: "Editor: Preview Rename",
+        search_terms: "language analyzer symbol refactor",
     },
     CommandSpec {
         command: EditorCommand::PreviewRustFormatting,
-        title: "Editor: Preview Rust Formatting",
-        search_terms: "language rust analyzer format document",
+        title: "Editor: Preview Formatting",
+        search_terms: "language analyzer format document",
     },
     CommandSpec {
         command: EditorCommand::ToggleFileTree,

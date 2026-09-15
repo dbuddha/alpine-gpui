@@ -15,6 +15,8 @@ mod file_tree;
 mod find;
 mod find_input;
 mod go_to_line;
+mod language_registry;
+mod language_services;
 mod legacy_migration;
 #[cfg_attr(
     not(test),
@@ -137,6 +139,7 @@ use find::{
     FindAdmission, FindError, FindIdentity, FindNavigation, FindRequest, FindState,
     FindWorkerOutput, MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
+use language_services::LanguageServices;
 use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
 use profiling::{EditorProfiler, MeasuredTextSystem, TextSystemSnapshot};
 use project_search::{
@@ -147,10 +150,12 @@ use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
 use rust_completion::{MAX_VISIBLE_COMPLETION_ROWS, position_for_byte};
+#[cfg(test)]
+use rust_diagnostics::RustDiagnostics;
 use rust_diagnostics::{
     CompletionApplication, LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
-    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDiagnostics, RustDocumentInput,
-    WorkspaceEditKind, WorkspaceEditPreparationOutput,
+    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDocumentInput, WorkspaceEditKind,
+    WorkspaceEditPreparationOutput,
 };
 use rust_navigation::{
     MAX_VISIBLE_HOVER_LINES, MAX_VISIBLE_SOURCE_LOCATIONS, NavigationError, ResolvedSourceLocation,
@@ -191,7 +196,7 @@ use settings::{
     KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
 };
 use syntax::SyntaxClass;
-use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLanguage, SyntaxLine};
+use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLine};
 use workspace::Workspace;
 
 #[cfg(test)]
@@ -2002,7 +2007,7 @@ struct EditorApp {
     dogfood_accessibility_actions: u64,
     profile_event_timestamp: EventTimestamp,
     profile_scene_revision: SceneRevision,
-    rust_diagnostics: RustDiagnostics,
+    rust_diagnostics: LanguageServices,
     language_wake_latch: LanguageWakeLatch,
     workspace_edits: WorkspaceEditPanel,
     #[cfg(test)]
@@ -2220,8 +2225,10 @@ impl EditorApp {
     /// spawn a process. The overlay is the opened workspace or file so rustup
     /// resolution does not depend on the process working directory.
     pub(crate) fn adopt_discovered_language_server(&mut self) {
-        self.rust_diagnostics =
-            rust_diagnostics::discovered_with_overlay(self.language_overlay_path());
+        let overlay = self.language_overlay_path().map(Path::to_path_buf);
+        self.rust_diagnostics
+            .set_discovery_overlay(overlay.as_deref());
+        self.rust_diagnostics.reload_registry_from_home();
     }
 
     fn language_overlay_path(&self) -> Option<&Path> {
@@ -2331,7 +2338,7 @@ impl EditorApp {
             dogfood_accessibility_actions: 0,
             profile_event_timestamp: EventTimestamp::new(0),
             profile_scene_revision: SceneRevision::new(0),
-            rust_diagnostics: RustDiagnostics::default(),
+            rust_diagnostics: LanguageServices::default(),
             language_wake_latch: LanguageWakeLatch::default(),
             workspace_edits: WorkspaceEditPanel::default(),
             #[cfg(test)]
@@ -3129,7 +3136,9 @@ impl EditorApp {
                 .tabs
                 .index_for_id(pane_tab)
                 .ok_or(EditorRenderError::Domain)?;
-            let syntax_language = SyntaxLanguage::from_path(self.tabs.path_at(pane_tab_index));
+            let syntax_language = self
+                .rust_diagnostics
+                .highlighter_for_path(self.tabs.path_at(pane_tab_index));
             let pane_scroll = pane_view.scroll_y;
             let viewport_height = PositiveFinite::new(pane.bounds.size().height())
                 .ok_or(EditorRenderError::Domain)?;
@@ -7765,14 +7774,12 @@ impl EditorApp {
             return None;
         }
         let path = self.tabs.path_at(self.tabs.active_index())?;
-        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
-            return None;
-        }
-        let workspace_root = self
-            .workspace
-            .as_ref()
-            .map(Workspace::root)
-            .or_else(|| path.parent())?;
+        let spec = self.rust_diagnostics.language_for_path(Some(path))?;
+        spec.server_id()?;
+        let workspace_root = self.workspace.as_ref().map_or_else(
+            || self.rust_diagnostics.workspace_root(path),
+            Workspace::root,
+        );
         Some(RustDocumentInput::new(
             path,
             workspace_root,
@@ -7785,6 +7792,11 @@ impl EditorApp {
         &mut self,
         context: &AppContext<'_, EditorWorkerOutput>,
     ) -> LanguageEffect {
+        let open_paths: Vec<PathBuf> = (0..self.tabs.len())
+            .filter_map(|index| self.tabs.path_at(index).map(Path::to_path_buf))
+            .collect();
+        self.rust_diagnostics
+            .replace_open_paths(open_paths.iter().map(PathBuf::as_path));
         let input = self.active_rust_document();
         let producer = context.external_producer();
         let latch = self.language_wake_latch.clone();

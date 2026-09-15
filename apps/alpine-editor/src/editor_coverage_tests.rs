@@ -7491,7 +7491,9 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 
     let mut app = EditorApp::open_file(TestTextSystem, &rust_path)?;
     assert!(app.active_rust_document().is_some());
-    app.rust_diagnostics = RustDiagnostics::with_server(rust_diagnostics::tests::mock_executable());
+    app.rust_diagnostics = LanguageServices::from(RustDiagnostics::with_server(
+        rust_diagnostics::tests::mock_executable(),
+    ));
     app.rust_diagnostics.force_continuation_once_for_test();
     let viewport = viewport()?;
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(

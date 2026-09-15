@@ -955,7 +955,7 @@ fn workspace_edit_identity_and_reduction_axes_are_independently_discriminating()
     );
     assert!(identity.matches(language, &snapshot));
     assert!(identity.matches_document(language));
-    assert_eq!(identity.kind().label(), "Rust rename");
+    assert_eq!(identity.kind().label(), "Rename");
     for axis in 0..6 {
         let mut changed = language;
         match axis {

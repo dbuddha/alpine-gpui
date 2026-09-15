@@ -88,6 +88,14 @@ impl RustDocumentInput {
             snapshot,
         }
     }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,7 +104,10 @@ pub(crate) struct LanguageWake {
 }
 
 impl LanguageWake {
-    #[cfg(any(test, alpine_native_validation))]
+    pub(crate) const fn new(generation: u64) -> Self {
+        Self { generation }
+    }
+
     pub(crate) const fn generation(self) -> u64 {
         self.generation
     }
@@ -143,6 +154,15 @@ impl LanguageWakeLatch {
 pub(crate) struct LanguageEffect {
     pub(crate) visual_changed: bool,
     pub(crate) continuation: Option<LanguageWake>,
+}
+
+impl LanguageEffect {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.visual_changed |= other.visual_changed;
+        if other.continuation.is_some() {
+            self.continuation = other.continuation;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,8 +213,8 @@ impl WorkspaceEditKind {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Rename => "Rust rename",
-            Self::Formatting => "Rust formatting",
+            Self::Rename => "Rename",
+            Self::Formatting => "Formatting",
         }
     }
 }
@@ -315,17 +335,17 @@ impl NavigationRequestKind {
 
     const fn empty_status(self) -> &'static str {
         match self {
-            Self::Hover => "No Rust hover information.",
-            Self::Definition => "No Rust definition found.",
-            Self::References => "No Rust references found.",
+            Self::Hover => "No hover information.",
+            Self::Definition => "No definition found.",
+            Self::References => "No references found.",
         }
     }
 
     const fn label(self) -> &'static str {
         match self {
-            Self::Hover => "Rust hover",
-            Self::Definition => "Rust definition",
-            Self::References => "Rust references",
+            Self::Hover => "Hover",
+            Self::Definition => "Definition",
+            Self::References => "References",
         }
     }
 }
@@ -663,7 +683,7 @@ pub(crate) enum RustDiagnosticsError {
 
 impl fmt::Display for RustDiagnosticsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Rust diagnostics unavailable: {self:?}")
+        write!(formatter, "language diagnostics unavailable: {self:?}")
     }
 }
 
@@ -672,6 +692,8 @@ impl Error for RustDiagnosticsError {}
 #[derive(Default)]
 pub(crate) struct RustDiagnostics {
     server_path: Option<PathBuf>,
+    lsp_language_id: Option<Box<str>>,
+    server_arguments: Vec<String>,
     target: Option<Target>,
     session: Option<RustSession>,
     next_generation: u64,
@@ -729,6 +751,13 @@ pub(crate) struct RustDiagnostics {
 /// overlay path is the document's project, not that CWD, so a
 /// `rust-toolchain.toml` next to the opened files still selects the matching
 /// rust-analyzer.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "production discovery is per-slot in LanguageServices"
+    )
+)]
 pub(crate) fn discovered_with_overlay(overlay: Option<&Path>) -> RustDiagnostics {
     let rustup_home = rustup_home_from_env();
     let overlay = overlay.map(Path::to_path_buf);
@@ -775,6 +804,51 @@ fn discover_server_with(
         .into_iter()
         .chain(fallbacks)
         .find_map(|directory| resolve(&directory.join(SERVER_NAME)))
+}
+
+pub(crate) fn discover_binaries(
+    names: &[Box<str>],
+    pinned: Option<OsString>,
+    overlay: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(pinned) = pinned {
+        return Some(PathBuf::from(pinned));
+    }
+    let rustup_home = rustup_home_from_env();
+    let searched = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let home = env::var_os("HOME").map(PathBuf::from);
+    let fallbacks = home
+        .as_ref()
+        .map(|home| home.join(".cargo").join("bin"))
+        .into_iter()
+        .chain([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/opt/homebrew/opt/llvm/bin"),
+        ]);
+    for directory in searched.into_iter().chain(fallbacks) {
+        for name in names {
+            let candidate = directory.join(name.as_ref());
+            if let Some(path) = resolve_named(&candidate, name, rustup_home.as_deref(), overlay) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_named(
+    candidate: &Path,
+    name: &str,
+    rustup_home: Option<&Path>,
+    overlay: Option<&Path>,
+) -> Option<PathBuf> {
+    if name == SERVER_NAME {
+        return resolve_server_from(candidate, rustup_home, overlay);
+    }
+    is_executable_file(candidate).then(|| candidate.to_path_buf())
 }
 
 /// Resolves a candidate without reading process CWD.
@@ -1298,7 +1372,7 @@ impl RustDiagnostics {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
-                    Some(Arc::from("Rust analysis is not ready for completion.")),
+                    Some(Arc::from("Language analysis is not ready for completion.")),
                 ) || visual_changed,
                 continuation: None,
             };
@@ -1307,7 +1381,7 @@ impl RustDiagnostics {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
-                    Some(Arc::from("Rust analysis is not ready for completion.")),
+                    Some(Arc::from("Language analysis is not ready for completion.")),
                 ) || visual_changed,
                 continuation: None,
             };
@@ -1357,7 +1431,7 @@ impl RustDiagnostics {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
-                    Some(Arc::from("Rust analysis is not ready for navigation.")),
+                    Some(Arc::from("Language analysis is not ready for navigation.")),
                 ) || visual_changed,
                 continuation: None,
             };
@@ -1366,7 +1440,7 @@ impl RustDiagnostics {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
-                    Some(Arc::from("Rust analysis is not ready for navigation.")),
+                    Some(Arc::from("Language analysis is not ready for navigation.")),
                 ) || visual_changed,
                 continuation: None,
             };
@@ -1488,7 +1562,9 @@ impl RustDiagnostics {
         LanguageEffect {
             visual_changed: replace_status(
                 &mut self.status,
-                Some(Arc::from("Rust analysis is not ready for workspace edits.")),
+                Some(Arc::from(
+                    "Language analysis is not ready for workspace edits.",
+                )),
             ),
             continuation: None,
         }
@@ -1581,7 +1657,7 @@ impl RustDiagnostics {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
-                    Some(Arc::from("Rust analysis is not ready for symbols.")),
+                    Some(Arc::from("Language analysis is not ready for symbols.")),
                 ) || visual_changed,
                 continuation: None,
             };
@@ -1590,7 +1666,7 @@ impl RustDiagnostics {
             return LanguageEffect {
                 visual_changed: replace_status(
                     &mut self.status,
-                    Some(Arc::from("Rust analysis is not ready for symbols.")),
+                    Some(Arc::from("Language analysis is not ready for symbols.")),
                 ) || visual_changed,
                 continuation: None,
             };
@@ -1928,7 +2004,7 @@ impl RustDiagnostics {
     ) -> Option<Arc<str>> {
         let navigation = self.navigation(identity)?;
         Some(match &navigation.result {
-            NavigationResult::Hover(hover) => Arc::from(format!("Rust hover: {}", hover.text())),
+            NavigationResult::Hover(hover) => Arc::from(format!("Hover: {}", hover.text())),
             NavigationResult::Locations {
                 kind,
                 batch,
@@ -2318,14 +2394,15 @@ impl RustDiagnostics {
             .ok_or(RustDiagnosticsError::InvalidIdentity)?;
         let spec = ProcessSpec::new(
             executable,
-            std::iter::empty::<&str>(),
+            self.server_arguments.iter().map(String::as_str),
             Some(&input.workspace_root),
         )
         .map_err(RustDiagnosticsError::Configuration)?;
-        let wake = wake_factory(LanguageWake { generation });
+        let wake = wake_factory(LanguageWake::new(generation));
         let client = LspClient::start_with_waker(spec, process_identity, wake)
             .map_err(RustDiagnosticsError::Client)?;
-        let document = LspDocument::from_file_path(&input.path, "rust", 1)
+        let language_id = self.lsp_language_id.as_deref().unwrap_or("rust");
+        let document = LspDocument::from_file_path(&input.path, language_id, 1)
             .map_err(RustDiagnosticsError::Language)?;
         self.next_generation = generation;
         let synced_snapshot = input.snapshot.clone();
@@ -2375,7 +2452,7 @@ impl RustDiagnostics {
         session.state = SessionState::Initializing;
         replace_status(
             &mut self.status,
-            Some(Arc::from("Rust analysis is initializing.")),
+            Some(Arc::from("Language analysis is initializing.")),
         )
     }
 
@@ -2423,7 +2500,8 @@ impl RustDiagnostics {
     }
 
     fn switch_document(&mut self, input: RustDocumentInput, target: Target) -> LanguageEffect {
-        let document = match LspDocument::from_file_path(&input.path, "rust", 1) {
+        let language_id = self.lsp_language_id.as_deref().unwrap_or("rust");
+        let document = match LspDocument::from_file_path(&input.path, language_id, 1) {
             Ok(document) => document,
             Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
         };
@@ -2590,7 +2668,7 @@ impl RustDiagnostics {
         };
         if batch.items().is_empty() {
             session.completion = None;
-            return replace_status(&mut self.status, Some(Arc::from("No Rust completions.")));
+            return replace_status(&mut self.status, Some(Arc::from("No completions.")));
         }
         self.peak_completion_items = self.peak_completion_items.max(batch.items().len());
         self.peak_completion_bytes = self.peak_completion_bytes.max(batch.retained_bytes());
@@ -3007,7 +3085,7 @@ impl RustDiagnostics {
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
             &mut self.status,
-            Some(Arc::from("Rust analysis is restarting.")),
+            Some(Arc::from("Language analysis is restarting.")),
         )
     }
 
@@ -3047,6 +3125,25 @@ impl RustDiagnostics {
             server_path: Some(server_path.to_path_buf()),
             ..Self::default()
         }
+    }
+
+    pub(crate) fn configure_protocol(&mut self, language_id: &str, arguments: &[Box<str>]) {
+        self.lsp_language_id = Some(Box::from(language_id));
+        self.server_arguments = arguments.iter().map(ToString::to_string).collect();
+    }
+
+    pub(crate) fn bind_discovered_server(&mut self, path: Option<PathBuf>) {
+        if self.server_path.is_none() {
+            self.server_path = path;
+        }
+    }
+
+    pub(crate) fn current_generation(&self) -> Option<u64> {
+        self.session.as_ref().map(|session| session.generation)
+    }
+
+    pub(crate) fn has_session(&self) -> bool {
+        self.session.is_some()
     }
 
     #[cfg(test)]
