@@ -2,7 +2,7 @@
 product: Alpine Editor
 current_phase: 2
 phase_name: language agnostic
-phase_gate: criteria must pass on main with evidence before phase 3 starts
+phase_gate: criteria must pass on `main` with evidence before phase 3 starts
 execution: serial, one feature at a time, one worktree
 verification: launch ~/Applications/Alpine Editor.app and look at it
 parity_reference: pinned Zed v1.15.0 at alpine-zed-lab/.lab/zed
@@ -20,7 +20,7 @@ the shared engineering rules; this file owns the product.
 
 Do not start phase 3 work. Phase 1 closed on `main` with installed-app
 evidence in [docs/delivery.md](../../docs/delivery.md). Phase 2 closes when
-all of these pass on main, each exercised in the installed app from a Dock
+all of these pass on `main`, each exercised in the installed app from a Dock
 launch with no terminal, each with a screenshot:
 
 | # | Criterion |
