@@ -2627,7 +2627,7 @@ impl RustDiagnostics {
         let status = admitted
             .batch
             .primary_message()
-            .map(|message| Arc::from(format!("Rust: {message}")));
+            .map(Arc::from);
         session.diagnostics = Some(admitted);
         let _ = replace_status(&mut self.status, status);
         true

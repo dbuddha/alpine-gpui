@@ -263,7 +263,7 @@ fn portable_mock_drives_open_change_clear_and_shutdown() -> Result<(), Box<dyn E
     );
     let opened = wait_for_product_diagnostics(&mut model, &latch, 1, 1, false, true)?;
     assert_eq!(opened.diagnostic_version, Some(1));
-    assert_eq!(model.status_message().as_deref(), Some("Rust: mock broken"));
+    assert_eq!(model.status_message().as_deref(), Some("mock broken"));
 
     let mut transaction = alpine_text::Transaction::new(buffer.revision());
     transaction.replace(0..buffer.snapshot().len_bytes(), "fn still_broken( {\n")?;
