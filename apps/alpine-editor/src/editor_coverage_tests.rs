@@ -7843,3 +7843,45 @@ fn selection_revision_advances_only_for_real_selection_changes() -> Result<(), B
     assert_eq!(app.input_failures, failures + 1);
     Ok(())
 }
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "scroll discovery walks the host filesystem, which Miri does not emulate"
+)]
+fn scrolling_does_not_rediscover_language_servers() -> Result<(), Box<dyn Error>> {
+    rust_diagnostics::reset_discover_binaries_calls();
+    let root = TestWorkspace::new()?;
+    let mut source = String::from("value = 0\n");
+    for line in 1..80 {
+        source.push_str("value = ");
+        source.push_str(&line.to_string());
+        source.push('\n');
+    }
+    root.write("main.py", &source)?;
+    let path = root.path().join("main.py");
+    let mut app = EditorApp::open_file(TestTextSystem, &path)?;
+    app.adopt_discovered_language_server();
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    for timestamp in 1..=20 {
+        let _ = runtime.dispatch(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(timestamp),
+            delta_x: 0.0,
+            delta_y: -LINE_HEIGHT * 4.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        });
+    }
+    assert_eq!(
+        rust_diagnostics::discover_binaries_calls(),
+        1,
+        "language-server discovery belongs on first attach, not on every scroll"
+    );
+    Ok(())
+}

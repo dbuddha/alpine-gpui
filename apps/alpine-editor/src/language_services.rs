@@ -480,6 +480,7 @@ impl LanguageServices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn sixth_identity_evicts_the_idle_oldest() {
@@ -596,6 +597,48 @@ mod tests {
                 .iter()
                 .any(|(root, server)| root == &rust_root && server.as_ref() == "python")
         );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    fn python_document(
+        root: &Path,
+    ) -> Result<(PathBuf, crate::rust_diagnostics::RustDocumentInput), Box<dyn std::error::Error>>
+    {
+        std::fs::create_dir_all(root)?;
+        std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"x\"\n")?;
+        let path = root.join("main.py");
+        std::fs::write(&path, "value = 1\n")?;
+        let identity = crate::rust_diagnostics::LanguageIdentity {
+            workspace_id: 1,
+            workspace_revision: 1,
+            document_id: 1,
+            document_revision: 1,
+            buffer_revision: 1,
+            selection_revision: 1,
+        };
+        let snapshot = alpine_text::Buffer::new("value = 1\n").snapshot();
+        let input =
+            crate::rust_diagnostics::RustDocumentInput::new(&path, root, identity, snapshot);
+        Ok((path, input))
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "discovery walks PATH on the host filesystem, which Miri does not emulate"
+    )]
+    fn a_warm_slot_discovers_once_across_later_syncs() -> Result<(), Box<dyn std::error::Error>> {
+        crate::rust_diagnostics::reset_discover_binaries_calls();
+        let root =
+            std::env::temp_dir().join(format!("alpine-phase2-discover-{}", std::process::id()));
+        let (_path, input) = python_document(&root)?;
+        let mut services = LanguageServices::default();
+        services.set_discovery_overlay(None);
+        for _ in 0..32 {
+            let _ = services.sync(Some(input.clone()), |_| Arc::new(|| {}));
+        }
+        assert_eq!(crate::rust_diagnostics::discover_binaries_calls(), 1);
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

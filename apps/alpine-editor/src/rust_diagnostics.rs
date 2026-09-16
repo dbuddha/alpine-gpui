@@ -806,11 +806,28 @@ fn discover_server_with(
         .find_map(|directory| resolve(&directory.join(SERVER_NAME)))
 }
 
+#[cfg(test)]
+thread_local! {
+    static DISCOVER_BINARIES_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_discover_binaries_calls() {
+    DISCOVER_BINARIES_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn discover_binaries_calls() -> u64 {
+    DISCOVER_BINARIES_CALLS.with(std::cell::Cell::get)
+}
+
 pub(crate) fn discover_binaries(
     names: &[Box<str>],
     pinned: Option<OsString>,
     overlay: Option<&Path>,
 ) -> Option<PathBuf> {
+    #[cfg(test)]
+    DISCOVER_BINARIES_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     if let Some(pinned) = pinned {
         return Some(PathBuf::from(pinned));
     }
