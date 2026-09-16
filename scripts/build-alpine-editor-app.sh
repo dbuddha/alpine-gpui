@@ -116,6 +116,9 @@ fi
 
 output_parent=$(dirname "$output")
 mkdir -p "$output_parent"
+# Cargo target trees are a build cache. Spotlight and the Open dialog
+# should only offer the installed copy in ~/Applications.
+: > "$target_directory/.metadata_never_index"
 staging_dir=$(mktemp -d "$output_parent/.alpine-editor-app.XXXXXX")
 cleanup() {
     if [ -n "${staging_dir-}" ] && [ -d "$staging_dir" ]; then
