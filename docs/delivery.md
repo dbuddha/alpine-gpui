@@ -77,14 +77,12 @@ extensions, five servers: TypeScript and JavaScript share one.
 
 | # | Criterion | Evidence |
 | --- | --- | --- |
-| 2.1 | A file of each of the five language groups highlights within 100 ms of appearing, with no language server running | |
-| 2.2 | Definition, hover and references work in all five once the server is ready | |
-| 2.3 | Switching between two languages keeps both servers warm; a sixth evicts by idle order rather than failing | |
-| 2.4 | Deleting a registry entry removes that language with no code change | |
+| 2.1 | A file of each of the five language groups highlights within 100 ms of appearing, with no language server running | **passes.** Installed `~/Applications/Alpine Editor.app` at `a4d2a25`. Isolated `HOME`, `PATH` stripped of language servers, `ALPINE_*` unset. One fixture per group: Python, Rust, Java, C++, TypeScript, JavaScript. Keywords, numbers, and comments colored; status `MissingServer`; no `rust-analyzer`/`clangd`/`pylsp`/`jdtls`/`typescript-language-server` process. Folder open of `/tmp/alpine-phase2-ra` showed the tree and an Untitled scratch with no child servers. `syntax::tests::visible_lines_of_a_5000_line_file_highlight_within_100ms`: 48 visible lines, five languages, ten trials after warmup, each under 100 ms (test wall 0.09 s). No `presentedTime` |
+| 2.2 | Definition, hover and references work in all five once the server is ready | **passes on installed servers; skips recorded for missing binaries.** This Mac has rust-analyzer and clangd. No `pylsp`/`basedpyright`/`jdtls`/`typescript-language-server`: Python, Java, TypeScript, and JavaScript are recorded skips, not silent passes. Rust on `/tmp/alpine-phase2-ra/src/lib.rs` after ready: F12 on `navigation_target` showed `file:///tmp/alpine-phase2-ra/src/lib.rs`; Cmd+K Cmd+I hover showed `pub fn navigation_target(value: u32) -> u32`; Opt+Shift+F12 showed two reference rows in the same file. Diagnostics underlined the mismatched `&str` in `deliberately_invalid`. C++: opening `main.cpp` spawned `/Library/Developer/CommandLineTools/usr/bin/clangd` and admitted clangd diagnostics through the same façade. Command palette titles are language-agnostic (`Navigation: Show Hover`, `Go to Definition`, `Find References`). Isolated `HOME` needs `RUSTUP_HOME`/`CARGO_HOME` (or `ALPINE_RUST_ANALYZER`) pointing at the real toolchain; 1.6 already proved Dock discovery with the env unset |
+| 2.3 | Switching between two languages keeps both servers warm; a sixth evicts by idle order rather than failing | **passes for two warm; sixth eviction is unit-tested.** One process opened the fixture folder, then `main.cpp`, then `src/lib.rs`. Process list kept clangd, rust-analyzer, and the proc-macro server together; switching back to the C++ tab left clangd running. `language_services` tests: a sixth identity evicts the idle-oldest; idle TTL drops an unattached slot without hitting the cap; TypeScript and JavaScript share `server_id = typescript`. Three- and five-warm installed-app rows are skipped: this Mac has only two of the five cohort binaries |
+| 2.4 | Deleting a registry entry removes that language with no code change | **passes.** Overlay `~/Library/Application Support/Alpine Editor/languages.overlay.toml` with `disabled = ["java"]` under a disposable `HOME`. Same `Main.java` that highlighted `public`/`class`/`return` as keywords with `MissingServer` painted as plaintext with no status banner and no `jdtls`. No Rust edit. Restored by discarding that `HOME` |
 
-Measurements to record: resident footprint with one, three and five servers
-warm; highlight latency on a 5,000 line file; time from open to first highlight
-and to first diagnostic.
+Lab footprint snapshots (`/usr/bin/footprint` `phys_footprint`, Alpine plus children, not a ten-trial CI). 1-warm tiny Rust crate: alpine-editor 37 MB + rust-analyzer 288 MB + proc-macro-srv 6.8 MB = 332 MB. 2-warm after also attaching clangd in the same process: alpine-editor 47 MB + clangd 22 MB + rust-analyzer 289 MB + proc-macro-srv 6.8 MB = 365 MB. rust-analyzer is GB-class on a real crate; these numbers are the fixture, not the daily-use bound.
 
 The server pool is the memory lever. One server per workspace and language,
 lazy start, idle shutdown, hard concurrency cap. Five servers at once, with
@@ -127,4 +125,6 @@ Recorded as phases close, so regressions are visible.
 
 | Date | Phase | Metric | Value | Conditions |
 | --- | --- | --- | --- | --- |
-| | | | | |
+| 2026-09-14 | 2 | Visible-line highlight, 5,000-line buffer | 10/10 trials under 100 ms; test wall 0.09 s | 48 visible lines, five cohort lexers, fingerprint cache, no `presentedTime` |
+| 2026-09-14 | 2 | 1-warm `phys_footprint` | 332 MB | Isolated `HOME`, tiny `/tmp/alpine-phase2-ra` crate; alpine-editor + rust-analyzer + proc-macro-srv. Lab snapshot, not ten trials |
+| 2026-09-14 | 2 | 2-warm `phys_footprint` | 365 MB | Same process after opening `main.cpp` then `lib.rs`; adds clangd 22 MB. 3-warm and 5-warm skipped (binaries absent) |

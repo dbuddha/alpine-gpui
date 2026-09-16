@@ -1,0 +1,82 @@
+# Closed language table for Alpine Editor. Deleting a [[language]] row
+# removes that language from lookup. Highlighter names must match a
+# compiled lexer; unknown names paint as plaintext. TypeScript and
+# JavaScript share server_id "typescript".
+
+[[language]]
+id = "rust"
+highlighter = "rust"
+extensions = ["rs"]
+lsp_language_id = "rust"
+server_id = "rust"
+binaries = ["rust-analyzer"]
+env_override = "ALPINE_RUST_ANALYZER"
+root_markers = ["Cargo.toml", "rust-toolchain.toml", "rust-toolchain"]
+
+[[language]]
+id = "python"
+highlighter = "python"
+extensions = ["py", "pyi"]
+lsp_language_id = "python"
+server_id = "python"
+binaries = ["pylsp", "basedpyright", "pyright-langserver"]
+env_override = "ALPINE_PYTHON_LS"
+root_markers = ["pyproject.toml", "setup.cfg", "setup.py", "Pipfile"]
+
+[[language]]
+id = "cpp"
+highlighter = "cpp"
+extensions = ["c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx"]
+lsp_language_id = "cpp"
+server_id = "cpp"
+binaries = ["clangd"]
+env_override = "ALPINE_CLANGD"
+root_markers = ["compile_commands.json", "CMakeLists.txt", "Makefile"]
+
+[[language]]
+id = "java"
+highlighter = "java"
+extensions = ["java"]
+lsp_language_id = "java"
+server_id = "java"
+binaries = ["jdtls"]
+env_override = "ALPINE_JDTLS"
+root_markers = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"]
+
+[[language]]
+id = "typescript"
+highlighter = "typescript"
+extensions = ["ts", "tsx", "mts", "cts"]
+lsp_language_id = "typescript"
+server_id = "typescript"
+binaries = ["typescript-language-server"]
+arguments = ["--stdio"]
+env_override = "ALPINE_TYPESCRIPT_LS"
+root_markers = ["tsconfig.json", "jsconfig.json", "package.json"]
+
+[[language]]
+id = "javascript"
+highlighter = "javascript"
+extensions = ["js", "jsx", "mjs", "cjs"]
+lsp_language_id = "javascript"
+server_id = "typescript"
+binaries = ["typescript-language-server"]
+arguments = ["--stdio"]
+env_override = "ALPINE_TYPESCRIPT_LS"
+root_markers = ["jsconfig.json", "package.json", "tsconfig.json"]
+
+[[language]]
+id = "markdown"
+highlighter = "markdown"
+extensions = ["md", "markdown"]
+
+[[language]]
+id = "toml"
+highlighter = "toml"
+extensions = ["toml"]
+filenames = ["Cargo.lock"]
+
+[[language]]
+id = "json"
+highlighter = "json"
+extensions = ["json"]

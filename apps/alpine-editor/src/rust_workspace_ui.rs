@@ -766,8 +766,8 @@ mod tests {
             WorkspaceEditPanelError::InvalidName.to_string(),
             "Rust workspace edit unavailable: InvalidName"
         );
-        assert_eq!(WorkspaceEditKind::Rename.label(), "Rust rename");
-        assert_eq!(WorkspaceEditKind::Formatting.label(), "Rust formatting");
+        assert_eq!(WorkspaceEditKind::Rename.label(), "Rename");
+        assert_eq!(WorkspaceEditKind::Formatting.label(), "Formatting");
         let mut panel = WorkspaceEditPanel::default();
         assert!(!panel.is_open());
         assert!(!panel.begin_composition());

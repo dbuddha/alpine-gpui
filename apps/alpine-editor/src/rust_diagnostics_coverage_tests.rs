@@ -728,14 +728,14 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
     assert_eq!(NavigationRequestKind::from_method("test/echo"), None);
     assert_eq!(
         NavigationRequestKind::Hover.empty_status(),
-        "No Rust hover information."
+        "No hover information."
     );
     assert_eq!(
         NavigationRequestKind::References.empty_status(),
-        "No Rust references found."
+        "No references found."
     );
-    assert_eq!(NavigationRequestKind::Hover.label(), "Rust hover");
-    assert_eq!(NavigationRequestKind::Definition.label(), "Rust definition");
+    assert_eq!(NavigationRequestKind::Hover.label(), "Hover");
+    assert_eq!(NavigationRequestKind::Definition.label(), "Definition");
     assert!(matches!(
         navigation_from_response(
             NavigationRequestKind::Hover,
@@ -769,7 +769,7 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
     ));
     assert_eq!(
         model.status_message().as_deref(),
-        Some("No Rust hover information.")
+        Some("No hover information.")
     );
     let pending = install_pending_navigation(&mut model, 4, NavigationRequestKind::References)?;
     assert!(model.admit_navigation(
@@ -780,7 +780,7 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
     ));
     assert_eq!(
         model.status_message().as_deref(),
-        Some("No Rust references found.")
+        Some("No references found.")
     );
     for (id, candidate) in [
         (
@@ -962,7 +962,7 @@ fn navigation_admission_rejects_each_identity_axis_and_counts_exact_results()
     assert!(!model.navigation_is_open(input.identity));
     assert_eq!(
         model.status_message().as_deref(),
-        Some("No Rust definition found.")
+        Some("No definition found.")
     );
 
     let pending = install_pending_navigation(&mut model, 47, NavigationRequestKind::Definition)?;
@@ -1086,7 +1086,7 @@ fn completion_result_admission_rejects_every_stale_or_invalid_shape() -> Result<
     ));
     assert!(matches!(
         model.status_message().as_deref(),
-        Some("No Rust completions.")
+        Some("No completions.")
     ));
 
     let pending = install_pending_completion(&mut model, 10)?;
@@ -1613,7 +1613,7 @@ fn symbol_cancellation_sources_and_error_merge_are_independent() -> Result<(), B
         &completion_result(r#"[{"label":"item"}]"#)?,
     )?;
     model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
-    model.status = Some(Arc::from("Rust analysis is not ready for navigation."));
+    model.status = Some(Arc::from("Language analysis is not ready for navigation."));
     assert!(
         model
             .request_navigation(NavigationRequestKind::Hover, LspPosition::new(0, 0)?)
@@ -1627,7 +1627,7 @@ fn symbol_cancellation_sources_and_error_merge_are_independent() -> Result<(), B
         &completion_result(r#"{"contents":"hover"}"#)?,
     )?;
     model.session.as_mut().ok_or("session")?.state = SessionState::Starting;
-    model.status = Some(Arc::from("Rust analysis is not ready for symbols."));
+    model.status = Some(Arc::from("Language analysis is not ready for symbols."));
     assert!(
         model
             .open_symbols(SymbolRequestKind::Document)
@@ -1876,7 +1876,7 @@ fn symbol_admission_rejects_stale_invalid_empty_truncated_and_oversized_results(
     ));
     assert!(matches!(
         model.status_message().as_deref(),
-        Some("No Rust document symbols.")
+        Some("No document symbols.")
     ));
 
     let values = (0..=(crate::rust_symbols::MAX_SYMBOL_ITEMS + 1))

@@ -1125,11 +1125,19 @@ fn decode_command(value: &str) -> Option<EditorCommand> {
         "open_replace" => Some(EditorCommand::OpenReplace),
         "go_to_line" => Some(EditorCommand::GoToLine),
         "trigger_completion" => Some(EditorCommand::TriggerCompletion),
-        "show_rust_hover" => Some(EditorCommand::ShowRustHover),
-        "go_to_rust_definition" => Some(EditorCommand::GoToRustDefinition),
-        "find_rust_references" => Some(EditorCommand::FindRustReferences),
-        "show_rust_document_symbols" => Some(EditorCommand::ShowRustDocumentSymbols),
-        "show_rust_workspace_symbols" => Some(EditorCommand::ShowRustWorkspaceSymbols),
+        "show_hover" | "show_rust_hover" => Some(EditorCommand::ShowRustHover),
+        "go_to_definition" | "go_to_rust_definition" => Some(EditorCommand::GoToRustDefinition),
+        "find_references" | "find_rust_references" => Some(EditorCommand::FindRustReferences),
+        "show_document_symbols" | "show_rust_document_symbols" => {
+            Some(EditorCommand::ShowRustDocumentSymbols)
+        }
+        "show_workspace_symbols" | "show_rust_workspace_symbols" => {
+            Some(EditorCommand::ShowRustWorkspaceSymbols)
+        }
+        "preview_rename" | "preview_rust_rename" => Some(EditorCommand::PreviewRustRename),
+        "preview_formatting" | "preview_rust_formatting" => {
+            Some(EditorCommand::PreviewRustFormatting)
+        }
         "reload_settings" => Some(EditorCommand::ReloadSettings),
         "toggle_file_tree" => Some(EditorCommand::ToggleFileTree),
         "split_right" => Some(EditorCommand::SplitRight),

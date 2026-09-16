@@ -201,7 +201,7 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
     let hover_snapshot = app.accessibility_snapshot()?;
     assert!(hover_snapshot.nodes().iter().any(|node| {
         node.role() == AccessibilityRole::Dialog
-            && node.name().starts_with("Rust hover:")
+            && node.name().starts_with("Hover:")
             && node.is_focused()
             && !node.supports_activate()
     }));
@@ -260,7 +260,7 @@ fn navigation_overlay_keyboard_and_accessibility_use_validated_product_paths()
     let navigation = location_snapshot
         .nodes()
         .iter()
-        .find(|node| node.name().starts_with("Rust references:"))
+        .find(|node| node.name().starts_with("References:"))
         .ok_or("navigation accessibility node")?;
     assert!(navigation.is_focused() && navigation.supports_activate());
     let action = AccessibilityAction::Activate {
@@ -569,7 +569,7 @@ fn symbol_overlay_accessibility_and_checked_navigation_are_exact() -> Result<(),
     let symbol_node = snapshot
         .nodes()
         .iter()
-        .find(|node| node.name().starts_with("Rust workspace symbols:"))
+        .find(|node| node.name().starts_with("Workspace symbols:"))
         .ok_or("symbol accessibility node")?;
     assert!(!symbol_node.is_focused());
     assert!(

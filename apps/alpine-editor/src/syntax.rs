@@ -1,6 +1,6 @@
 //! Compiled, dependency-free syntax presentation for the v1 language cohort.
 
-use std::{fmt, mem::size_of, ops::Range, path::Path, sync::Arc};
+use std::{fmt, mem::size_of, ops::Range, sync::Arc};
 
 use alpine_text::{BufferSnapshot, TextError, TextFingerprint};
 
@@ -15,21 +15,25 @@ pub(crate) enum SyntaxLanguage {
     Markdown,
     Toml,
     Json,
+    Python,
+    Cpp,
+    Java,
+    TypeScript,
+    JavaScript,
 }
 
 impl SyntaxLanguage {
-    pub(crate) fn from_path(path: Option<&Path>) -> Self {
-        let Some(path) = path else {
-            return Self::PlainText;
-        };
-        if path.file_name().and_then(|name| name.to_str()) == Some("Cargo.lock") {
-            return Self::Toml;
-        }
-        match path.extension().and_then(|extension| extension.to_str()) {
-            Some("rs") => Self::Rust,
-            Some("md" | "markdown") => Self::Markdown,
-            Some("toml") => Self::Toml,
-            Some("json") => Self::Json,
+    pub(crate) fn from_registry_name(name: &str) -> Self {
+        match name {
+            "rust" => Self::Rust,
+            "markdown" => Self::Markdown,
+            "toml" => Self::Toml,
+            "json" => Self::Json,
+            "python" => Self::Python,
+            "cpp" => Self::Cpp,
+            "java" => Self::Java,
+            "typescript" => Self::TypeScript,
+            "javascript" => Self::JavaScript,
             _ => Self::PlainText,
         }
     }
@@ -464,8 +468,110 @@ fn highlight_line(language: SyntaxLanguage, text: &str) -> Result<SyntaxLine, Sy
         SyntaxLanguage::Markdown => highlight_markdown(text, &mut emitter)?,
         SyntaxLanguage::Toml => highlight_toml(text, &mut emitter)?,
         SyntaxLanguage::Json => highlight_json(text, &mut emitter)?,
+        SyntaxLanguage::Python => highlight_python(text, &mut emitter)?,
+        SyntaxLanguage::Cpp => highlight_c_family(text, &mut emitter, cpp_keyword)?,
+        SyntaxLanguage::Java => highlight_c_family(text, &mut emitter, java_keyword)?,
+        SyntaxLanguage::TypeScript | SyntaxLanguage::JavaScript => {
+            highlight_c_family(text, &mut emitter, ecma_keyword)?;
+        }
     }
     emitter.finish()
+}
+
+fn highlight_python(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxError> {
+    let bytes = text.as_bytes();
+    let mut index = 0_usize;
+    for _ in 0..bytes.len() {
+        if index == bytes.len() {
+            return Ok(());
+        }
+        if bytes[index] == b'#' {
+            emitter.push(index, bytes.len(), SyntaxClass::Comment)?;
+            return Ok(());
+        }
+        let next = if bytes[index..].starts_with(b"\"\"\"") || bytes[index..].starts_with(b"'''") {
+            let quote = &bytes[index..index + 3];
+            let end = bytes[index + 3..]
+                .windows(3)
+                .position(|window| window == quote)
+                .map_or(bytes.len(), |offset| index + offset + 6);
+            emitter.push(index, end, SyntaxClass::String)?;
+            end
+        } else if matches!(bytes[index], b'"' | b'\'') {
+            let end = quoted_end(bytes, index, bytes[index]);
+            emitter.push(index, end, SyntaxClass::String)?;
+            end
+        } else if bytes[index].is_ascii_digit() {
+            let end = take_while(bytes, next_index(index)?, |byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')
+            });
+            emitter.push(index, end, SyntaxClass::Number)?;
+            end
+        } else if is_identifier_start(bytes[index]) {
+            let end = take_while(bytes, next_index(index)?, is_identifier_continue);
+            let word = &text[index..end];
+            if python_keyword(word) {
+                emitter.push(index, end, SyntaxClass::Keyword)?;
+            } else if bytes[index].is_ascii_uppercase() {
+                emitter.push(index, end, SyntaxClass::Type)?;
+            }
+            end
+        } else {
+            next_boundary(text, index)
+        };
+        index = require_forward(index, next, bytes.len())?;
+    }
+    require_scan_complete(index, bytes.len())
+}
+
+fn highlight_c_family(
+    text: &str,
+    emitter: &mut Emitter<'_>,
+    keyword: fn(&str) -> bool,
+) -> Result<(), SyntaxError> {
+    let bytes = text.as_bytes();
+    let mut index = 0_usize;
+    for _ in 0..bytes.len() {
+        if index == bytes.len() {
+            return Ok(());
+        }
+        if bytes[index..].starts_with(b"//") {
+            emitter.push(index, bytes.len(), SyntaxClass::Comment)?;
+            return Ok(());
+        }
+        let next = if bytes[index..].starts_with(b"/*") {
+            let end = find_pair(bytes, index + 2, *b"*/").unwrap_or(bytes.len());
+            emitter.push(index, end, SyntaxClass::Comment)?;
+            end
+        } else if bytes[index] == b'`' {
+            let end = quoted_end(bytes, index, b'`');
+            emitter.push(index, end, SyntaxClass::String)?;
+            end
+        } else if matches!(bytes[index], b'"' | b'\'') {
+            let end = quoted_end(bytes, index, bytes[index]);
+            emitter.push(index, end, SyntaxClass::String)?;
+            end
+        } else if bytes[index].is_ascii_digit() {
+            let end = take_while(bytes, next_index(index)?, |byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'x' | b'X')
+            });
+            emitter.push(index, end, SyntaxClass::Number)?;
+            end
+        } else if is_identifier_start(bytes[index]) {
+            let end = take_while(bytes, next_index(index)?, is_identifier_continue);
+            let word = &text[index..end];
+            if keyword(word) {
+                emitter.push(index, end, SyntaxClass::Keyword)?;
+            } else if bytes[index].is_ascii_uppercase() {
+                emitter.push(index, end, SyntaxClass::Type)?;
+            }
+            end
+        } else {
+            next_boundary(text, index)
+        };
+        index = require_forward(index, next, bytes.len())?;
+    }
+    require_scan_complete(index, bytes.len())
 }
 
 fn highlight_rust(text: &str, emitter: &mut Emitter<'_>) -> Result<(), SyntaxError> {
@@ -696,6 +802,239 @@ const fn is_identifier_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+fn python_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
+fn cpp_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "alignas"
+            | "alignof"
+            | "auto"
+            | "bool"
+            | "break"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "concept"
+            | "const"
+            | "consteval"
+            | "constexpr"
+            | "continue"
+            | "decltype"
+            | "default"
+            | "delete"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "explicit"
+            | "extern"
+            | "false"
+            | "float"
+            | "for"
+            | "friend"
+            | "goto"
+            | "if"
+            | "inline"
+            | "int"
+            | "long"
+            | "mutable"
+            | "namespace"
+            | "new"
+            | "noexcept"
+            | "nullptr"
+            | "operator"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "signed"
+            | "sizeof"
+            | "static"
+            | "struct"
+            | "switch"
+            | "template"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typedef"
+            | "typeid"
+            | "typename"
+            | "union"
+            | "unsigned"
+            | "using"
+            | "virtual"
+            | "void"
+            | "volatile"
+            | "while"
+    )
+}
+
+fn java_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "abstract"
+            | "assert"
+            | "boolean"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extends"
+            | "final"
+            | "finally"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "implements"
+            | "import"
+            | "instanceof"
+            | "int"
+            | "interface"
+            | "long"
+            | "native"
+            | "new"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "static"
+            | "strictfp"
+            | "super"
+            | "switch"
+            | "synchronized"
+            | "this"
+            | "throw"
+            | "throws"
+            | "transient"
+            | "try"
+            | "void"
+            | "volatile"
+            | "while"
+            | "var"
+            | "record"
+            | "sealed"
+            | "permits"
+            | "yield"
+    )
+}
+
+fn ecma_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "let"
+            | "new"
+            | "null"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "undefined"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "async"
+            | "as"
+            | "from"
+            | "of"
+            | "type"
+            | "interface"
+            | "implements"
+            | "private"
+            | "public"
+            | "protected"
+            | "readonly"
+            | "abstract"
+            | "declare"
+            | "namespace"
+            | "module"
+    )
+}
+
 fn rust_keyword(word: &str) -> bool {
     matches!(
         word,
@@ -788,30 +1127,105 @@ mod tests {
         assert_eq!(MAX_SYNTAX_LINE_BYTES, 65_536);
         assert_eq!(MAX_SYNTAX_SPANS_PER_LINE, 1_024);
         assert_eq!(
-            SyntaxLanguage::from_path(Some(Path::new("main.rs"))),
+            SyntaxLanguage::from_registry_name("rust"),
             SyntaxLanguage::Rust
         );
         assert_eq!(
-            SyntaxLanguage::from_path(Some(Path::new("README.md"))),
-            SyntaxLanguage::Markdown
+            SyntaxLanguage::from_registry_name("python"),
+            SyntaxLanguage::Python
         );
         assert_eq!(
-            SyntaxLanguage::from_path(Some(Path::new("Cargo.lock"))),
-            SyntaxLanguage::Toml
+            SyntaxLanguage::from_registry_name("cpp"),
+            SyntaxLanguage::Cpp
         );
         assert_eq!(
-            SyntaxLanguage::from_path(Some(Path::new("settings.toml"))),
-            SyntaxLanguage::Toml
+            SyntaxLanguage::from_registry_name("java"),
+            SyntaxLanguage::Java
         );
         assert_eq!(
-            SyntaxLanguage::from_path(Some(Path::new("data.json"))),
-            SyntaxLanguage::Json
+            SyntaxLanguage::from_registry_name("typescript"),
+            SyntaxLanguage::TypeScript
         );
         assert_eq!(
-            SyntaxLanguage::from_path(Some(Path::new("image.png"))),
+            SyntaxLanguage::from_registry_name("javascript"),
+            SyntaxLanguage::JavaScript
+        );
+        assert_eq!(
+            SyntaxLanguage::from_registry_name("unknown"),
             SyntaxLanguage::PlainText
         );
-        assert_eq!(SyntaxLanguage::from_path(None), SyntaxLanguage::PlainText);
+    }
+
+    #[test]
+    fn phase_two_lexers_colour_keywords_without_a_server() -> Result<(), SyntaxError> {
+        assert!(
+            classes(SyntaxLanguage::Python, "def answer(): return 42 # note")?
+                .contains(&SyntaxClass::Keyword)
+        );
+        assert!(
+            classes(SyntaxLanguage::Cpp, "int main() { return 0; // note")?
+                .contains(&SyntaxClass::Keyword)
+        );
+        assert!(
+            classes(SyntaxLanguage::Java, "public class Main { return; }")?
+                .contains(&SyntaxClass::Keyword)
+        );
+        assert!(
+            classes(
+                SyntaxLanguage::TypeScript,
+                "export function main(): void {}"
+            )?
+            .contains(&SyntaxClass::Keyword)
+        );
+        assert!(
+            classes(SyntaxLanguage::JavaScript, "const value = 1; // note")?
+                .contains(&SyntaxClass::Keyword)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn visible_lines_of_a_5000_line_file_highlight_within_100ms() -> Result<(), SyntaxError> {
+        const LINES: usize = 5_000;
+        const VISIBLE: usize = 48;
+        let mut source = String::new();
+        source
+            .try_reserve(LINES * 32)
+            .map_err(|_| SyntaxError::AllocationFailed)?;
+        for index in 0..LINES {
+            source.push_str("pub fn item_");
+            source.push_str(&index.to_string());
+            source.push_str("() { let n = 1; }\n");
+        }
+        let snapshot = Buffer::new(&source).snapshot();
+        let mut cache = SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)?;
+        let languages = [
+            SyntaxLanguage::Rust,
+            SyntaxLanguage::Python,
+            SyntaxLanguage::Cpp,
+            SyntaxLanguage::Java,
+            SyntaxLanguage::TypeScript,
+        ];
+        cache.begin_frame();
+        for language in languages {
+            for line in 0..VISIBLE {
+                let _ = cache.line(&snapshot, line, language)?;
+            }
+        }
+        for trial in 0..10 {
+            let started = std::time::Instant::now();
+            cache.begin_frame();
+            for language in languages {
+                for line in 0..VISIBLE {
+                    let _ = cache.line(&snapshot, line, language)?;
+                }
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(100),
+                "visible-range highlight trial {trial} exceeded 100ms"
+            );
+        }
+        Ok(())
     }
 
     #[test]
