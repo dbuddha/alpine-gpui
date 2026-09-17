@@ -15,6 +15,8 @@ mod file_tree;
 mod find;
 mod find_input;
 mod go_to_line;
+mod language_registry;
+mod language_services;
 mod legacy_migration;
 #[cfg_attr(
     not(test),
@@ -122,9 +124,9 @@ use alpine_text::{
     SelectionSet, TextError, Transaction,
 };
 use alpine_text_layout::{
-    DEFAULT_ATLAS_BUDGET_BYTES, DEFAULT_LAYOUT_BUDGET_BYTES, DEFAULT_OVERSCAN_LINES, FontKey,
-    GlyphAtlas, GlyphKey, GlyphRasterizer, LayoutError, LineLayout, LineLayoutCache,
-    PositiveFinite, TextShaper, VisibleLines,
+    DEFAULT_ATLAS_BUDGET_BYTES, DEFAULT_LABEL_LAYOUT_BUDGET_BYTES, DEFAULT_LAYOUT_BUDGET_BYTES,
+    DEFAULT_OVERSCAN_LINES, FontKey, GlyphAtlas, GlyphKey, GlyphRasterizer, LabelLayoutCache,
+    LayoutError, LineLayout, LineLayoutCache, PositiveFinite, TextShaper, VisibleLines,
 };
 use commands::{CommandContext, CommandPalette, CommandPaletteError, EditorCommand};
 use documents::RestoredDocumentTab;
@@ -137,6 +139,7 @@ use find::{
     FindAdmission, FindError, FindIdentity, FindNavigation, FindRequest, FindState,
     FindWorkerOutput, MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
+use language_services::LanguageServices;
 use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
 use profiling::{EditorProfiler, MeasuredTextSystem, TextSystemSnapshot};
 use project_search::{
@@ -147,10 +150,12 @@ use quick_open::{
     QuickOpenAdmission, QuickOpenError, QuickOpenRequest, QuickOpenState, QuickOpenWorkerOutput,
 };
 use rust_completion::{MAX_VISIBLE_COMPLETION_ROWS, position_for_byte};
+#[cfg(test)]
+use rust_diagnostics::RustDiagnostics;
 use rust_diagnostics::{
     CompletionApplication, LanguageEffect, LanguageIdentity, LanguageWake, LanguageWakeLatch,
-    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDiagnostics, RustDocumentInput,
-    WorkspaceEditKind, WorkspaceEditPreparationOutput,
+    MAX_VISIBLE_DIAGNOSTIC_MARKERS, NavigationRequestKind, RustDocumentInput, WorkspaceEditKind,
+    WorkspaceEditPreparationOutput,
 };
 use rust_navigation::{
     MAX_VISIBLE_HOVER_LINES, MAX_VISIBLE_SOURCE_LOCATIONS, NavigationError, ResolvedSourceLocation,
@@ -191,7 +196,7 @@ use settings::{
     KEY_A, KEY_E, KEY_F, KEY_LEFT_BRACKET, KEY_P, KEY_RIGHT_BRACKET, KEY_S, KEY_W, KEY_Z,
 };
 use syntax::SyntaxClass;
-use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLanguage, SyntaxLine};
+use syntax::{DEFAULT_SYNTAX_BUDGET_BYTES, SyntaxCache, SyntaxError, SyntaxLine};
 use workspace::Workspace;
 
 #[cfg(test)]
@@ -208,7 +213,7 @@ const CONTENT_INSET: f32 = 24.0;
 const CARET_WIDTH: f32 = 1.5;
 const SIDEBAR_WIDTH: f32 = 236.0;
 const TREE_ROW_HEIGHT: f32 = 22.0;
-const TREE_OVERSCAN_ROWS: usize = 3;
+const TREE_OVERSCAN_ROWS: usize = 16; // unique names; editor overscan stays at 3
 const TAB_BAR_HEIGHT: f32 = 24.0;
 const TAB_WIDTH: f32 = 160.0;
 const TAB_OVERSCAN: usize = 2;
@@ -245,7 +250,6 @@ fn tab_close_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
     ))
 }
 
-#[cfg(test)]
 fn tab_label_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
     let reserved = TAB_CLOSE_SIZE + TAB_CLOSE_INSET * 2.0;
     let width = (slot.size().width() - reserved).max(1.0);
@@ -253,6 +257,18 @@ fn tab_label_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
         slot.origin(),
         Size::new(width, slot.size().height()).ok_or(EditorRenderError::Domain)?,
     ))
+}
+
+fn rect_contains_bounds(outer: Rect, inner: Rect) -> bool {
+    const EPSILON: f32 = 0.5;
+    let outer_right = outer.origin().x() + outer.size().width();
+    let outer_bottom = outer.origin().y() + outer.size().height();
+    let inner_right = inner.origin().x() + inner.size().width();
+    let inner_bottom = inner.origin().y() + inner.size().height();
+    inner.origin().x() + EPSILON >= outer.origin().x()
+        && inner.origin().y() + EPSILON >= outer.origin().y()
+        && inner_right <= outer_right + EPSILON
+        && inner_bottom <= outer_bottom + EPSILON
 }
 
 fn point_in_rect(rect: Rect, point: Point) -> bool {
@@ -264,30 +280,66 @@ fn point_in_rect(rect: Rect, point: Point) -> bool {
         && point.y() < origin.y() + size.height()
 }
 
-fn scroll_thumb_bounds(
-    pane: Rect,
+fn scroll_thumb_in_track(
+    track: Rect,
     scroll_y: f32,
-    line_count: usize,
+    content_height: f32,
 ) -> Result<Option<Rect>, EditorRenderError> {
-    let track_height = (pane.size().height() - LINE_HEIGHT).max(1.0);
-    let content_height = (usize_as_f32(line_count.max(1)) * LINE_HEIGHT).max(track_height);
+    let track_height = track.size().height().max(1.0);
+    let content_height = content_height.max(track_height);
     let min_thumb = SCROLLBAR_MIN_THUMB.min(track_height);
     let thumb_height =
         (track_height * (track_height / content_height)).clamp(min_thumb, track_height);
     let max_scroll = (content_height - track_height).max(0.0);
     let travel = (track_height - thumb_height).max(0.0);
     let thumb_top = if max_scroll <= 0.0 {
-        pane.origin().y()
+        track.origin().y()
     } else {
-        pane.origin().y() + (scroll_y / max_scroll).clamp(0.0, 1.0) * travel
+        track.origin().y() + (scroll_y / max_scroll).clamp(0.0, 1.0) * travel
     };
     let origin = Point::new(
-        pane.origin().x() + pane.size().width() - SCROLLBAR_WIDTH,
+        track.origin().x() + track.size().width() - SCROLLBAR_WIDTH,
         thumb_top,
     )
     .ok_or(EditorRenderError::Domain)?;
     let size = Size::new(SCROLLBAR_WIDTH, thumb_height).ok_or(EditorRenderError::Domain)?;
     Ok(Some(Rect::new(origin, size)))
+}
+
+fn scroll_thumb_bounds(
+    pane: Rect,
+    scroll_y: f32,
+    line_count: usize,
+) -> Result<Option<Rect>, EditorRenderError> {
+    let track_height = (pane.size().height() - LINE_HEIGHT).max(1.0);
+    let track = Rect::new(
+        pane.origin(),
+        Size::new(pane.size().width(), track_height).ok_or(EditorRenderError::Domain)?,
+    );
+    scroll_thumb_in_track(
+        track,
+        scroll_y,
+        usize_as_f32(line_count.max(1)) * LINE_HEIGHT,
+    )
+}
+
+fn workspace_scroll_thumb_bounds(
+    sidebar: Rect,
+    scroll_y: f32,
+    row_count: usize,
+) -> Result<Option<Rect>, EditorRenderError> {
+    let track_height = (sidebar.size().height() - CONTENT_INSET).max(1.0);
+    let origin = Point::new(sidebar.origin().x(), sidebar.origin().y() + CONTENT_INSET)
+        .ok_or(EditorRenderError::Domain)?;
+    let track = Rect::new(
+        origin,
+        Size::new(sidebar.size().width(), track_height).ok_or(EditorRenderError::Domain)?,
+    );
+    scroll_thumb_in_track(
+        track,
+        scroll_y,
+        usize_as_f32(row_count.max(1)) * TREE_ROW_HEIGHT,
+    )
 }
 const FIND_BAR_WIDTH: f32 = 420.0;
 const FIND_BAR_HEIGHT: f32 = 30.0;
@@ -1990,6 +2042,7 @@ struct EditorApp {
     last_viewport: Size,
     rendered_lines: Vec<RenderedLine>,
     layout_cache: LineLayoutCache,
+    label_cache: LabelLayoutCache,
     syntax_cache: SyntaxCache,
     glyph_atlas: GlyphAtlas,
     published_atlas: Option<GlyphAtlasImage>,
@@ -2002,7 +2055,7 @@ struct EditorApp {
     dogfood_accessibility_actions: u64,
     profile_event_timestamp: EventTimestamp,
     profile_scene_revision: SceneRevision,
-    rust_diagnostics: RustDiagnostics,
+    rust_diagnostics: LanguageServices,
     language_wake_latch: LanguageWakeLatch,
     workspace_edits: WorkspaceEditPanel,
     #[cfg(test)]
@@ -2220,8 +2273,10 @@ impl EditorApp {
     /// spawn a process. The overlay is the opened workspace or file so rustup
     /// resolution does not depend on the process working directory.
     pub(crate) fn adopt_discovered_language_server(&mut self) {
-        self.rust_diagnostics =
-            rust_diagnostics::discovered_with_overlay(self.language_overlay_path());
+        let overlay = self.language_overlay_path().map(Path::to_path_buf);
+        self.rust_diagnostics
+            .set_discovery_overlay(overlay.as_deref());
+        self.rust_diagnostics.reload_registry_from_home();
     }
 
     fn language_overlay_path(&self) -> Option<&Path> {
@@ -2318,6 +2373,10 @@ impl EditorApp {
             last_viewport,
             rendered_lines: Vec::new(),
             layout_cache: LineLayoutCache::new(layout_budget),
+            label_cache: LabelLayoutCache::new(
+                NonZeroUsize::new(DEFAULT_LABEL_LAYOUT_BUDGET_BYTES)
+                    .ok_or(APPLICATION_INVARIANT)?,
+            ),
             syntax_cache: SyntaxCache::new(DEFAULT_SYNTAX_BUDGET_BYTES)
                 .map_err(|_| APPLICATION_INVARIANT)?,
             glyph_atlas: GlyphAtlas::new(atlas_budget),
@@ -2331,7 +2390,7 @@ impl EditorApp {
             dogfood_accessibility_actions: 0,
             profile_event_timestamp: EventTimestamp::new(0),
             profile_scene_revision: SceneRevision::new(0),
-            rust_diagnostics: RustDiagnostics::default(),
+            rust_diagnostics: LanguageServices::default(),
             language_wake_latch: LanguageWakeLatch::default(),
             workspace_edits: WorkspaceEditPanel::default(),
             #[cfg(test)]
@@ -2505,7 +2564,10 @@ impl EditorApp {
                 .clamp_tab_view(index, pane.view)
                 .map_err(|_| SessionRestoreError::Tabs)?;
         }
-        app.restore_availability = RestoreAvailability::Strict;
+        // Visible pane documents already materialized above. Remaining deferred
+        // tabs stay lazy; switching to one that disappeared from disk must
+        // become a placeholder instead of blocking the tab strip.
+        app.restore_availability = RestoreAvailability::AllowPlaceholder;
         let mut tab_ids = Vec::new();
         tab_ids
             .try_reserve_exact(app.tabs.len())
@@ -2745,6 +2807,8 @@ impl EditorApp {
     }
 
     fn publish_recovery(&mut self) {
+        #[cfg(test)]
+        RECOVERY_PUBLISH_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         if self.recovery.is_none() {
             return;
         }
@@ -2953,6 +3017,7 @@ impl EditorApp {
         self.last_viewport = viewport;
         self.clamp_scroll();
         self.layout_cache.begin_frame()?;
+        self.label_cache.begin_frame()?;
         self.syntax_cache.begin_frame();
 
         let origin = Point::new(0.0, 0.0).ok_or(EditorRenderError::Domain)?;
@@ -3045,11 +3110,20 @@ impl EditorApp {
                         .clipped(sidebar_clip);
                     builder.push_quad(row)?;
                 }
-                let layout = self.text_system.shape(row.label(), font)?;
+                let layout =
+                    self.label_cache
+                        .layout_label(row.label(), font, &mut self.text_system)?;
                 let baseline = top + layout.ascent();
                 let indent = usize_as_f32(row.depth).mul_add(12.0, CONTENT_INSET);
                 let glyphs = self.collect_glyphs(&layout, font, indent, baseline, sidebar_clip)?;
                 pending_glyphs.extend(glyphs);
+            }
+            if let Some(thumb) = workspace_scroll_thumb_bounds(
+                sidebar_bounds,
+                self.workspace_scroll_y,
+                self.file_tree.total_rows(),
+            )? {
+                builder.push_quad(Quad::new(thumb, active_tab_color).clipped(sidebar_clip))?;
             }
         }
         let tab_origin = Point::new(sidebar_width, 0.0).ok_or(EditorRenderError::Domain)?;
@@ -3082,21 +3156,31 @@ impl EditorApp {
             builder.push_quad(active_quad)?;
         }
 
-        let close_layout = self.text_system.shape("x", font)?;
+        let close_layout = self
+            .label_cache
+            .layout_label("x", font, &mut self.text_system)?;
         for (index, label) in &tab_labels {
             let slot = tab_slot_bounds(sidebar_width, *index, self.tab_scroll_x)?;
             let Some(visible_slot) = slot.intersection(tab_bounds) else {
                 continue;
             };
             let slot_clip = builder.push_clip(Clip::new(visible_slot));
-            let layout = self.text_system.shape(label, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &layout,
-                font,
-                slot.origin().x() + 8.0,
-                layout.ascent() + 4.0,
-                slot_clip,
-            )?);
+            let label_area = tab_label_bounds(slot)?;
+            if let Some(visible_label) = label_area.intersection(tab_bounds) {
+                let label_clip = builder.push_clip(Clip::new(visible_label));
+                let layout = self
+                    .label_cache
+                    .layout_label(label, font, &mut self.text_system)?;
+                let mut label_glyphs = self.collect_glyphs(
+                    &layout,
+                    font,
+                    slot.origin().x() + 8.0,
+                    layout.ascent() + 4.0,
+                    label_clip,
+                )?;
+                label_glyphs.retain(|glyph| rect_contains_bounds(visible_label, glyph.bounds));
+                pending_glyphs.extend(label_glyphs);
+            }
             if tab_close_bounds(slot)?.intersection(visible_slot).is_some() {
                 pending_glyphs.extend(self.collect_glyphs(
                     &close_layout,
@@ -3129,7 +3213,9 @@ impl EditorApp {
                 .tabs
                 .index_for_id(pane_tab)
                 .ok_or(EditorRenderError::Domain)?;
-            let syntax_language = SyntaxLanguage::from_path(self.tabs.path_at(pane_tab_index));
+            let syntax_language = self
+                .rust_diagnostics
+                .highlighter_for_path(self.tabs.path_at(pane_tab_index));
             let pane_scroll = pane_view.scroll_y;
             let viewport_height = PositiveFinite::new(pane.bounds.size().height())
                 .ok_or(EditorRenderError::Domain)?;
@@ -3149,12 +3235,12 @@ impl EditorApp {
             let pane_origin_x = pane.bounds.origin().x();
             let text_origin_x = editor_text_origin_x(pane_origin_x);
             let pane_selection = pane_view.selection.range();
-            let gutter_clip = builder.push_clip(Clip::new(Rect::new(
+            let gutter_bounds = Rect::new(
                 Point::new(pane_origin_x, pane.bounds.origin().y())
                     .ok_or(EditorRenderError::Domain)?,
                 Size::new(GUTTER_WIDTH, pane.bounds.size().height())
                     .ok_or(EditorRenderError::Domain)?,
-            )));
+            );
             let gutter_color = syntax_palette.color(SyntaxClass::Comment);
             for line in visible.laid_out() {
                 let projected_line = pane_projection
@@ -3273,16 +3359,32 @@ impl EditorApp {
                 };
                 pending_glyphs.extend(glyphs);
                 let line_number = line.saturating_add(1).to_string();
-                let number_layout = self.text_system.shape(&line_number, font)?;
+                let number_layout =
+                    self.label_cache
+                        .layout_label(&line_number, font, &mut self.text_system)?;
                 let number_x =
                     (pane_origin_x + GUTTER_WIDTH - GUTTER_NUMBER_INSET - number_layout.width())
                         .max(pane_origin_x);
-                let mut number_glyphs =
-                    self.collect_glyphs(&number_layout, font, number_x, baseline, gutter_clip)?;
-                for glyph in &mut number_glyphs {
-                    glyph.color = Some(gutter_color);
+                let row = Rect::new(
+                    Point::new(pane_origin_x, top).ok_or(EditorRenderError::Domain)?,
+                    Size::new(GUTTER_WIDTH, LINE_HEIGHT).ok_or(EditorRenderError::Domain)?,
+                );
+                if let Some(visible_row) = row.intersection(gutter_bounds) {
+                    let number_clip = builder.push_clip(Clip::new(visible_row));
+                    let number_baseline = top + number_layout.ascent();
+                    let mut number_glyphs = self.collect_glyphs(
+                        &number_layout,
+                        font,
+                        number_x,
+                        number_baseline,
+                        number_clip,
+                    )?;
+                    number_glyphs.retain(|glyph| rect_contains_bounds(visible_row, glyph.bounds));
+                    for glyph in &mut number_glyphs {
+                        glyph.color = Some(gutter_color);
+                    }
+                    pending_glyphs.extend(number_glyphs);
                 }
-                pending_glyphs.extend(number_glyphs);
                 if pane.active {
                     rendered_lines.push(RenderedLine {
                         line,
@@ -3390,7 +3492,9 @@ impl EditorApp {
         let status = chord_status
             .or_else(|| status_bar_text(self.local_status.as_ref(), language_status.as_deref()));
         let status_background = if let Some(status) = status {
-            let layout = self.text_system.shape(status, font)?;
+            let layout = self
+                .label_cache
+                .layout_label(status, font, &mut self.text_system)?;
             let top = (active_pane.bounds.origin().y() + content_size.height() - LINE_HEIGHT)
                 .max(active_pane.bounds.origin().y());
             let baseline = top + layout.ascent();
@@ -3440,7 +3544,9 @@ impl EditorApp {
                     .completion_row(language_identity, index)
                     .ok_or(EditorRenderError::Domain)?;
                 let selected = row.selected;
-                let layout = self.text_system.shape(row.label, font)?;
+                let layout =
+                    self.label_cache
+                        .layout_label(row.label, font, &mut self.text_system)?;
                 let row_top = top + usize_as_f32(visible_row) * LINE_HEIGHT;
                 if selected {
                     let row_origin = Point::new(left, row_top).ok_or(EditorRenderError::Domain)?;
@@ -3483,7 +3589,9 @@ impl EditorApp {
                     .rust_diagnostics
                     .hover_line(language_identity, row)
                     .ok_or(EditorRenderError::Domain)?;
-                let layout = self.text_system.shape(line, font)?;
+                let layout = self
+                    .label_cache
+                    .layout_label(line, font, &mut self.text_system)?;
                 let baseline = top + usize_as_f32(row) * LINE_HEIGHT + layout.ascent() + 3.0;
                 let glyphs = self.collect_glyphs(
                     &layout,
@@ -3524,7 +3632,9 @@ impl EditorApp {
                         .clipped(overlay_clip);
                     builder.push_quad(selected)?;
                 }
-                let layout = self.text_system.shape(row.label, font)?;
+                let layout =
+                    self.label_cache
+                        .layout_label(row.label, font, &mut self.text_system)?;
                 let baseline = row_top + layout.ascent() + 3.0;
                 let glyphs = self.collect_glyphs(
                     &layout,
@@ -3571,7 +3681,9 @@ impl EditorApp {
                         .clipped(overlay_clip);
                     builder.push_quad(selected)?;
                 }
-                let layout = self.text_system.shape(row.label, font)?;
+                let layout =
+                    self.label_cache
+                        .layout_label(row.label, font, &mut self.text_system)?;
                 pending_glyphs.extend(self.collect_glyphs(
                     &layout,
                     font,
@@ -3606,7 +3718,9 @@ impl EditorApp {
                     .workspace_edits
                     .line(row)
                     .ok_or(EditorRenderError::Domain)?;
-                let layout = self.text_system.shape(line, font)?;
+                let layout = self
+                    .label_cache
+                    .layout_label(line, font, &mut self.text_system)?;
                 let baseline = workspace_edit_line_baseline(top, row, layout.ascent());
                 let x = workspace_edit_text_x(left);
                 let clip = overlay_clip;
@@ -3669,7 +3783,9 @@ impl EditorApp {
                             .clipped(overlay_clip);
                     builder.push_quad(selected_quad)?;
                 }
-                let layout = self.text_system.shape(path, font)?;
+                let layout = self
+                    .label_cache
+                    .layout_label(path, font, &mut self.text_system)?;
                 let origin_x = left + FIND_BAR_INSET;
                 let baseline = row_top + layout.ascent() + 4.0;
                 let row_glyphs =
@@ -3725,7 +3841,9 @@ impl EditorApp {
                             .clipped(project_selection_clip),
                     )?;
                 }
-                let layout = self.text_system.shape(&row.label, font)?;
+                let layout =
+                    self.label_cache
+                        .layout_label(&row.label, font, &mut self.text_system)?;
                 let baseline = row_top + layout.ascent() + 4.0;
                 #[allow(
                     clippy::question_mark,
@@ -3790,7 +3908,9 @@ impl EditorApp {
                             .clipped(command_selection_clip),
                     )?;
                 }
-                let layout = self.text_system.shape(row.title, font)?;
+                let layout =
+                    self.label_cache
+                        .layout_label(row.title, font, &mut self.text_system)?;
                 let baseline = row_top + layout.ascent() + 4.0;
                 pending_glyphs.extend(self.collect_glyphs(
                     &layout,
@@ -3800,7 +3920,9 @@ impl EditorApp {
                     overlay_clip,
                 )?);
                 if let Some(shortcut) = self.settings.active().keymap.shortcut_for(row.command) {
-                    let shortcut_layout = self.text_system.shape(shortcut, font)?;
+                    let shortcut_layout =
+                        self.label_cache
+                            .layout_label(shortcut, font, &mut self.text_system)?;
                     let shortcut_left = (left + width - FIND_BAR_INSET - shortcut_layout.width())
                         .max(left + FIND_BAR_INSET);
                     pending_glyphs.extend(self.collect_glyphs(
@@ -7765,14 +7887,12 @@ impl EditorApp {
             return None;
         }
         let path = self.tabs.path_at(self.tabs.active_index())?;
-        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
-            return None;
-        }
-        let workspace_root = self
-            .workspace
-            .as_ref()
-            .map(Workspace::root)
-            .or_else(|| path.parent())?;
+        let spec = self.rust_diagnostics.language_for_path(Some(path))?;
+        spec.server_id()?;
+        let workspace_root = self.workspace.as_ref().map_or_else(
+            || self.rust_diagnostics.workspace_root(path),
+            Workspace::root,
+        );
         Some(RustDocumentInput::new(
             path,
             workspace_root,
@@ -7785,6 +7905,8 @@ impl EditorApp {
         &mut self,
         context: &AppContext<'_, EditorWorkerOutput>,
     ) -> LanguageEffect {
+        self.rust_diagnostics
+            .replace_open_paths((0..self.tabs.len()).filter_map(|index| self.tabs.path_at(index)));
         let input = self.active_rust_document();
         let producer = context.external_producer();
         let latch = self.language_wake_latch.clone();
@@ -7917,7 +8039,8 @@ impl EditorApp {
             let admitted = context.advance_document(revision);
             self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
         }
-        if Self::selection_changed(selection_before, self.selection) {
+        let selection_changed = Self::selection_changed(selection_before, self.selection);
+        if selection_changed {
             effect = effect.merge(self.reveal_primary_caret());
         }
         self.advance_selection_revision(selection_before);
@@ -7952,7 +8075,9 @@ impl EditorApp {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        self.publish_recovery();
+        if should_publish_recovery_after_event(effect.document_changed, selection_changed) {
+            self.publish_recovery();
+        }
         self.record_profile(
             EditorSignpostStage::StateMutationComplete,
             SceneRevision::new(0),
@@ -7965,12 +8090,34 @@ impl EditorApp {
     }
 }
 
+const fn should_publish_recovery_after_event(
+    document_changed: bool,
+    selection_changed: bool,
+) -> bool {
+    document_changed || selection_changed
+}
+
 const fn visual_change_present(first: bool, second: bool) -> bool {
     first || second
 }
 
 const fn should_poll_latched_after_worker(language_result: bool) -> bool {
     !language_result
+}
+
+#[cfg(test)]
+thread_local! {
+    static RECOVERY_PUBLISH_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_recovery_publish_calls() {
+    RECOVERY_PUBLISH_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn recovery_publish_calls() -> u64 {
+    RECOVERY_PUBLISH_CALLS.with(std::cell::Cell::get)
 }
 
 enum EditorWorkerOutput {
@@ -8161,7 +8308,9 @@ impl AppDelegate for EditorApp {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        self.publish_recovery();
+        if should_publish_recovery_after_event(effect.document_changed, false) {
+            self.publish_recovery();
+        }
     }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
@@ -10449,19 +10598,27 @@ mod session_integration_tests {
         assert!(app.file_tree.is_active());
         assert!(!app.file_tree.is_focused());
         assert_eq!(app.tabs.is_deferred(2), Ok(true));
-        assert!(matches!(
-            app.activate_document_tab(2),
-            Err(WorkspaceSelectionError::File(_))
-        ));
+        assert!(app.activate_document_tab(2)?.document_identity_advanced);
+        assert_eq!(app.tabs.active_index(), 2);
+        assert_eq!(app.tabs.is_deferred(2), Ok(false));
+        assert!(app.document.is_unavailable());
+        tests::assert_no_missing_file_io_status(&app);
+        assert!(app.activate_document_tab(1)?.document_identity_advanced);
         assert_eq!(app.tabs.active_index(), 1);
-        assert_eq!(app.tabs.is_deferred(2), Ok(true));
+        assert_eq!(app.buffer().snapshot().text(), "beta\n");
         let missing_id = app.tabs.id_at(2).ok_or("missing tab identity")?;
         app.tabs.inject_forward_history_target_for_test(missing_id);
         let failures = app.workspace_failures;
-        assert!(app.navigate_document_history(true).visual_changed);
-        assert_eq!(app.workspace_failures, failures + 1);
+        assert!(
+            app.navigate_document_history(true)
+                .document_identity_advanced
+        );
+        assert_eq!(app.workspace_failures, failures);
+        assert_eq!(app.tabs.active_index(), 2);
+        assert!(app.document.is_unavailable());
+        tests::assert_no_missing_file_io_status(&app);
+        assert!(app.activate_document_tab(1)?.document_identity_advanced);
         assert_eq!(app.tabs.active_index(), 1);
-        assert_eq!(app.tabs.is_deferred(2), Ok(true));
 
         let scratch_id = app.tabs.id_at(0).ok_or("scratch tab identity")?;
         app.tabs.inject_forward_history_target_for_test(scratch_id);
@@ -10610,6 +10767,56 @@ mod session_integration_tests {
             EditorApp::from_session(tests::TestTextSystem, missing_visible_state),
             Err(SessionRestoreError::File)
         ));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn switching_restored_tabs_does_not_surface_missing_file_io()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-editor-tab-switch-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        fs::write(root.join("alpha.rs"), "alpha\n")?;
+        fs::write(root.join("beta.rs"), "beta\n")?;
+        let mut app = EditorApp::from_session(tests::TestTextSystem, test_state(&root))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.is_deferred(2), Ok(true));
+        assert_eq!(app.tabs.is_deferred(3), Ok(true));
+
+        let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+        app.last_viewport = viewport;
+        let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear")?;
+        let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+        let _ = runtime.frame_if_dirty();
+
+        let _ = runtime.dispatch(&tests::pointer_down(
+            tests::tab_label_click_point(runtime.delegate(), 2)?,
+            1,
+        ));
+        assert_eq!(runtime.delegate().tabs.active_index(), 2);
+        assert!(runtime.delegate().document.is_unavailable());
+        tests::assert_no_missing_file_io_status(runtime.delegate());
+
+        let _ = runtime.dispatch(&tests::pointer_down(
+            tests::tab_label_click_point(runtime.delegate(), 3)?,
+            2,
+        ));
+        assert_eq!(runtime.delegate().tabs.active_index(), 3);
+        assert_eq!(runtime.delegate().buffer().snapshot().text(), "alpha\n");
+        assert!(!runtime.delegate().document.is_unavailable());
+        tests::assert_no_missing_file_io_status(runtime.delegate());
+
+        let _ = runtime.dispatch(&tests::next_tab_key());
+        assert_eq!(runtime.delegate().tabs.active_index(), 0);
+        tests::assert_no_missing_file_io_status(runtime.delegate());
+        assert!(runtime.delegate().last_workspace_error.is_none());
         fs::remove_dir_all(root)?;
         Ok(())
     }

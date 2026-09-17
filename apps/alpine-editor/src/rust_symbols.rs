@@ -45,15 +45,15 @@ impl SymbolRequestKind {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Document => "Rust document symbols",
-            Self::Workspace => "Rust workspace symbols",
+            Self::Document => "Document symbols",
+            Self::Workspace => "Workspace symbols",
         }
     }
 
     pub(crate) const fn empty_status(self) -> &'static str {
         match self {
-            Self::Document => "No Rust document symbols.",
-            Self::Workspace => "No Rust workspace symbols.",
+            Self::Document => "No document symbols.",
+            Self::Workspace => "No workspace symbols.",
         }
     }
 }
@@ -76,7 +76,7 @@ pub(crate) enum SymbolError {
 
 impl fmt::Display for SymbolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Rust symbols rejected input: {self:?}")
+        write!(formatter, "symbols rejected input: {self:?}")
     }
 }
 
@@ -951,18 +951,15 @@ mod tests {
                 + super::super::field_edit::history_budget(MAX_SYMBOL_QUERY_BYTES),
             MAX_SYMBOL_RETAINED_BYTES
         );
-        assert_eq!(SymbolRequestKind::Document.label(), "Rust document symbols");
-        assert_eq!(
-            SymbolRequestKind::Workspace.label(),
-            "Rust workspace symbols"
-        );
+        assert_eq!(SymbolRequestKind::Document.label(), "Document symbols");
+        assert_eq!(SymbolRequestKind::Workspace.label(), "Workspace symbols");
         assert_eq!(
             SymbolRequestKind::Document.empty_status(),
-            "No Rust document symbols."
+            "No document symbols."
         );
         assert_eq!(
             SymbolRequestKind::Workspace.empty_status(),
-            "No Rust workspace symbols."
+            "No workspace symbols."
         );
         assert_eq!(
             SymbolBatch::admit(SymbolRequestKind::Document, &raw("null"), URI),
@@ -1025,11 +1022,7 @@ mod tests {
             SymbolError::AllocationFailed,
             SymbolError::Navigation(NavigationError::InvalidUtf8),
         ] {
-            assert!(
-                error
-                    .to_string()
-                    .starts_with("Rust symbols rejected input:")
-            );
+            assert!(error.to_string().starts_with("symbols rejected input:"));
         }
     }
 

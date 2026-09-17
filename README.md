@@ -63,7 +63,7 @@ scripts/check.sh                                 # full local gate
 Build a local application bundle:
 
 ```sh
-scripts/build-alpine-editor-app.sh
+scripts/build-alpine-editor-app.sh               # installs ~/Applications/Alpine Editor.app
 scripts/launch-alpine-editor-app.sh path/to/file-or-folder
 ```
 

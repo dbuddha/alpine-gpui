@@ -89,6 +89,8 @@ fn retained_entry(bytes: usize) -> Result<CacheEntry, Box<dyn Error>> {
 #[allow(clippy::float_cmp)]
 fn value_observers_validation_and_cache_branches_are_complete() -> Result<(), Box<dyn Error>> {
     assert_eq!(DEFAULT_LAYOUT_BUDGET_BYTES, 33_554_432);
+    assert_eq!(DEFAULT_LABEL_LAYOUT_BUDGET_BYTES, 1_048_576);
+    assert_eq!(DEFAULT_MAX_LABEL_CACHE_ENTRIES, 512);
     assert_eq!(DEFAULT_ATLAS_BUDGET_BYTES, 16_777_216);
     assert_eq!(DEFAULT_OVERSCAN_LINES, 3);
     assert_eq!(DEFAULT_MAX_LINE_BYTES, 1_048_576);

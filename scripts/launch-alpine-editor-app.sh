@@ -5,7 +5,7 @@ usage() {
     cat <<'EOF'
 usage: scripts/launch-alpine-editor-app.sh [FILE_OR_FOLDER]
 
-Launch the already-built local release Alpine Editor.app through LaunchServices.
+Launch the installed Alpine Editor.app from ~/Applications through LaunchServices.
 EOF
 }
 
@@ -23,10 +23,9 @@ if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
     exit 1
 fi
 
-repository_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
-bundle="$repository_root/target/release/Alpine Editor.app"
+bundle="${HOME:?}/Applications/Alpine Editor.app"
 if [ ! -x "$bundle/Contents/MacOS/alpine-editor" ]; then
-    printf 'Alpine Editor launch error: build the release app first with scripts/build-alpine-editor-app.sh\n' >&2
+    printf 'Alpine Editor launch error: install the app first with scripts/build-alpine-editor-app.sh\n' >&2
     exit 1
 fi
 

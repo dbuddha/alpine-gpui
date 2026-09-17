@@ -10,7 +10,9 @@ use std::{
 };
 
 use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase, SurfaceExtent};
-use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
+use alpine_text_layout::{
+    DEFAULT_MAX_LABEL_CACHE_ENTRIES, GlyphBitmap, RasterizedGlyph, ShapedGlyph,
+};
 
 use crate::rust_navigation::SourceLocations;
 
@@ -263,6 +265,55 @@ fn viewport() -> Result<Size, SurfaceError> {
     Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or(SurfaceError::invariant(
         alpine_platform_macos::SurfaceOperation::Application,
     ))
+}
+
+pub(super) fn assert_no_missing_file_io_status(app: &EditorApp) {
+    if let Some(message) = app.last_workspace_error.as_deref() {
+        assert!(
+            !message.contains("workspace file failed"),
+            "tab switch reported {message}"
+        );
+        assert!(
+            !message.contains("NotFound"),
+            "tab switch reported {message}"
+        );
+    }
+    if let Some(status) = app.local_status.as_ref().map(LocalStatus::message) {
+        assert!(
+            !status.contains("workspace file failed"),
+            "status bar reported {status}"
+        );
+        assert!(!status.contains("NotFound"), "status bar reported {status}");
+    }
+}
+
+pub(super) fn tab_label_click_point(
+    app: &EditorApp,
+    index: usize,
+) -> Result<Point, Box<dyn Error>> {
+    let slot = tab_slot_bounds(
+        app.sidebar_width(app.last_viewport),
+        index,
+        app.tab_scroll_x,
+    )?;
+    Ok(Point::new(slot.origin().x() + 8.0, TAB_BAR_HEIGHT * 0.5).ok_or("tab label")?)
+}
+
+pub(super) fn pointer_down(position: Point, timestamp: u64) -> SurfaceEvent {
+    SurfaceEvent::Pointer {
+        timestamp: EventTimestamp::new(timestamp),
+        action: PointerAction::Down,
+        position,
+        button: PointerButton::Primary,
+        modifiers: Modifiers::default(),
+    }
+}
+
+pub(super) fn next_tab_key() -> SurfaceEvent {
+    key(
+        KEY_RIGHT_BRACKET,
+        Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT),
+    )
 }
 
 #[test]
@@ -2054,7 +2105,7 @@ fn long_tab_labels_are_clipped_to_their_slot() -> Result<(), Box<dyn std::error:
     let long = "alpine-profile-normal-typing-with-a-very-long-name.rs";
     root.write(long, "fn main() {}\n")?;
     root.write("main.rs", "fn main() {}\n")?;
-    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let mut app = EditorApp::open_workspace(GeometryTextSystem, root.path())?;
     let workspace = app.workspace.as_ref().ok_or("workspace")?;
     let long_index = workspace.index_named(long).ok_or("long")?;
     let main_index = workspace.index_named("main.rs").ok_or("main")?;
@@ -2069,23 +2120,40 @@ fn long_tab_labels_are_clipped_to_their_slot() -> Result<(), Box<dyn std::error:
     );
     let slot = tab_slot_bounds(sidebar, 1, app.tab_scroll_x)?;
     let visible_slot = slot.intersection(tab_bar).ok_or("visible slot")?;
+    let label_slot = tab_label_bounds(slot)?
+        .intersection(tab_bar)
+        .ok_or("visible label")?;
     assert!(
-        scene
-            .clips()
-            .iter()
-            .any(|clip| clip.bounds() == visible_slot),
-        "each tab must clip glyphs to its own slot, not only the tab bar"
+        scene.clips().iter().any(|clip| clip.bounds() == label_slot),
+        "each tab must clip its title to the label box inside the slot"
     );
-    let slot_clip_index = scene
+    let label_clip_index = scene
         .clips()
         .iter()
-        .position(|clip| clip.bounds() == visible_slot)
-        .ok_or("slot clip index")?;
+        .position(|clip| clip.bounds() == label_slot)
+        .ok_or("label clip index")?;
     assert!(scene.glyphs().iter().any(|glyph| {
         glyph
             .clip()
-            .is_some_and(|clip| clip.index() == slot_clip_index)
+            .is_some_and(|clip| clip.index() == label_clip_index)
     }));
+    for glyph in scene.glyphs() {
+        let Some(clip) = glyph.clip() else {
+            continue;
+        };
+        if clip.index() != label_clip_index {
+            continue;
+        }
+        assert!(
+            rect_contains_bounds(label_slot, glyph.bounds()),
+            "tab title glyphs must not spill into the neighboring file name"
+        );
+        assert!(
+            glyph.bounds().origin().x() + glyph.bounds().size().width()
+                <= visible_slot.origin().x() + visible_slot.size().width() + 0.5,
+            "tab title glyphs must stay inside their slot"
+        );
+    }
     Ok(())
 }
 
@@ -2099,11 +2167,14 @@ fn editor_scene_paints_line_numbers_and_a_scroll_thumb() -> Result<(), Box<dyn s
         Point::new(pane.origin().x(), pane.origin().y()).ok_or("gutter origin")?,
         Size::new(GUTTER_WIDTH, pane.size().height()).ok_or("gutter size")?,
     );
-    let gutter_clip_index = scene
-        .clips()
-        .iter()
-        .position(|clip| clip.bounds() == gutter)
-        .ok_or("gutter clip")?;
+    let gutter_clip_index = scene.clips().iter().position(|clip| {
+        let bounds = clip.bounds();
+        (bounds.origin().x() - gutter.origin().x()).abs() < 0.5
+            && (bounds.origin().y() - gutter.origin().y()).abs() < LINE_HEIGHT
+            && (bounds.size().width() - GUTTER_WIDTH).abs() < 0.5
+            && bounds.size().height() <= LINE_HEIGHT + 0.5
+    });
+    let gutter_clip_index = gutter_clip_index.ok_or("gutter row clip")?;
     assert!(
         scene.glyphs().iter().any(|glyph| {
             glyph
@@ -2118,6 +2189,319 @@ fn editor_scene_paints_line_numbers_and_a_scroll_thumb() -> Result<(), Box<dyn s
         scene.quads().iter().any(|quad| quad.bounds() == thumb),
         "the editor must paint a scroll thumb so the viewport position is visible"
     );
+    Ok(())
+}
+
+#[test]
+fn file_tree_scroll_reuses_shaped_labels() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    let _warm = app.try_scene(SceneRevision::new(1), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _unchanged = app.try_scene(SceneRevision::new(2), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "an unchanged workspace frame must reuse file-tree label layouts"
+        );
+    });
+
+    let first_visible = floor_f32_to_usize(app.workspace_scroll_y / TREE_ROW_HEIGHT).unwrap_or(0);
+    let visible_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT)
+        .unwrap_or(0)
+        .saturating_add(1);
+    let before = app
+        .file_tree
+        .visible_rows(first_visible, visible_rows, TREE_OVERSCAN_ROWS)?;
+    app.workspace_scroll_y = TREE_ROW_HEIGHT * usize_as_f32(TREE_OVERSCAN_ROWS.saturating_add(1));
+    let after_first = floor_f32_to_usize(app.workspace_scroll_y / TREE_ROW_HEIGHT).unwrap_or(0);
+    let after = app
+        .file_tree
+        .visible_rows(after_first, visible_rows, TREE_OVERSCAN_ROWS)?;
+    let newly_visible = after
+        .iter()
+        .filter(|row| before.iter().all(|seen| seen.label() != row.label()))
+        .count();
+    assert!(
+        newly_visible > 0,
+        "scrolling past overscan must reveal at least one new file-tree row"
+    );
+
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _scrolled = app.try_scene(SceneRevision::new(3), viewport)?;
+    let expected_shapes = u64::try_from(newly_visible).map_err(|_| "newly visible count")?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            expected_shapes,
+            "file-tree scroll must shape only newly visible labels"
+        );
+    });
+    Ok(())
+}
+
+#[test]
+fn file_tree_scroll_within_overscan_does_not_reshape() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    let _warm = app.try_scene(SceneRevision::new(1), viewport)?;
+    app.workspace_scroll_y = TREE_ROW_HEIGHT * 8.0;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _scrolled = app.try_scene(SceneRevision::new(2), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "a fling that stays inside tree overscan must reuse already-shaped labels"
+        );
+    });
+    Ok(())
+}
+
+#[test]
+fn file_tree_returning_to_prior_rows_does_not_reshape() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    let _warm = app.try_scene(SceneRevision::new(1), viewport)?;
+    app.workspace_scroll_y = TREE_ROW_HEIGHT * usize_as_f32(TREE_OVERSCAN_ROWS.saturating_add(4));
+    let _away = app.try_scene(SceneRevision::new(2), viewport)?;
+    app.workspace_scroll_y = 0.0;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _back = app.try_scene(SceneRevision::new(3), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "labels that left the viewport must still hit until the entry ceiling"
+        );
+    });
+    Ok(())
+}
+
+#[test]
+fn file_tree_scroll_budgets_stay_capped_above_editor_overscan() {
+    assert_eq!(TREE_OVERSCAN_ROWS, 16);
+    assert_eq!(DEFAULT_OVERSCAN_LINES, 3);
+    const { assert!(TREE_OVERSCAN_ROWS > DEFAULT_OVERSCAN_LINES) };
+    assert_eq!(DEFAULT_MAX_LABEL_CACHE_ENTRIES, 512);
+    assert_eq!(DEFAULT_LABEL_LAYOUT_BUDGET_BYTES, 1_048_576);
+    assert!(!should_publish_recovery_after_event(false, false));
+    assert!(should_publish_recovery_after_event(true, false));
+    assert!(should_publish_recovery_after_event(false, true));
+}
+
+#[test]
+fn file_tree_scroll_does_not_publish_recovery() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.txt"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    app.last_viewport = viewport;
+    app.last_pointer_position = Some(Point::new(8.0, 80.0).ok_or("sidebar pointer")?);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    for timestamp in 1..=24 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let _ = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        });
+    }
+    reset_recovery_publish_calls();
+    for timestamp in 25..=32 {
+        let _ = runtime.dispatch(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(timestamp),
+            delta_x: 0.0,
+            delta_y: -TREE_ROW_HEIGHT * 4.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        });
+    }
+    assert!(
+        runtime.delegate().workspace_scroll_y > 0.0,
+        "the fixture must route scroll onto the file tree"
+    );
+    assert_eq!(runtime.delegate().scroll_y.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(
+        recovery_publish_calls(),
+        0,
+        "visual-only file-tree scroll must not capture recovery snapshots"
+    );
+
+    let _ = runtime.dispatch(&ime(ImeEvent::Committed("x".into())));
+    assert!(
+        recovery_publish_calls() >= 1,
+        "an edit must still publish recovery after visual-only scroll"
+    );
+    Ok(())
+}
+
+#[test]
+fn file_tree_paints_a_scroll_thumb_that_tracks_workspace_scroll()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let sidebar = Rect::new(
+        Point::new(0.0, 0.0).ok_or("sidebar origin")?,
+        Size::new(SIDEBAR_WIDTH, WINDOW_HEIGHT).ok_or("sidebar size")?,
+    );
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let rows = app.file_tree.total_rows();
+    assert!(rows > 20, "the fixture must overflow the sidebar viewport");
+    let thumb = workspace_scroll_thumb_bounds(sidebar, app.workspace_scroll_y, rows)?
+        .ok_or("file-tree thumb")?;
+    assert!(
+        scene.quads().iter().any(|quad| quad.bounds() == thumb),
+        "the file tree must paint a scroll thumb so the viewport position is visible"
+    );
+
+    app.workspace_scroll_y = app.maximum_workspace_scroll();
+    assert!(app.workspace_scroll_y > 0.0);
+    let scrolled = app.try_scene(SceneRevision::new(2), viewport)?;
+    let scrolled_thumb = workspace_scroll_thumb_bounds(sidebar, app.workspace_scroll_y, rows)?
+        .ok_or("scrolled file-tree thumb")?;
+    assert!(scrolled_thumb.origin().y() > thumb.origin().y());
+    assert!(
+        scrolled
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == scrolled_thumb),
+        "the file-tree thumb must travel with workspace scroll"
+    );
+    Ok(())
+}
+
+#[test]
+fn adjacent_tab_titles_do_not_paint_into_neighboring_slots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpine-331-typing.rs", "alpha")?;
+    root.write("alpine-defect-304.rs", "beta")?;
+    root.write("alpine-profile-normal.rs", "gamma")?;
+    let mut app = EditorApp::open_workspace(GeometryTextSystem, root.path())?;
+    for name in [
+        "alpine-331-typing.rs",
+        "alpine-defect-304.rs",
+        "alpine-profile-normal.rs",
+    ] {
+        let index = app
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.index_named(name))
+            .ok_or("workspace entry")?;
+        app.open_workspace_entry(index)?;
+    }
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let sidebar = app.sidebar_width(viewport);
+    let tab_bar = Rect::new(
+        Point::new(sidebar, 0.0).ok_or("tab origin")?,
+        Size::new((viewport.width() - sidebar).max(1.0), TAB_BAR_HEIGHT).ok_or("tab size")?,
+    );
+    let mut label_clips = Vec::new();
+    for index in 0..app.tabs.len() {
+        let slot = tab_slot_bounds(sidebar, index, app.tab_scroll_x)?;
+        if let Some(label) = tab_label_bounds(slot)?.intersection(tab_bar) {
+            label_clips.push((index, label));
+        }
+    }
+    assert!(label_clips.len() >= 3);
+    for glyph in scene.glyphs() {
+        let Some(clip_id) = glyph.clip() else {
+            continue;
+        };
+        let clip = scene.clips().get(clip_id.index()).ok_or("tab clip")?;
+        let Some((index, label)) = label_clips
+            .iter()
+            .find(|(_, bounds)| *bounds == clip.bounds())
+        else {
+            continue;
+        };
+        assert!(
+            rect_contains_bounds(*label, glyph.bounds()),
+            "tab {index} title spilled outside its label box"
+        );
+        for (other_index, other) in &label_clips {
+            if other_index == index {
+                continue;
+            }
+            assert!(
+                glyph.bounds().intersection(*other).is_none(),
+                "tab {index} title overlapped tab {other_index}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn gutter_line_numbers_occupy_exclusive_rows_while_scrolled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut source = String::new();
+    for line in 0..80 {
+        use std::fmt::Write as _;
+        writeln!(&mut source, "value = {line}")?;
+    }
+    let file = TestFile::new(source)?;
+    let mut app = EditorApp::open_file(TestTextSystem, file.path())?;
+    app.scroll_y = 20.0 * LINE_HEIGHT + 6.5;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let pane = app.active_pane_bounds()?;
+    let mut rows = Vec::new();
+    for glyph in scene.glyphs() {
+        let Some(clip_id) = glyph.clip() else {
+            continue;
+        };
+        let clip = scene.clips().get(clip_id.index()).ok_or("gutter clip")?;
+        let bounds = clip.bounds();
+        if (bounds.origin().x() - pane.origin().x()).abs() > 0.5
+            || (bounds.size().width() - GUTTER_WIDTH).abs() > 0.5
+            || bounds.size().height() > LINE_HEIGHT + 0.5
+        {
+            continue;
+        }
+        assert!(
+            rect_contains_bounds(bounds, glyph.bounds()),
+            "line number spilled into the next row"
+        );
+        if !rows.contains(&bounds) {
+            rows.push(bounds);
+        }
+    }
+    assert!(
+        rows.len() >= 8,
+        "scrolled gutters must paint several exclusive line-number rows"
+    );
+    rows.sort_by(|left, right| left.origin().y().total_cmp(&right.origin().y()));
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0].intersection(pair[1]).is_none(),
+            "gutter line-number rows must not overlap"
+        );
+    }
     Ok(())
 }
 
@@ -2886,7 +3270,7 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
 
     app.workspace_scroll_y = 110.0;
     let scrolled_scene = app.try_scene(SceneRevision::new(3), viewport)?;
-    assert_eq!(scrolled_scene.glyphs()[0].bounds().origin().y(), -30.0);
+    assert_eq!(scrolled_scene.glyphs()[0].bounds().origin().y(), -74.0);
 
     app.workspace_scroll_y = 0.0;
     app.composition = Some(Composition {
@@ -3858,7 +4242,7 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
 
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let scene = app.try_scene(SceneRevision::new(20), small_viewport)?;
-    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 15));
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 13));
     let expected_tab_bounds = Rect::new(
         Point::new(SIDEBAR_WIDTH, 0.0).ok_or("tab origin")?,
         Size::new(320.0, TAB_BAR_HEIGHT).ok_or("tab size")?,
@@ -3902,7 +4286,13 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
     app.tab_scroll_x = 320.0;
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let mid_scene = app.try_scene(SceneRevision::new(21), small_viewport)?;
-    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 14));
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "tab scroll must reuse already shaped file names from the tree cache"
+        );
+    });
     let first_mid_tab = mid_scene
         .glyphs()
         .iter()
@@ -6267,7 +6657,10 @@ fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn
     let flatten_start = std::time::Instant::now();
     let rows = app.file_tree.visible_rows(0, 40, TREE_OVERSCAN_ROWS)?;
     let flatten = flatten_start.elapsed();
-    assert_eq!(rows.len(), 46);
+    assert_eq!(
+        rows.len(),
+        40_usize.saturating_add(TREE_OVERSCAN_ROWS.saturating_mul(2))
+    );
     assert_eq!(app.file_tree.snapshot().1, 1_024);
 
     let scene_start = std::time::Instant::now();
@@ -7491,7 +7884,9 @@ fn runtime_rust_diagnostics_reach_the_rendered_scene_without_idle_work()
 
     let mut app = EditorApp::open_file(TestTextSystem, &rust_path)?;
     assert!(app.active_rust_document().is_some());
-    app.rust_diagnostics = RustDiagnostics::with_server(rust_diagnostics::tests::mock_executable());
+    app.rust_diagnostics = LanguageServices::from(RustDiagnostics::with_server(
+        rust_diagnostics::tests::mock_executable(),
+    ));
     app.rust_diagnostics.force_continuation_once_for_test();
     let viewport = viewport()?;
     let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
@@ -7839,5 +8234,110 @@ fn selection_revision_advances_only_for_real_selection_changes() -> Result<(), B
     app.advance_selection_revision(previous);
     assert_eq!(app.selection_revision, u64::MAX);
     assert_eq!(app.input_failures, failures + 1);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "scroll discovery walks the host filesystem, which Miri does not emulate"
+)]
+fn scrolling_does_not_rediscover_language_servers() -> Result<(), Box<dyn Error>> {
+    rust_diagnostics::reset_discover_binaries_calls();
+    let root = TestWorkspace::new()?;
+    let mut source = String::from("value = 0\n");
+    for line in 1..80 {
+        source.push_str("value = ");
+        source.push_str(&line.to_string());
+        source.push('\n');
+    }
+    root.write("main.py", &source)?;
+    let path = root.path().join("main.py");
+    let mut app = EditorApp::open_file(TestTextSystem, &path)?;
+    app.adopt_discovered_language_server();
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    for timestamp in 1..=20 {
+        let _ = runtime.dispatch(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(timestamp),
+            delta_x: 0.0,
+            delta_y: -LINE_HEIGHT * 4.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        });
+    }
+    assert_eq!(
+        rust_diagnostics::discover_binaries_calls(),
+        1,
+        "language-server discovery belongs on first attach, not on every scroll"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "tab switching opens workspace files, which Miri does not emulate"
+)]
+fn switching_existing_tabs_does_not_report_missing_file_io() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("alpha.rs", "alpha-body")?;
+    root.write("beta.rs", "beta-body")?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let alpha = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("alpha.rs"))
+        .ok_or("alpha.rs")?;
+    let beta = app
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.index_named("beta.rs"))
+        .ok_or("beta.rs")?;
+    app.open_workspace_entry(alpha)?;
+    app.open_workspace_entry(beta)?;
+    assert_eq!(app.tabs.len(), 3);
+    assert_eq!(app.tabs.active_index(), 2);
+    assert_eq!(app.buffer().snapshot().text(), "beta-body");
+
+    assert!(app.activate_document_tab(1)?.document_identity_advanced);
+    assert_eq!(app.buffer().snapshot().text(), "alpha-body");
+    assert_no_missing_file_io_status(&app);
+    assert!(app.last_workspace_error.is_none());
+
+    app.last_viewport = viewport()?;
+    let clicked = app.handle_event(&pointer_down(tab_label_click_point(&app, 2)?, 1));
+    assert!(clicked.document_identity_advanced);
+    assert_eq!(app.tabs.active_index(), 2);
+    assert_eq!(app.buffer().snapshot().text(), "beta-body");
+    assert_no_missing_file_io_status(&app);
+
+    let cycled = app.handle_event(&next_tab_key());
+    assert!(cycled.document_identity_advanced);
+    assert_eq!(app.tabs.active_index(), 0);
+    assert_no_missing_file_io_status(&app);
+
+    assert!(app.activate_document_tab(1)?.document_identity_advanced);
+    let viewport = viewport()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&pointer_down(
+        tab_label_click_point(runtime.delegate(), 2)?,
+        2,
+    ));
+    assert_eq!(runtime.delegate().tabs.active_index(), 2);
+    assert_eq!(runtime.delegate().buffer().snapshot().text(), "beta-body");
+    assert_no_missing_file_io_status(runtime.delegate());
+    let _ = runtime.dispatch(&next_tab_key());
+    assert_eq!(runtime.delegate().tabs.active_index(), 0);
+    assert_no_missing_file_io_status(runtime.delegate());
     Ok(())
 }

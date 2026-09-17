@@ -409,3 +409,72 @@ fn invalid_bitmap_and_line_limits_fail_structurally() -> Result<(), Box<dyn Erro
     ));
     Ok(())
 }
+
+#[test]
+fn previous_frame_label_hit_avoids_shaping() -> Result<(), Box<dyn Error>> {
+    let mut cache = LabelLayoutCache::new(NonZeroUsize::new(4096).ok_or("budget")?);
+    let mut shaper = FixtureShaper::new();
+    let first = cache.layout_label("main.rs", font()?, &mut shaper)?;
+    cache.begin_frame()?;
+    let second = cache.layout_label("main.rs", font()?, &mut shaper)?;
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(shaper.calls.get(), 1);
+    assert_eq!(cache.snapshot().hits(), 1);
+    assert_eq!(cache.snapshot().misses(), 1);
+    assert_eq!(cache.snapshot().shaped_lines(), 1);
+    Ok(())
+}
+
+#[test]
+fn label_cache_evicts_previous_generation_at_entry_ceiling() -> Result<(), Box<dyn Error>> {
+    let mut cache = LabelLayoutCache::with_limits(NonZeroUsize::new(4096).ok_or("budget")?, 1);
+    let mut shaper = FixtureShaper::new();
+    cache.layout_label("a.rs", font()?, &mut shaper)?;
+    cache.begin_frame()?;
+    cache.layout_label("b.rs", font()?, &mut shaper)?;
+    cache.begin_frame()?;
+    cache.layout_label("a.rs", font()?, &mut shaper)?;
+    assert_eq!(shaper.calls.get(), 3);
+    assert_eq!(cache.snapshot().current_entries(), 1);
+    assert_eq!(cache.snapshot().previous_entries(), 0);
+    Ok(())
+}
+
+#[test]
+fn unused_label_survives_begin_frame() -> Result<(), Box<dyn Error>> {
+    let mut cache = LabelLayoutCache::new(NonZeroUsize::new(4096).ok_or("budget")?);
+    let mut shaper = FixtureShaper::new();
+    let first = cache.layout_label("kept.rs", font()?, &mut shaper)?;
+    cache.layout_label("other.rs", font()?, &mut shaper)?;
+    cache.begin_frame()?;
+    cache.layout_label("other.rs", font()?, &mut shaper)?;
+    cache.begin_frame()?;
+    let again = cache.layout_label("kept.rs", font()?, &mut shaper)?;
+    assert!(Arc::ptr_eq(&first, &again));
+    assert_eq!(shaper.calls.get(), 2);
+    Ok(())
+}
+
+#[test]
+fn unused_labels_survive_until_the_entry_ceiling() -> Result<(), Box<dyn Error>> {
+    let mut cache = LabelLayoutCache::new(
+        NonZeroUsize::new(DEFAULT_LABEL_LAYOUT_BUDGET_BYTES).ok_or("budget")?,
+    );
+    let mut shaper = FixtureShaper::new();
+    let font = font()?;
+    for index in 0..DEFAULT_MAX_LABEL_CACHE_ENTRIES {
+        let label = format!("{index}.rs");
+        cache.layout_label(&label, font, &mut shaper)?;
+    }
+    cache.begin_frame()?;
+    let last = format!("{}.rs", DEFAULT_MAX_LABEL_CACHE_ENTRIES.saturating_sub(1));
+    cache.layout_label(&last, font, &mut shaper)?;
+    cache.begin_frame()?;
+    cache.layout_label("0.rs", font, &mut shaper)?;
+    assert_eq!(
+        shaper.calls.get(),
+        DEFAULT_MAX_LABEL_CACHE_ENTRIES,
+        "idle frames must not drop chrome labels before the hard ceiling"
+    );
+    Ok(())
+}

@@ -19,8 +19,9 @@ scripts/build-alpine-editor-app.sh
 scripts/launch-alpine-editor-app.sh path/to/file-or-folder
 ```
 
-The bundle is `target/release/Alpine Editor.app`; this is private dogfood
-infrastructure, not a signed public release. See [limitations](reference/limitations.md),
+The installed bundle is `~/Applications/Alpine Editor.app`. Cargo's `target/release`
+tree is a build cache and is not an application LaunchServices or Spotlight
+should offer. See [limitations](reference/limitations.md),
 [settings](reference/studio-settings.md) and [testing](testing.md).
 
 Use a focused branch and preserve dirty or parked work. Repository-local skills

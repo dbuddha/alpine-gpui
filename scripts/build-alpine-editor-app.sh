@@ -5,15 +5,24 @@ usage() {
     cat <<'EOF'
 usage: scripts/build-alpine-editor-app.sh [--executable PATH] [--output PATH]
 
-Build and assemble the local release Alpine Editor.app. Supplying an executable
-skips Cargo and is intended for structural validation or an already-built
-release binary. The output basename must remain "Alpine Editor.app".
+Build and install the local release Alpine Editor.app into ~/Applications.
+Supplying an executable skips Cargo. --output is for tests and probes. The
+basename must remain Alpine Editor.app and must not live in the cargo target
+tree, which Spotlight and LaunchServices would otherwise offer next to the
+installed copy.
 EOF
 }
 
 repository_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
+lsregister_bin=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 output=
 executable=
+
+unregister_application_bundle() {
+    if [ -x "$lsregister_bin" ]; then
+        "$lsregister_bin" -u "$1" >/dev/null 2>&1 || true
+    fi
+}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -65,17 +74,36 @@ if [ -z "$executable" ]; then
         CARGO_TARGET_DIR="$target_directory" \
             cargo build --release --locked -p alpine-editor
     )
-    target_directory=$(CDPATH= cd -- "$target_directory" && pwd -P)
     executable="$target_directory/release/alpine-editor"
 fi
 
+mkdir -p "$target_directory"
+target_directory=$(CDPATH= cd -- "$target_directory" && pwd -P)
+# Cargo target trees are a build cache. Spotlight and the Open dialog
+# should only offer the installed copy in ~/Applications.
+: > "$target_directory/.metadata_never_index"
+mkdir -p "$target_directory/release"
+: > "$target_directory/release/.metadata_never_index"
+
 if [ -z "$output" ]; then
-    output="$target_directory/release/Alpine Editor.app"
+    applications_directory="${HOME:?}/Applications"
+    mkdir -p "$applications_directory"
+    output="$applications_directory/Alpine Editor.app"
 fi
 case "$output" in
     */'Alpine Editor.app'|'Alpine Editor.app') ;;
     *)
         printf 'app bundle error: output basename must be Alpine Editor.app\n' >&2
+        exit 2
+        ;;
+esac
+output_parent=$(dirname "$output")
+mkdir -p "$output_parent"
+output_parent=$(CDPATH= cd -- "$output_parent" && pwd -P)
+output="$output_parent/Alpine Editor.app"
+case "$output" in
+    "$target_directory"|"$target_directory"/*)
+        printf 'app bundle error: Alpine Editor.app must not be assembled in the cargo target tree\n' >&2
         exit 2
         ;;
 esac
@@ -115,7 +143,6 @@ if [ "${#revision}" -ne 40 ]; then
 fi
 
 output_parent=$(dirname "$output")
-mkdir -p "$output_parent"
 staging_dir=$(mktemp -d "$output_parent/.alpine-editor-app.XXXXXX")
 cleanup() {
     if [ -n "${staging_dir-}" ] && [ -d "$staging_dir" ]; then
@@ -216,6 +243,16 @@ else
         mv "$backup" "$output"
     fi
     printf 'app bundle error: failed to publish assembled bundle\n' >&2
+    exit 1
+fi
+
+stale_bundle="$target_directory/release/Alpine Editor.app"
+unregister_application_bundle "$stale_bundle"
+if [ -e "$stale_bundle" ]; then
+    rm -rf "$stale_bundle"
+fi
+if [ -e "$stale_bundle" ]; then
+    printf 'app bundle error: leftover cargo Alpine Editor.app could not be removed\n' >&2
     exit 1
 fi
 

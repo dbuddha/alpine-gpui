@@ -78,7 +78,7 @@ times before interacting with Studio:
 
 ```sh
 scripts/build-alpine-editor-app.sh
-APP="$PWD/target/release/Alpine Editor.app/Contents/MacOS/alpine-editor"
+APP="$HOME/Applications/Alpine Editor.app/Contents/MacOS/alpine-editor"
 START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 START_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
 ALPINE_EDITOR_PERSISTED_PROFILE=1 "$APP" WORKLOAD_PATH
@@ -159,7 +159,7 @@ active developer directory because Command Line Tools alone do not contain
 xcrun --find xctrace
 xcodebuild -version
 scripts/build-alpine-editor-app.sh
-test -x 'target/release/Alpine Editor.app/Contents/MacOS/alpine-editor'
+test -x "$HOME/Applications/Alpine Editor.app/Contents/MacOS/alpine-editor"
 ```
 
 Record each tool separately so its observer cost is not mixed with another
@@ -169,7 +169,7 @@ accepted workload values.
 ```sh
 WORKLOAD_PATH="$PWD"
 TRACE_ROOT="$PWD/target/qualification/studio-$(git rev-parse HEAD)"
-APP="$PWD/target/release/Alpine Editor.app/Contents/MacOS/alpine-editor"
+APP="$HOME/Applications/Alpine Editor.app/Contents/MacOS/alpine-editor"
 mkdir -p "$TRACE_ROOT"
 
 xcrun xctrace record \

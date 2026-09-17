@@ -1297,6 +1297,12 @@ impl<D: AppDelegate + 'static> Application<D> {
         Some(SurfaceFrame::new(scene, self.clear))
     }
 
+    /// Returns the application delegate.
+    #[must_use]
+    pub const fn delegate(&self) -> &D {
+        &self.delegate
+    }
+
     /// Returns current handle-free runtime evidence.
     #[must_use]
     pub fn snapshot(&self) -> ApplicationSnapshot {
