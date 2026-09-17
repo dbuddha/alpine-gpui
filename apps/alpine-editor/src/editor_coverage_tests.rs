@@ -10,7 +10,9 @@ use std::{
 };
 
 use alpine_platform_macos::{CloseDisposition, EventTimestamp, ScrollPhase, SurfaceExtent};
-use alpine_text_layout::{GlyphBitmap, RasterizedGlyph, ShapedGlyph};
+use alpine_text_layout::{
+    DEFAULT_MAX_LABEL_CACHE_ENTRIES, GlyphBitmap, RasterizedGlyph, ShapedGlyph,
+};
 
 use crate::rust_navigation::SourceLocations;
 
@@ -2191,6 +2193,207 @@ fn editor_scene_paints_line_numbers_and_a_scroll_thumb() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn file_tree_scroll_reuses_shaped_labels() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    let _warm = app.try_scene(SceneRevision::new(1), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _unchanged = app.try_scene(SceneRevision::new(2), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "an unchanged workspace frame must reuse file-tree label layouts"
+        );
+    });
+
+    let first_visible = floor_f32_to_usize(app.workspace_scroll_y / TREE_ROW_HEIGHT).unwrap_or(0);
+    let visible_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT)
+        .unwrap_or(0)
+        .saturating_add(1);
+    let before = app
+        .file_tree
+        .visible_rows(first_visible, visible_rows, TREE_OVERSCAN_ROWS)?;
+    app.workspace_scroll_y = TREE_ROW_HEIGHT * usize_as_f32(TREE_OVERSCAN_ROWS.saturating_add(1));
+    let after_first = floor_f32_to_usize(app.workspace_scroll_y / TREE_ROW_HEIGHT).unwrap_or(0);
+    let after = app
+        .file_tree
+        .visible_rows(after_first, visible_rows, TREE_OVERSCAN_ROWS)?;
+    let newly_visible = after
+        .iter()
+        .filter(|row| before.iter().all(|seen| seen.label() != row.label()))
+        .count();
+    assert!(
+        newly_visible > 0,
+        "scrolling past overscan must reveal at least one new file-tree row"
+    );
+
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _scrolled = app.try_scene(SceneRevision::new(3), viewport)?;
+    let expected_shapes = u64::try_from(newly_visible).map_err(|_| "newly visible count")?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            expected_shapes,
+            "file-tree scroll must shape only newly visible labels"
+        );
+    });
+    Ok(())
+}
+
+#[test]
+fn file_tree_scroll_within_overscan_does_not_reshape() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    let _warm = app.try_scene(SceneRevision::new(1), viewport)?;
+    app.workspace_scroll_y = TREE_ROW_HEIGHT * 8.0;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _scrolled = app.try_scene(SceneRevision::new(2), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "a fling that stays inside tree overscan must reuse already-shaped labels"
+        );
+    });
+    Ok(())
+}
+
+#[test]
+fn file_tree_returning_to_prior_rows_does_not_reshape() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    let _warm = app.try_scene(SceneRevision::new(1), viewport)?;
+    app.workspace_scroll_y = TREE_ROW_HEIGHT * usize_as_f32(TREE_OVERSCAN_ROWS.saturating_add(4));
+    let _away = app.try_scene(SceneRevision::new(2), viewport)?;
+    app.workspace_scroll_y = 0.0;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let _back = app.try_scene(SceneRevision::new(3), viewport)?;
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "labels that left the viewport must still hit until the entry ceiling"
+        );
+    });
+    Ok(())
+}
+
+#[test]
+fn file_tree_scroll_budgets_stay_capped_above_editor_overscan() {
+    assert_eq!(TREE_OVERSCAN_ROWS, 16);
+    assert_eq!(DEFAULT_OVERSCAN_LINES, 3);
+    const { assert!(TREE_OVERSCAN_ROWS > DEFAULT_OVERSCAN_LINES) };
+    assert_eq!(DEFAULT_MAX_LABEL_CACHE_ENTRIES, 512);
+    assert_eq!(DEFAULT_LABEL_LAYOUT_BUDGET_BYTES, 1_048_576);
+    assert!(!should_publish_recovery_after_event(false, false));
+    assert!(should_publish_recovery_after_event(true, false));
+    assert!(should_publish_recovery_after_event(false, true));
+}
+
+#[test]
+fn file_tree_scroll_does_not_publish_recovery() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.txt"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = viewport().map_err(|_| EditorRenderError::Domain)?;
+    app.last_viewport = viewport;
+    app.last_pointer_position = Some(Point::new(8.0, 80.0).ok_or("sidebar pointer")?);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or(SurfaceError::invariant(
+        alpine_platform_macos::SurfaceOperation::Application,
+    ))?;
+    let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    for timestamp in 1..=24 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let _ = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        });
+    }
+    reset_recovery_publish_calls();
+    for timestamp in 25..=32 {
+        let _ = runtime.dispatch(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(timestamp),
+            delta_x: 0.0,
+            delta_y: -TREE_ROW_HEIGHT * 4.0,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        });
+    }
+    assert!(
+        runtime.delegate().workspace_scroll_y > 0.0,
+        "the fixture must route scroll onto the file tree"
+    );
+    assert_eq!(runtime.delegate().scroll_y.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(
+        recovery_publish_calls(),
+        0,
+        "visual-only file-tree scroll must not capture recovery snapshots"
+    );
+
+    let _ = runtime.dispatch(&ime(ImeEvent::Committed("x".into())));
+    assert!(
+        recovery_publish_calls() >= 1,
+        "an edit must still publish recovery after visual-only scroll"
+    );
+    Ok(())
+}
+
+#[test]
+fn file_tree_paints_a_scroll_thumb_that_tracks_workspace_scroll()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    for index in 0..80 {
+        root.write(&format!("file-{index:03}.rs"), "x")?;
+    }
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let sidebar = Rect::new(
+        Point::new(0.0, 0.0).ok_or("sidebar origin")?,
+        Size::new(SIDEBAR_WIDTH, WINDOW_HEIGHT).ok_or("sidebar size")?,
+    );
+    let scene = app.try_scene(SceneRevision::new(1), viewport)?;
+    let rows = app.file_tree.total_rows();
+    assert!(rows > 20, "the fixture must overflow the sidebar viewport");
+    let thumb = workspace_scroll_thumb_bounds(sidebar, app.workspace_scroll_y, rows)?
+        .ok_or("file-tree thumb")?;
+    assert!(
+        scene.quads().iter().any(|quad| quad.bounds() == thumb),
+        "the file tree must paint a scroll thumb so the viewport position is visible"
+    );
+
+    app.workspace_scroll_y = app.maximum_workspace_scroll();
+    assert!(app.workspace_scroll_y > 0.0);
+    let scrolled = app.try_scene(SceneRevision::new(2), viewport)?;
+    let scrolled_thumb = workspace_scroll_thumb_bounds(sidebar, app.workspace_scroll_y, rows)?
+        .ok_or("scrolled file-tree thumb")?;
+    assert!(scrolled_thumb.origin().y() > thumb.origin().y());
+    assert!(
+        scrolled
+            .quads()
+            .iter()
+            .any(|quad| quad.bounds() == scrolled_thumb),
+        "the file-tree thumb must travel with workspace scroll"
+    );
+    Ok(())
+}
+
+#[test]
 fn adjacent_tab_titles_do_not_paint_into_neighboring_slots()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
@@ -3067,7 +3270,7 @@ fn workspace_scene_geometry_and_scroll_routing_are_exact() -> Result<(), Box<dyn
 
     app.workspace_scroll_y = 110.0;
     let scrolled_scene = app.try_scene(SceneRevision::new(3), viewport)?;
-    assert_eq!(scrolled_scene.glyphs()[0].bounds().origin().y(), -30.0);
+    assert_eq!(scrolled_scene.glyphs()[0].bounds().origin().y(), -74.0);
 
     app.workspace_scroll_y = 0.0;
     app.composition = Some(Composition {
@@ -4039,7 +4242,7 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
 
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let scene = app.try_scene(SceneRevision::new(20), small_viewport)?;
-    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 15));
+    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 13));
     let expected_tab_bounds = Rect::new(
         Point::new(SIDEBAR_WIDTH, 0.0).ok_or("tab origin")?,
         Size::new(320.0, TAB_BAR_HEIGHT).ok_or("tab size")?,
@@ -4083,7 +4286,13 @@ fn tab_projection_scroll_keyboard_and_pointer_boundaries_are_exact()
     app.tab_scroll_x = 320.0;
     TEST_SHAPE_CALLS.with(|calls| calls.set(0));
     let mid_scene = app.try_scene(SceneRevision::new(21), small_viewport)?;
-    TEST_SHAPE_CALLS.with(|calls| assert_eq!(calls.get(), 14));
+    TEST_SHAPE_CALLS.with(|calls| {
+        assert_eq!(
+            calls.get(),
+            0,
+            "tab scroll must reuse already shaped file names from the tree cache"
+        );
+    });
     let first_mid_tab = mid_scene
         .glyphs()
         .iter()
@@ -6448,7 +6657,10 @@ fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn
     let flatten_start = std::time::Instant::now();
     let rows = app.file_tree.visible_rows(0, 40, TREE_OVERSCAN_ROWS)?;
     let flatten = flatten_start.elapsed();
-    assert_eq!(rows.len(), 46);
+    assert_eq!(
+        rows.len(),
+        40_usize.saturating_add(TREE_OVERSCAN_ROWS.saturating_mul(2))
+    );
     assert_eq!(app.file_tree.snapshot().1, 1_024);
 
     let scene_start = std::time::Instant::now();

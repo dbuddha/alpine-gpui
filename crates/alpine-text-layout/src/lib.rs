@@ -23,6 +23,12 @@ pub use native::CoreTextSystem;
 /// Default combined retention ceiling for current and previous line layouts.
 pub const DEFAULT_LAYOUT_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 
+/// Default combined retention ceiling for chrome label layouts.
+pub const DEFAULT_LABEL_LAYOUT_BUDGET_BYTES: usize = 1024 * 1024;
+
+/// Hard ceiling for current plus previous chrome label entries.
+pub const DEFAULT_MAX_LABEL_CACHE_ENTRIES: usize = 512;
+
 /// Default hard ceiling for A8 atlas pixels and owned allocator metadata.
 pub const DEFAULT_ATLAS_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 
@@ -183,6 +189,15 @@ fn ceil_to_usize(value: f32) -> Result<usize, LayoutError> {
 
 fn reserve_cache_entries(
     values: &mut Vec<CacheEntry>,
+    additional: usize,
+) -> Result<(), LayoutError> {
+    values
+        .try_reserve(additional)
+        .map_err(|_| LayoutError::AllocationFailed)
+}
+
+fn reserve_label_cache_entries(
+    values: &mut Vec<LabelCacheEntry>,
     additional: usize,
 ) -> Result<(), LayoutError> {
     values
@@ -804,6 +819,211 @@ impl LineLayoutCache {
         self.peak_bytes = self.peak_bytes.max(self.retained_bytes());
         Ok(())
     }
+}
+
+struct LabelCacheEntry {
+    label: Arc<str>,
+    font: FontKey,
+    layout: Arc<LineLayout>,
+    retained_bytes: usize,
+}
+
+/// Bounded chrome-label cache. Labels stay until the entry ceiling, not until
+/// the next unused frame: file-tree names are unique and a two-generation
+/// drop reshapes them on a fling.
+pub struct LabelLayoutCache {
+    current: Vec<LabelCacheEntry>,
+    previous: Vec<LabelCacheEntry>,
+    budget_bytes: NonZeroUsize,
+    peak_bytes: usize,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    shaped_lines: u64,
+    max_line_bytes: usize,
+    max_glyphs_per_line: usize,
+    max_entries: usize,
+}
+
+impl LabelLayoutCache {
+    /// Creates an empty bounded chrome-label cache.
+    #[must_use]
+    pub fn new(budget_bytes: NonZeroUsize) -> Self {
+        Self::with_limits(budget_bytes, DEFAULT_MAX_LABEL_CACHE_ENTRIES)
+    }
+
+    fn with_limits(budget_bytes: NonZeroUsize, max_entries: usize) -> Self {
+        Self {
+            current: Vec::new(),
+            previous: Vec::new(),
+            budget_bytes,
+            peak_bytes: 0,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            shaped_lines: 0,
+            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+            max_glyphs_per_line: DEFAULT_MAX_GLYPHS_PER_LINE,
+            max_entries,
+        }
+    }
+
+    /// Starts one chrome-label frame without dropping unused entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayoutError::SequenceExhausted`] if eviction accounting can
+    /// no longer advance.
+    pub fn begin_frame(&mut self) -> Result<(), LayoutError> {
+        self.peak_bytes = self.peak_bytes.max(self.retained_bytes());
+        Ok(())
+    }
+
+    /// Returns or shapes one chrome label without reshaping a true hit.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured limit, shaping, accounting, or allocation failure.
+    /// Rejected work does not enter either generation.
+    pub fn layout_label(
+        &mut self,
+        label: &str,
+        font: FontKey,
+        shaper: &mut dyn TextShaper,
+    ) -> Result<Arc<LineLayout>, LayoutError> {
+        if label.len() > self.max_line_bytes {
+            return Err(LayoutError::LineByteLimitExceeded {
+                line: 0,
+                bytes: label.len(),
+                limit: self.max_line_bytes,
+            });
+        }
+        if let Some(index) = find_label_match(&self.current, label, font) {
+            if index + 1 != self.current.len() {
+                let entry = self.current.remove(index);
+                self.current.push(entry);
+            }
+            self.hits = self
+                .hits
+                .checked_add(1)
+                .ok_or(LayoutError::SequenceExhausted)?;
+            return Ok(Arc::clone(&self.current[self.current.len() - 1].layout));
+        }
+        if let Some(index) = find_label_match(&self.previous, label, font) {
+            reserve_label_cache_entries(&mut self.current, 1)?;
+            let entry = self.previous.remove(index);
+            let layout = Arc::clone(&entry.layout);
+            self.current.push(entry);
+            self.hits = self
+                .hits
+                .checked_add(1)
+                .ok_or(LayoutError::SequenceExhausted)?;
+            self.enforce_limits()?;
+            return Ok(layout);
+        }
+
+        self.misses = self
+            .misses
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)?;
+        let layout = Arc::new(shaper.shape(label, font)?);
+        if layout.glyphs().len() > self.max_glyphs_per_line {
+            return Err(LayoutError::GlyphLimitExceeded {
+                glyphs: layout.glyphs().len(),
+                limit: self.max_glyphs_per_line,
+            });
+        }
+        let retained_bytes = layout.retained_bytes().saturating_add(label.len());
+        self.shaped_lines = self
+            .shaped_lines
+            .checked_add(1)
+            .ok_or(LayoutError::SequenceExhausted)?;
+        reserve_label_cache_entries(&mut self.current, 1)?;
+        self.current.push(LabelCacheEntry {
+            label: Arc::from(label),
+            font,
+            layout: Arc::clone(&layout),
+            retained_bytes,
+        });
+        self.enforce_limits()?;
+        Ok(layout)
+    }
+
+    /// Returns handle-free cache accounting.
+    #[must_use]
+    pub fn snapshot(&self) -> LayoutCacheSnapshot {
+        LayoutCacheSnapshot {
+            current_bytes: self.retained_bytes(),
+            peak_bytes: self.peak_bytes,
+            budget_bytes: self.budget_bytes.get(),
+            current_entries: self.current.len(),
+            previous_entries: self.previous.len(),
+            hits: self.hits,
+            misses: self.misses,
+            evictions: self.evictions,
+            shaped_lines: self.shaped_lines,
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        let layouts = self
+            .current
+            .iter()
+            .chain(&self.previous)
+            .map(|entry| entry.retained_bytes)
+            .sum::<usize>();
+        layouts
+            .saturating_add(
+                self.current
+                    .capacity()
+                    .saturating_mul(size_of::<LabelCacheEntry>()),
+            )
+            .saturating_add(
+                self.previous
+                    .capacity()
+                    .saturating_mul(size_of::<LabelCacheEntry>()),
+            )
+    }
+
+    fn enforce_limits(&mut self) -> Result<(), LayoutError> {
+        while self.current.len().saturating_add(self.previous.len()) > self.max_entries
+            || self.retained_bytes() > self.budget_bytes.get()
+        {
+            let over_bytes = self.retained_bytes() > self.budget_bytes.get();
+            if !self.previous.is_empty() {
+                self.previous.remove(0);
+            } else if self.current.len() > 1 {
+                self.current.remove(0);
+            } else {
+                let bytes = self.retained_bytes();
+                self.current.pop();
+                self.current.shrink_to_fit();
+                self.previous.shrink_to_fit();
+                return Err(if over_bytes {
+                    LayoutError::LayoutExceedsBudget {
+                        bytes,
+                        budget: self.budget_bytes.get(),
+                    }
+                } else {
+                    LayoutError::AllocationFailed
+                });
+            }
+            self.evictions = self
+                .evictions
+                .checked_add(1)
+                .ok_or(LayoutError::SequenceExhausted)?;
+            self.current.shrink_to_fit();
+            self.previous.shrink_to_fit();
+        }
+        self.peak_bytes = self.peak_bytes.max(self.retained_bytes());
+        Ok(())
+    }
+}
+
+fn find_label_match(entries: &[LabelCacheEntry], label: &str, font: FontKey) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| entry.font == font && entry.label.as_ref() == label)
 }
 
 fn find_match(
