@@ -250,7 +250,6 @@ fn tab_close_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
     ))
 }
 
-#[cfg(test)]
 fn tab_label_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
     let reserved = TAB_CLOSE_SIZE + TAB_CLOSE_INSET * 2.0;
     let width = (slot.size().width() - reserved).max(1.0);
@@ -258,6 +257,18 @@ fn tab_label_bounds(slot: Rect) -> Result<Rect, EditorRenderError> {
         slot.origin(),
         Size::new(width, slot.size().height()).ok_or(EditorRenderError::Domain)?,
     ))
+}
+
+fn rect_contains_bounds(outer: Rect, inner: Rect) -> bool {
+    const EPSILON: f32 = 0.5;
+    let outer_right = outer.origin().x() + outer.size().width();
+    let outer_bottom = outer.origin().y() + outer.size().height();
+    let inner_right = inner.origin().x() + inner.size().width();
+    let inner_bottom = inner.origin().y() + inner.size().height();
+    inner.origin().x() + EPSILON >= outer.origin().x()
+        && inner.origin().y() + EPSILON >= outer.origin().y()
+        && inner_right <= outer_right + EPSILON
+        && inner_bottom <= outer_bottom + EPSILON
 }
 
 fn point_in_rect(rect: Rect, point: Point) -> bool {
@@ -2512,7 +2523,10 @@ impl EditorApp {
                 .clamp_tab_view(index, pane.view)
                 .map_err(|_| SessionRestoreError::Tabs)?;
         }
-        app.restore_availability = RestoreAvailability::Strict;
+        // Visible pane documents already materialized above. Remaining deferred
+        // tabs stay lazy; switching to one that disappeared from disk must
+        // become a placeholder instead of blocking the tab strip.
+        app.restore_availability = RestoreAvailability::AllowPlaceholder;
         let mut tab_ids = Vec::new();
         tab_ids
             .try_reserve_exact(app.tabs.len())
@@ -3096,14 +3110,20 @@ impl EditorApp {
                 continue;
             };
             let slot_clip = builder.push_clip(Clip::new(visible_slot));
-            let layout = self.text_system.shape(label, font)?;
-            pending_glyphs.extend(self.collect_glyphs(
-                &layout,
-                font,
-                slot.origin().x() + 8.0,
-                layout.ascent() + 4.0,
-                slot_clip,
-            )?);
+            let label_area = tab_label_bounds(slot)?;
+            if let Some(visible_label) = label_area.intersection(tab_bounds) {
+                let label_clip = builder.push_clip(Clip::new(visible_label));
+                let layout = self.text_system.shape(label, font)?;
+                let mut label_glyphs = self.collect_glyphs(
+                    &layout,
+                    font,
+                    slot.origin().x() + 8.0,
+                    layout.ascent() + 4.0,
+                    label_clip,
+                )?;
+                label_glyphs.retain(|glyph| rect_contains_bounds(visible_label, glyph.bounds));
+                pending_glyphs.extend(label_glyphs);
+            }
             if tab_close_bounds(slot)?.intersection(visible_slot).is_some() {
                 pending_glyphs.extend(self.collect_glyphs(
                     &close_layout,
@@ -3158,12 +3178,12 @@ impl EditorApp {
             let pane_origin_x = pane.bounds.origin().x();
             let text_origin_x = editor_text_origin_x(pane_origin_x);
             let pane_selection = pane_view.selection.range();
-            let gutter_clip = builder.push_clip(Clip::new(Rect::new(
+            let gutter_bounds = Rect::new(
                 Point::new(pane_origin_x, pane.bounds.origin().y())
                     .ok_or(EditorRenderError::Domain)?,
                 Size::new(GUTTER_WIDTH, pane.bounds.size().height())
                     .ok_or(EditorRenderError::Domain)?,
-            )));
+            );
             let gutter_color = syntax_palette.color(SyntaxClass::Comment);
             for line in visible.laid_out() {
                 let projected_line = pane_projection
@@ -3286,12 +3306,26 @@ impl EditorApp {
                 let number_x =
                     (pane_origin_x + GUTTER_WIDTH - GUTTER_NUMBER_INSET - number_layout.width())
                         .max(pane_origin_x);
-                let mut number_glyphs =
-                    self.collect_glyphs(&number_layout, font, number_x, baseline, gutter_clip)?;
-                for glyph in &mut number_glyphs {
-                    glyph.color = Some(gutter_color);
+                let row = Rect::new(
+                    Point::new(pane_origin_x, top).ok_or(EditorRenderError::Domain)?,
+                    Size::new(GUTTER_WIDTH, LINE_HEIGHT).ok_or(EditorRenderError::Domain)?,
+                );
+                if let Some(visible_row) = row.intersection(gutter_bounds) {
+                    let number_clip = builder.push_clip(Clip::new(visible_row));
+                    let number_baseline = top + number_layout.ascent();
+                    let mut number_glyphs = self.collect_glyphs(
+                        &number_layout,
+                        font,
+                        number_x,
+                        number_baseline,
+                        number_clip,
+                    )?;
+                    number_glyphs.retain(|glyph| rect_contains_bounds(visible_row, glyph.bounds));
+                    for glyph in &mut number_glyphs {
+                        glyph.color = Some(gutter_color);
+                    }
+                    pending_glyphs.extend(number_glyphs);
                 }
-                pending_glyphs.extend(number_glyphs);
                 if pane.active {
                     rendered_lines.push(RenderedLine {
                         line,
@@ -10458,19 +10492,27 @@ mod session_integration_tests {
         assert!(app.file_tree.is_active());
         assert!(!app.file_tree.is_focused());
         assert_eq!(app.tabs.is_deferred(2), Ok(true));
-        assert!(matches!(
-            app.activate_document_tab(2),
-            Err(WorkspaceSelectionError::File(_))
-        ));
+        assert!(app.activate_document_tab(2)?.document_identity_advanced);
+        assert_eq!(app.tabs.active_index(), 2);
+        assert_eq!(app.tabs.is_deferred(2), Ok(false));
+        assert!(app.document.is_unavailable());
+        tests::assert_no_missing_file_io_status(&app);
+        assert!(app.activate_document_tab(1)?.document_identity_advanced);
         assert_eq!(app.tabs.active_index(), 1);
-        assert_eq!(app.tabs.is_deferred(2), Ok(true));
+        assert_eq!(app.buffer().snapshot().text(), "beta\n");
         let missing_id = app.tabs.id_at(2).ok_or("missing tab identity")?;
         app.tabs.inject_forward_history_target_for_test(missing_id);
         let failures = app.workspace_failures;
-        assert!(app.navigate_document_history(true).visual_changed);
-        assert_eq!(app.workspace_failures, failures + 1);
+        assert!(
+            app.navigate_document_history(true)
+                .document_identity_advanced
+        );
+        assert_eq!(app.workspace_failures, failures);
+        assert_eq!(app.tabs.active_index(), 2);
+        assert!(app.document.is_unavailable());
+        tests::assert_no_missing_file_io_status(&app);
+        assert!(app.activate_document_tab(1)?.document_identity_advanced);
         assert_eq!(app.tabs.active_index(), 1);
-        assert_eq!(app.tabs.is_deferred(2), Ok(true));
 
         let scratch_id = app.tabs.id_at(0).ok_or("scratch tab identity")?;
         app.tabs.inject_forward_history_target_for_test(scratch_id);
@@ -10619,6 +10661,56 @@ mod session_integration_tests {
             EditorApp::from_session(tests::TestTextSystem, missing_visible_state),
             Err(SessionRestoreError::File)
         ));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn switching_restored_tabs_does_not_surface_missing_file_io()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "alpine-editor-tab-switch-{}-{}",
+            std::process::id(),
+            SESSION_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        fs::write(root.join("alpha.rs"), "alpha\n")?;
+        fs::write(root.join("beta.rs"), "beta\n")?;
+        let mut app = EditorApp::from_session(tests::TestTextSystem, test_state(&root))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.is_deferred(2), Ok(true));
+        assert_eq!(app.tabs.is_deferred(3), Ok(true));
+
+        let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+        app.last_viewport = viewport;
+        let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear")?;
+        let mut runtime = Application::new(app, viewport, clear, WorkerConfig::default())?;
+        let _ = runtime.frame_if_dirty();
+
+        let _ = runtime.dispatch(&tests::pointer_down(
+            tests::tab_label_click_point(runtime.delegate(), 2)?,
+            1,
+        ));
+        assert_eq!(runtime.delegate().tabs.active_index(), 2);
+        assert!(runtime.delegate().document.is_unavailable());
+        tests::assert_no_missing_file_io_status(runtime.delegate());
+
+        let _ = runtime.dispatch(&tests::pointer_down(
+            tests::tab_label_click_point(runtime.delegate(), 3)?,
+            2,
+        ));
+        assert_eq!(runtime.delegate().tabs.active_index(), 3);
+        assert_eq!(runtime.delegate().buffer().snapshot().text(), "alpha\n");
+        assert!(!runtime.delegate().document.is_unavailable());
+        tests::assert_no_missing_file_io_status(runtime.delegate());
+
+        let _ = runtime.dispatch(&tests::next_tab_key());
+        assert_eq!(runtime.delegate().tabs.active_index(), 0);
+        tests::assert_no_missing_file_io_status(runtime.delegate());
+        assert!(runtime.delegate().last_workspace_error.is_none());
         fs::remove_dir_all(root)?;
         Ok(())
     }
