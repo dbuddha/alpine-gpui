@@ -128,29 +128,50 @@ printf 'stale default bundle\n' > "$default_bundle_executable"
 default_executable_sha=$(shasum -a 256 "$default_executable" | awk '{print $1}')
 default_bundle_sha=$(shasum -a 256 "$default_bundle_executable" | awk '{print $1}')
 
+isolated_home="$fixture_dir/home"
+mkdir -p "$isolated_home"
+isolated_home=$(CDPATH= cd -- "$isolated_home" && pwd -P)
+
 absolute_target="$fixture_dir/absolute-target"
 PATH="$fixture_bin:$PATH" \
+    HOME="$isolated_home" \
     CARGO_TARGET_DIR="$absolute_target" \
     ALPINE_BUNDLE_FIXTURE_REVISION=$revision \
     "$fixture_repository/scripts/build-alpine-editor-app.sh" \
     > "$fixture_dir/absolute-target.log"
 absolute_target=$(CDPATH= cd -- "$absolute_target" && pwd -P)
-absolute_bundle="$absolute_target/release/Alpine Editor.app"
+absolute_bundle="$isolated_home/Applications/Alpine Editor.app"
 [ "$(cat "$fixture_dir/absolute-target.log")" = "$absolute_bundle" ]
+[ ! -e "$absolute_target/release/Alpine Editor.app" ]
 cmp -s "$absolute_target/release/alpine-editor" \
     "$absolute_bundle/Contents/MacOS/alpine-editor"
 
 relative_target=isolated-relative-target
 PATH="$fixture_bin:$PATH" \
+    HOME="$isolated_home" \
     CARGO_TARGET_DIR=$relative_target \
     ALPINE_BUNDLE_FIXTURE_REVISION=$revision \
     "$fixture_repository/scripts/build-alpine-editor-app.sh" \
     > "$fixture_dir/relative-target.log"
 relative_target_path=$(CDPATH= cd -- "$fixture_repository/$relative_target" && pwd -P)
-relative_bundle="$relative_target_path/release/Alpine Editor.app"
-[ "$(cat "$fixture_dir/relative-target.log")" = "$relative_bundle" ]
+[ "$(cat "$fixture_dir/relative-target.log")" = "$absolute_bundle" ]
+[ ! -e "$relative_target_path/release/Alpine Editor.app" ]
 cmp -s "$relative_target_path/release/alpine-editor" \
-    "$relative_bundle/Contents/MacOS/alpine-editor"
+    "$absolute_bundle/Contents/MacOS/alpine-editor"
+
+if PATH="$fixture_bin:$PATH" \
+    HOME="$isolated_home" \
+    CARGO_TARGET_DIR="$absolute_target" \
+    ALPINE_BUNDLE_FIXTURE_REVISION=$revision \
+    "$fixture_repository/scripts/build-alpine-editor-app.sh" \
+    --executable "$fake_executable" \
+    --output "$absolute_target/release/Alpine Editor.app" \
+    > "$fixture_dir/target-output.log" 2>&1; then
+    printf 'app bundle test error: cargo-target output unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'must not be assembled in the cargo target tree' \
+    "$fixture_dir/target-output.log"
 
 [ "$(shasum -a 256 "$default_executable" | awk '{print $1}')" = \
     "$default_executable_sha" ]

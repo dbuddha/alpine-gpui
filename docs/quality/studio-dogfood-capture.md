@@ -210,7 +210,7 @@ fail without creating visible or physical work.
 
 ```sh
 scripts/capture-studio-dogfood.sh \
-  --binary 'target/release/Alpine Editor.app/Contents/MacOS/alpine-editor' \
+  --binary "$HOME/Applications/Alpine Editor.app/Contents/MacOS/alpine-editor" \
   --repository . \
   --workspace . \
   --draft path/to/draft-v2.toml \
