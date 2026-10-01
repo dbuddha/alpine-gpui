@@ -1,10 +1,3 @@
-/assurance/calibration/**/*.csv text eol=lf
-/assurance/dogfood/**/*.toml text eol=lf
-/assurance/ax/v1/fixture/** -text
-/assurance/studio-profile/**/*.json -text
 /assurance/onscreen-sdr/**/*.scene -text
 /assurance/onscreen-sdr/**/*.capture -text
 /assurance/onscreen-sdr/**/*.icc -text
-/assurance/lab/v3/source/readbacks/*.bgra -text
-/assurance/qualification/v2/*.toml text eol=lf
-/assurance/qualification/v2/raw/** -text
