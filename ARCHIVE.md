@@ -39,6 +39,12 @@ Findings on `main` at `6e6282b`:
   Dirty-tree bundles were stamped with a clean revision through
   `ALPINE_BUNDLE_FIXTURE_REVISION`.
 - The GitHub Project held 490 items; #576 reached 157 comments without a merge.
+- The retired registry also enforced that every `#[kani::proof]` harness was
+  registered. Kani no longer runs, so the `proofs.rs` harnesses have no runner.
+- Suspected, from reading only: when `windowWillClose` arrives with work in
+  flight, the drain callback (`alpine-platform-macos/src/native.rs` near 3070)
+  pauses the display link without `invalidate()`. `NativeSurface::drop` then
+  skips invalidation but the validation probe still records one.
 
 Blockers on the parked `feat/lsp-manager` commit `6600f40` (fix before any of
 it merges):

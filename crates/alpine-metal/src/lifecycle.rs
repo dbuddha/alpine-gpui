@@ -77,7 +77,7 @@ pub enum LifecycleAction {
     StopAfterDrain,
 }
 
-/// Pure single-frame transition state corresponding to `RendererLifecycle.tla`.
+/// Pure single-frame renderer, frame, resource and outcome transition state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameLifecycle {
     renderer: RendererState,
