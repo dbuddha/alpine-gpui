@@ -1,7 +1,7 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
 updated: 2026-10-01
-precedence: AGENTS.md files, code comments, README.md, vault notes, issue text
+precedence: AGENTS.md files, code comments, README.md, vault notes
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
