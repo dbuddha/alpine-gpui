@@ -665,7 +665,7 @@ impl PresentationState {
             && self.dirty
     }
 
-    /// Checks every executable invariant mapped from AEP 0064.
+    /// Checks every executable presentation invariant.
     #[must_use]
     pub const fn invariants_hold(self) -> bool {
         let link_owned = match self.application {

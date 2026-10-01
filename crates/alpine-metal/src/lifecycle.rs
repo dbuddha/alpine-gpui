@@ -54,7 +54,7 @@ pub enum FrameOutcome {
     Cancelled,
 }
 
-/// An action mapped from the AEP-0025 lifecycle model.
+/// An action applied through [`FrameLifecycle::apply`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleAction {
     /// Validate and lower a new frame.
