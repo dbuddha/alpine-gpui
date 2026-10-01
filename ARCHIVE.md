@@ -18,6 +18,10 @@ Decisions (Deepak):
   default. Git goes through the git CLI with long-lived processes.
 - No bench Mac; performance is measured on the dev MacBook; the repo stays
   public.
+- Agents may push branches, open PRs and merge in this repo, except the
+  `ask_first` list in AGENTS.md (dependencies, destructive actions, milestone
+  designs, new subsystems or APIs, unsafe and licensing changes, weaker CI,
+  spending).
 
 Findings on `main` at `6e6282b`:
 - No contract number was measured. Hosted runners expose "Apple Paravirtual
@@ -27,12 +31,16 @@ Findings on `main` at `6e6282b`:
   33,333,250 ns. Presentation is configured with `preferredFrameLatency(2.0)`,
   3 drawables and no `preferredFrameRateRange` (`native.rs:4346-4376`).
 - didChange sends the whole document each sync (`lsp_language.rs:122-143`,
-  `rust_diagnostics.rs:2638`).
+  `rust_diagnostics.rs:2598`).
+- Server eviction and idle shutdown run on the main thread and join the
+  supervisor for up to 5 s (`language_services.rs:332-366`,
+  `lsp_process.rs:33`). A sixth language with five attached slots kills an
+  open tab's server, untested.
 - `"applyEdit": true` is advertised (`lsp_language.rs:448`) while
   server-initiated requests get MethodNotFound (`lsp_json.rs:600`).
 - The 2.1 timing test measured warm cache hits (`syntax.rs:1188-1229`).
-- 14 of 17 `test-*.sh` scripts tested other scripts. 14 `harness = false`
-  targets compiled to an empty `main` in the quality job.
+- 14 of 17 `test-*.sh` scripts tested other scripts. 13 of 14
+  `harness = false` targets compiled to an empty `main` in the quality job.
   `classify-ci.sh:112` never selected native validation for
   `alpine-text-layout`.
 - `build-alpine-editor-app.sh:236` leaked one staging directory per build.
@@ -46,8 +54,7 @@ Findings on `main` at `6e6282b`:
   pauses the display link without `invalidate()`. `NativeSurface::drop` then
   skips invalidation but the validation probe still records one.
 
-Blockers on the parked `feat/lsp-manager` commit `6600f40` (fix before any of
-it merges):
+Blockers found on the parked `feat/lsp-manager` commit `6600f40`:
 - F1. The pylsp hash pin never applied: the requirement line lacks a `\`
   continuation (`lsp_provision.rs:787-791`), the `--require-hashes` failure is
   ignored (`:806`), and the fallback pulls 17 unpinned PyPI packages
@@ -62,9 +69,10 @@ it merges):
 - F7. The 512 MiB cache cap was not enforced: `dir_size` stops after 256
   entries (`lsp_provision.rs:39`, `:1079-1104`).
 - F8. Eviction joins the supervisor for up to 5 s on the main thread
-  (`lsp_process.rs:33`, `:788-806`), reachable from scroll.
+  (`lsp_process.rs:33`, `:788-806`), reachable from scroll. Also on main.
 - F9. A sixth language with five attached slots kills the least recently used
   open tab's server (`language_services.rs:348-352`, `:544-556`). Untested.
+  Also on main.
 - F10. The framework crate gained an editor "Language" menu and public
   MenuAction variants; SHA-256 was tested only on "" and "abc".
 - Worth salvaging: the `Cow<str>` JSON fix (pylsp escapes `/` as `\/`), the
@@ -109,9 +117,10 @@ name.
 
 Pointers:
 - old docs tree: `da69bd30`
-- Wiki snapshot: `aeab9e09`, built from `93df44b`
+- Wiki snapshot: `aeab9e09` in the `alpine-gpui.wiki` repository, built from
+  `93df44b`
 - last TLA+: `a52fc06`
-- recovery archive: `/Users/deepak/alpine-recovery/20260912T053747Z`
+- recovery archive: local `alpine-recovery/20260912T053747Z` on the dev Mac
 - deferred at that time: `3ee0ed9`, PR 585, `429fc65`
 
 ## Withdrawn or corrected claims
@@ -139,44 +148,44 @@ Input for the terminal app's budgets.
 
 ## Design decisions
 
+- 2026-08: the terminal was deferred (PTY, shell integration, cancellation and
+  escape-sequence surface).
+- 2026-08: zero idle submissions became mandatory after a reported Apple
+  Silicon continuous-redraw regression in another GPUI port.
+- 2026-08-27: #371 saw zero presented-handler samples, so presentation
+  telemetry may not own progress, and the drop retry was removed.
+- 2026-08-21/22, text hot path: #293 orientation, #295 lookup before
+  rasterizing, #298 index, #300 and #301 row deltas.
+- 2026-08-17: the `ignore` crate grew the stripped release binary from 907,400
+  to 1,844,360 bytes.
+- 2026-08-16: #135 and #136 replaced the in-callback GPU wait with three
+  completion-owned frame slots.
+- 2026-08-15, text: Ropey 1.6.1 and unicode-segmentation 1.13.3. Crop 0.4.3
+  failed the nested-slice and UTF-16 surrogate corpus.
+- 2026-08-14, colour: BGRA8Unorm_sRGB, standard sRGB layer colour space, EDR
+  off.
 - 2026-08-14, pacing: layer-bound CAMetalDisplayLink, not Zed's per-display
   CVDisplayLink. Kept the drawable timeout and framebuffer-only; rejected a
   permanent animation loop and indefinite drawable waits.
-- 2026-08-14, colour: BGRA8Unorm_sRGB, standard sRGB layer colour space, EDR
-  off.
-- 2026-08-15, text: Ropey 1.6.1 and unicode-segmentation 1.13.3. Crop 0.4.3
-  failed the nested-slice and UTF-16 surrogate corpus.
-- 2026-08-16: #135 and #136 replaced the in-callback GPU wait with three
-  completion-owned frame slots.
-- 2026-08-17: the `ignore` crate grew the stripped release binary from 907,400
-  to 1,844,360 bytes.
-- 2026-08-21/22, text hot path: #293 orientation, #295 lookup before
-  rasterizing, #298 index, #300 and #301 row deltas.
-- 2026-08-27: #371 saw zero presented-handler samples, so presentation
-  telemetry may not own progress, and the drop retry was removed.
-- 2026-08: zero idle submissions became mandatory after a reported Apple
-  Silicon continuous-redraw regression in another GPUI port.
-- 2026-08: the terminal was deferred (PTY, shell integration, cancellation and
-  escape-sequence surface).
 
 ## Research conclusions
 
-- WGPU v30 (2026-08-18): not a shipping dependency; useful as a test taxonomy
-  or a differential oracle.
-- Idle energy (2026-08-20): Alpine counters and OS counters are separate
-  authorities. Energy Impact is not portable; platform-idle wakeups are the key
-  subset (`TASK_POWER_INFO_V2`, `powermetrics`).
-- Accessibility (2026-08-20): one semantic model with a pull transport.
-  AccessKit was rejected (no macOS tests at `2dfdd7b`). Hosted counters prove
-  intent, not delivery.
+- Apple GPU families: M1 Apple7, M2 Apple8, M3 and M4 Apple9, M5 Apple10.
+- #521 on the dev Mac: host wait 336 µs p50 against GPU 35 µs. The shader is
+  not the first target.
+- Zed GPUI study: a `waitUntilCompleted` in the frame path caused jank; the GPU
+  may run past the deadline; hash-only reuse is not accepted.
 - Lineage audit (2026-08-27): of 24 mechanism families, 8 adapted from GPUI, 6
   convergent, 4 Alpine-original, 6 rejected or deferred; no copied code. Report
   120 Hz deadline adherence, never FPS.
-- Zed GPUI study: a `waitUntilCompleted` in the frame path caused jank; the GPU
-  may run past the deadline; hash-only reuse is not accepted.
-- #521 on the dev Mac: host wait 336 µs p50 against GPU 35 µs. The shader is
-  not the first target.
-- Apple GPU families: M1 Apple7, M2 Apple8, M3 and M4 Apple9, M5 Apple10.
+- Accessibility (2026-08-20): one semantic model with a pull transport.
+  AccessKit was rejected (no macOS tests at `2dfdd7b`). Hosted counters prove
+  intent, not delivery.
+- Idle energy (2026-08-20): Alpine counters and OS counters are separate
+  authorities. Energy Impact is not portable; platform-idle wakeups are the key
+  subset (`TASK_POWER_INFO_V2`, `powermetrics`).
+- WGPU v30 (2026-08-18): not a shipping dependency; useful as a test taxonomy
+  or a differential oracle.
 
 ## AEP index (files removed at the 2026-09-30 reset)
 

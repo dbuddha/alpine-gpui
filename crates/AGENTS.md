@@ -45,10 +45,11 @@ budgets; this file owns how the framework keeps them.
 
 ## Accessibility
 
-Semantics stay separate from visual primitives. AppKit pulls on the main
-thread; snapshots carry no document text, which is pulled by exact revision in
-bounded ranges. A query never causes a frame. Post notifications only after
-RefCell borrows end, and destroy elements before revoking the handler.
+Accessibility is part of every interactive component's contract. Semantics stay
+separate from visual primitives. AppKit pulls on the main thread; snapshots
+carry no document text, which is pulled by exact revision in bounded ranges. A
+query never causes a frame. Post notifications only after RefCell borrows end,
+and destroy elements before revoking the handler.
 
 ## Safety and lifecycle
 
@@ -65,11 +66,11 @@ RefCell borrows end, and destroy elements before revoking the handler.
 
 ## Native tests
 
-AppKit tests are `harness = false` main-thread executables compiled only with
-`--cfg alpine_native_validation`; without it they build an empty `main` and
-pass doing nothing. A test filter matching zero tests exits 0, so check the
-count. Hosted CI uses the test-only Metal route and
-`ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct`.
+AppKit tests are `harness = false` main-thread executables that need
+`--cfg alpine_native_validation`; without it 13 of the 14 build an empty
+`main` and pass doing nothing (`native_surface` returns early instead). A
+test filter matching zero tests exits 0, so check the count. Hosted CI uses
+the test-only Metal route and `ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct`.
 
 ## Technique boundary
 

@@ -17,10 +17,10 @@ const PERSISTED_PROFILE_ENVIRONMENT: &str = "ALPINE_EDITOR_PERSISTED_PROFILE";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum EditorSignpostStage {
-    /// Native event dispatch entered Studio state; `a` is the event kind code
+    /// Native event dispatch entered editor state; `a` is the event kind code
     /// and `b` the selection revision.
     EventDispatchBegin = 0,
-    /// Synchronous Studio state mutation and admission completed; `a` is 1 if
+    /// Synchronous editor state mutation and admission completed; `a` is 1 if
     /// visible output changed, `b` is 1 if the document changed, and `c` is
     /// the selection revision.
     StateMutationComplete = 1,

@@ -20,8 +20,8 @@ editing, atomic save, undo and redo, tabs, splits, a lazy file tree, session
 restore, find and replace, quick open, project search, syntax highlighting for
 nine languages, and language-server features (diagnostics, completion, hover,
 definition, references, symbols, rename and format previews). Those are
-verified for Rust and C++; the other languages use the same layer once their
-server is installed.
+verified for Rust; C++ shows clangd diagnostics; the other languages use the
+same layer once their server is installed.
 
 Not yet: git features, a file watcher, multiple windows, a design system, vim
 mode and multi-cursor editing.
@@ -53,10 +53,14 @@ clean checkout.
 | C and C++ | c, cc, cpp, cxx, h, hh, hpp, hxx | clangd | `ALPINE_CLANGD` |
 | Java | java | jdtls | `ALPINE_JDTLS` |
 | TypeScript, JavaScript | ts, tsx, mts, cts, js, jsx, mjs, cjs | typescript-language-server (one shared server) | `ALPINE_TYPESCRIPT_LS` |
-| Markdown, TOML, JSON | md, toml, json | none | none |
+| Markdown, TOML, JSON | md, markdown, toml, Cargo.lock, json | none | none |
 
-Highlighting never waits for a server. Alpine never downloads servers; install
-the ones you want:
+Highlighting never waits for a server. Alpine never downloads servers. It
+searches the launch `PATH`, then `~/.cargo/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin` and `/opt/homebrew/opt/llvm/bin`, and finds rust-analyzer in
+rustup toolchains. An app launched from the Dock gets a minimal `PATH`, so a
+server installed elsewhere (pipx's `~/.local/bin`, an nvm prefix) needs a link
+in one of those directories. Install the ones you want:
 
 ```sh
 rustup component add rust-analyzer
@@ -65,9 +69,10 @@ npm install -g typescript-language-server typescript
 xcode-select --install
 ```
 
-The last command provides clangd. For Java, install a JDK and put Eclipse
-`jdtls` on `PATH`. An override variable takes the full path of a server
-executable. To remove a language, write `disabled = ["java"]` to
+The last command provides clangd. For Java, install a JDK and link Eclipse
+`jdtls` into one of the searched directories. Override variables take the
+full path of a server executable and apply to terminal launches such as
+`cargo run`. To remove a language, write `disabled = ["java"]` to
 `~/Library/Application Support/Alpine Editor/languages.overlay.toml`.
 
 ## Settings
@@ -100,10 +105,11 @@ rewritten.
 ## Data and recovery
 
 Settings, the session and the recovery journal live in
-`~/Library/Application Support/Alpine Editor`. On first launch Alpine copies the
-pre-rename `Alpine Studio` folder if the new one is absent, and never modifies
-the old one. Unsaved buffers are journaled: at most 32 documents, 32 MiB each
-and 64 MiB in total.
+`~/Library/Application Support/Alpine Editor`. Until it writes an
+`.imported-from-alpine-studio` marker there, Alpine copies top-level files
+from the pre-rename `Alpine Studio` folder that the new folder lacks. Existing
+files win, and the old folder is never modified. Unsaved buffers are
+journaled: at most 32 documents, 32 MiB each and 64 MiB in total.
 
 ## Limitations
 
@@ -117,5 +123,5 @@ terminal and git.
 Public visibility does not make Alpine open source. Alpine's independently
 written source is proprietary under [LICENSE.md](LICENSE.md), which grants no
 permission beyond viewing this repository and using GitHub's permitted
-repository features. No Zed source is in this repository. Zed's `gpui` crate
-declares Apache-2.0 at the reviewed commit.
+repository features. No Zed application source is in this repository. Zed's
+`gpui` crate declares Apache-2.0 at the reviewed commit.
