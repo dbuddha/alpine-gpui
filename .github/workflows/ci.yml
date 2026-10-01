@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; every main commit keeps its ci-pass.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -27,13 +28,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Cache Cargo registry and build output
+      - name: Cache Cargo downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Install cargo-deny
         env:
@@ -79,13 +79,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Cache Cargo registry and build output
+      - name: Cache Cargo downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Verify native execution
         env:
@@ -98,7 +97,7 @@ jobs:
       - name: Audit the release binary product boundary
         run: scripts/check-product-boundary.sh --binary
       - name: Retain native execution output
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-acceptance-${{ github.sha }}-${{ github.run_attempt }}
@@ -121,13 +120,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Cache Cargo registry and build output
+      - name: Cache Cargo downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Install the optional Metal toolchain when absent
         run: |
@@ -160,19 +158,17 @@ jobs:
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
       - name: Retain native lifecycle output
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: metal-validation-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            target/native-lifecycle-*.toml
-            target/native-acceptance
+          path: target/native-lifecycle-*.toml
           retention-days: 7
           if-no-files-found: warn
 
   ci-pass:
     name: ci-pass
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() }}
     needs: [quality, native-macos-arm64, metal-validation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

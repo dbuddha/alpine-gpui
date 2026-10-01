@@ -30,7 +30,7 @@ if [ "$unsafe_override_files" != "$expected_unsafe_override_files" ]; then
 fi
 
 unsafe_source_files=$(find crates apps tools -type f -name '*.rs' -print0 \
-    | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*\{' 2>/dev/null \
+    | xargs -0 grep -lE 'unsafe[[:space:]]+(extern|fn|impl|trait)|unsafe[[:space:]]*[{(]' 2>/dev/null \
     | sort || true)
 expected_unsafe_source_files='crates/alpine-metal/src/native.rs
 crates/alpine-platform-macos/src/menu.rs
@@ -47,13 +47,27 @@ fi
 
 ci_files=$(find .github -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
 if [ -n "$ci_files" ]; then
-    action_refs=$(grep -hE '^[[:space:]]*(-[[:space:]]+)?uses:' $ci_files || true)
-    unpinned_refs=$(printf '%s\n' "$action_refs" \
-        | grep -vE 'uses:[[:space:]]+(actions|github)/[A-Za-z0-9._/-]+@[0-9a-f]{40}([[:space:]]|$)' \
-        | grep . || true)
+    # Every uses: reference, including flow-style steps, must be a GitHub-owned
+    # Action pinned to a full commit SHA.
+    unpinned_refs=$(grep -ohE 'uses:[[:space:]]*[^[:space:]},]+' $ci_files \
+        | grep -vE '^uses:[[:space:]]*(actions|github)/[A-Za-z0-9._/-]+@[0-9a-f]{40}$' \
+        || true)
     if [ -n "$unpinned_refs" ]; then
         fail 'workflows may use only GitHub-owned Actions pinned to a full commit SHA'
         printf '%s\n' "$unpinned_refs" >&2
+    fi
+
+    # A non-blocking step or job would let a failed check report success.
+    non_blocking=$(grep -nE '(^|[[:space:]{,])continue-on-error:' $ci_files || true)
+    if [ -n "$non_blocking" ]; then
+        fail 'workflow steps and jobs must stay blocking (no continue-on-error)'
+        printf '%s\n' "$non_blocking" >&2
+    fi
+
+    broad_permissions=$(grep -nE 'permissions:[[:space:]]*write-all' $ci_files || true)
+    if [ -n "$broad_permissions" ]; then
+        fail 'workflows may not grant write-all permissions'
+        printf '%s\n' "$broad_permissions" >&2
     fi
 
     issue_writers=$(grep -nE \

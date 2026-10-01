@@ -92,7 +92,8 @@ Relaxing one is a product decision that needs approval.
   every milestone close.
 - T3, dogfood: the in-app perf recorder (from M1), local only.
 - Guard latency invariants with deterministic work counters, not wall clocks.
-  A bug fix lands with a test that fails before it. Randomized tests print a
+  A bug fix lands with a test that fails before it (script fixes: manual
+  evidence in the PR). Randomized tests print a
   replayable seed. A flaky test is a defect, never a rerun.
 
 ## How the lead agent works

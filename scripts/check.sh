@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Mirrors the CI quality job step for step, plus the native_process check.
+# Mirrors the CI quality job, plus the native_process check and the checked-in
+# shader library check, which needs no Metal compiler.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
@@ -10,6 +11,7 @@ if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
 fi
 scripts/check-policy.sh
 scripts/check-product-boundary.sh
+scripts/verify-metal-library.sh
 cargo deny check bans licenses sources advisories
 cargo test --workspace --all-targets --all-features --locked
 cargo test --locked -p alpine-metal --all-targets

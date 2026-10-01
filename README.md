@@ -32,6 +32,7 @@ mode and multi-cursor editing.
 - Rust 1.97.1; `rust-toolchain.toml` selects it through rustup.
 - Xcode Command Line Tools. Full Xcode is needed only to change
   `shaders/offscreen.metal`; the compiled library is checked in.
+- `cargo-deny` for the full local check (`scripts/check.sh`).
 
 ## Build and run
 

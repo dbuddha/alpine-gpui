@@ -18,6 +18,8 @@ if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
     exit 1
 fi
 export ALPINE_METALLIB_PATH="$metallib_path"
+# A native target built without the validation cfg must fail, not skip.
+export ALPINE_REQUIRE_NATIVE_VALIDATION=1
 
 # Keep the pinned shader at the shipping target above, but let hosted runtime
 # validation match its OS so Shader Validation loads current diagnostics.

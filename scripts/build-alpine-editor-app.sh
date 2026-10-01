@@ -64,6 +64,7 @@ else
     esac
 fi
 
+supplied_executable=$executable
 if [ -z "$executable" ]; then
     if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
         printf 'app bundle error: release builds require Apple Silicon macOS\n' >&2
@@ -132,6 +133,10 @@ else
     fi
     revision=$(git -C "$repository_root" rev-parse HEAD)
     tree=clean
+fi
+# A supplied executable has no provable link to the revision above.
+if [ -n "$supplied_executable" ] && [ "$tree" = clean ]; then
+    tree=external
 fi
 case "$revision" in
     *[!0-9a-f]*|'')
