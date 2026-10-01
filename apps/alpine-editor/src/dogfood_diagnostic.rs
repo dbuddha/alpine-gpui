@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 
 use super::EditorApp;
 
+// The four DOGFOOD variables are one opt-in: none disables capture with no
+// I/O, a partial set is an error. Values Studio cannot measure are written as
+// null and listed as omissions, never as zero.
 const OUTPUT_ENV: &str = "ALPINE_EDITOR_DOGFOOD_OUTPUT";
 const WORKLOAD_ENV: &str = "ALPINE_EDITOR_DOGFOOD_WORKLOAD_ID";
 const REVISION_ENV: &str = "ALPINE_EDITOR_DOGFOOD_REVISION";

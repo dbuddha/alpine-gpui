@@ -4341,10 +4341,16 @@ impl NativeSurface {
             .as_ref()
             .ok_or_else(|| native_unavailable(SurfaceStage::ColorSpace))?;
         layer.setColorspace(Some(color_space));
+        // SDR only: EDR off joins the sRGB format and color space in the
+        // contract that recognizes_sdr_color_contract reports.
         layer.setWantsExtendedDynamicRangeContent(false);
+        // Framebuffer-only storage permits display-specific optimization, and
+        // 3 is the most drawables CAMetalLayer allows.
         layer.setFramebufferOnly(true);
         layer.setMaximumDrawableCount(3);
         layer.setDisplaySyncEnabled(true);
+        // Drawables come from the display link; the timeout only stops a
+        // direct nextDrawable call from waiting forever.
         layer.setAllowsNextDrawableTimeout(true);
         layer.setOpaque(true);
         layer.setContentsScale(extent.scale());
@@ -5786,6 +5792,9 @@ fn require_device(device: Option<Device>) -> Result<Device, SurfaceError> {
 
 impl Drop for NativeSurface {
     fn drop(&mut self) {
+        // Revoke callbacks before the driver shuts down, and clear delegates
+        // and close the window before fields release, so a callback racing
+        // teardown is rejected and never reaches a released native object.
         self.wake_bridge.revoke();
         self.view.revoke_accessibility();
         self.application.setDelegate(None);
