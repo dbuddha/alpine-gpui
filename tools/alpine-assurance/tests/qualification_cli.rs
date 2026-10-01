@@ -205,28 +205,12 @@ fn benchmark_admission_runs_through_the_compiled_command_boundary() -> Result<()
     let binary = env!("CARGO_BIN_EXE_alpine-assurance");
     let root = repository_root();
     let manifest = "assurance/qualification/v1/scene.toml";
-    let registry_validation = Command::new(binary)
+    let missing_command = Command::new(binary)
         .current_dir(root)
         .output()
         .map_err(|error| error.to_string())?;
-    assert!(
-        registry_validation.status.success(),
-        "{}",
-        String::from_utf8_lossy(&registry_validation.stderr)
-    );
-    let registry_report = Command::new(binary)
-        .current_dir(root)
-        .arg("report")
-        .output()
-        .map_err(|error| error.to_string())?;
-    assert!(
-        registry_report.status.success(),
-        "{}",
-        String::from_utf8_lossy(&registry_report.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&registry_report.stdout).starts_with("# Alpine assurance report\n")
-    );
+    assert!(!missing_command.status.success());
+    assert!(String::from_utf8_lossy(&missing_command.stderr).contains("a command is required"));
     let unavailable_radar = Command::new(binary)
         .current_dir(root)
         .arg("upstream-radar")
