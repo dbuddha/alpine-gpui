@@ -1,116 +1,114 @@
 ---
 product: Alpine Editor
-current_phase: 2
-phase_name: language agnostic
-phase_gate: criteria must pass on `main` with evidence before phase 3 starts
-execution: serial, one feature at a time, one worktree
-verification: launch ~/Applications/Alpine Editor.app and look at it
-parity_reference: pinned Zed v1.15.0 at alpine-zed-lab/.lab/zed
-delivery: docs/delivery.md
+parent: ../../AGENTS.md
+updated: 2026-09-30
+phase: "2, language agnostic: active, closes in M4"
+parity:
+  core_editing: {status: partial, closes: M6}
+  navigation_and_search: {status: partial, closes: M8}
+  language_intelligence: {status: partial, closes: M4}
+  git: {status: none, closes: M7}
+criteria:
+  "2.1": "recorded pass; its test times warm cache hits only, re-measure cold in M1"
+  "2.2": "Rust and C++ pass on main; Python, Java, TypeScript and JavaScript need a server on PATH"
+  "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
+  "2.4": "passes on main"
+defects_to_reverify: ["#543", "#555", "#576", "#533", "#622", "#304", "#511", "#522"]
+parked_branch: "feat/lsp-manager at 6600f40, local only: salvage the Cow JSON fix, scroll skip and pool tests in M4; the downloader is dropped"
+out_of_scope: [AI, collaboration, extensions, remote development, debugger, built-in terminal]
 ---
 
 # Alpine Editor
 
-One code editor for Apple Silicon macOS, on Alpine GPUI, that its author uses
-every day. Owned end to end and understandable without a plugin API. The root
-[AGENTS.md](../../AGENTS.md) owns the framework, its performance contract and
-the shared engineering rules; this file owns the product.
+The daily-driver code editor on Alpine GPUI. It must beat Zed at parity while
+staying inside the framework's budgets. Keep the editor core embeddable: the
+later terminal app hosts it as a native pane.
 
-## Current phase: 2, language agnostic
+## Criteria by phase
 
-Do not start phase 3 work. Phase 1 closed on `main` with installed-app
-evidence in [docs/delivery.md](../../docs/delivery.md). Phase 2 closes when
-all of these pass on `main`, each exercised in the installed app from a Dock
-launch with no terminal, each with a screenshot:
+Phase 2 (M4): each of the five language groups highlights within 100 ms with
+no server; definition, hover and references work once a server is ready; two
+languages stay warm and a sixth evicts by idle order; deleting a registry entry
+removes a language with no code change.
 
-| # | Criterion |
-| --- | --- |
-| 2.1 | A file of each of the five language groups highlights within 100 ms of appearing, with no language server running |
-| 2.2 | Definition, hover and references work in all five once the server is ready |
-| 2.3 | Switching between two languages keeps both servers warm; a sixth evicts by idle order rather than failing |
-| 2.4 | Deleting a registry entry removes that language with no code change |
+Phase 3 (M6): `cmd-shift-l` edits all matches; syntax-node expand and shrink;
+a Vim subset; 500 cursors on 10,000 lines under 16 ms per keystroke; undo
+restores every cursor. `SelectionSet` and `Transaction` already handle
+multi-cursor.
 
-Rust, Python, C++, Java and TypeScript/JavaScript through one registry. Six
-extensions, five servers: TypeScript and JavaScript share one. The server pool
-is the memory lever: one server per workspace and language, lazy start, idle
-shutdown, hard concurrency cap.
+Phase 4 (M7): breadcrumbs; branch name within 1 s of checkout; blame for the
+visible range only; gutter diff; a stage-and-commit panel; no layout shift.
 
-The bet is that a real editor can hold a real project in a fraction of the
-memory the alternatives need, and stay at 120 Hz while doing it. Every product
-decision here is downstream of keeping that true.
+Phase 5 (M8): independent windows; the design system as one tokens module in
+code; no element shift; the parity sweep and final run against Zed.
 
-## Two bars, both required
+Parity also needs auto-indent, bracket pairing, deep undo, huge-file budgets,
+inline diagnostics, completion, rename, format, code actions, inlay hints and
+signature help for all five groups, file finder and outline.
 
-**It must behave as a macOS application.** None of these is polish:
+## Two bars
 
-- A menu bar with File, Edit, View and Window, so commands are discoverable
-  without memorising shortcuts. Installed before first activation, otherwise
-  macOS shows the executable name.
-- Open and save panels, so a file or folder can be chosen from inside the app
-  rather than only as a launch argument.
-- Multiple windows in one process, an installed bundle, a stable identity, an
-  icon.
-- One coherent visual language across every surface.
+**A real macOS app:** the File, Edit and Window menus exist; add the rest as
+features land, installed before first activation. Open and save panels, an
+installed bundle, a stable identity, an icon, one visual language. A command
+with no menu item, key or visible affordance is not shipped.
 
-**It must not spend the framework's budget.** The editor is where a bounded
-framework gets turned into an unbounded application, so:
+**The framework's budget:** read nothing until it is opened; folder open lists
+a directory and nothing more. Lay out the visible range. Every cache, history
+or result set declares a ceiling and eviction rule first. Long work goes to a
+bounded worker and is admitted by revision. Degrade visibly on huge input; keep
+indexing and restore off the startup path.
 
-- Read nothing until it is opened. Folder open takes a directory listing and a
-  scratch buffer, never file contents. The lazy tree, the lazy quick-open
-  inventory and the absence of a startup index are load-bearing, not accidents.
-- Lay out the visible range plus overscan. Never the document.
-- Every new cache, history, journal or result set declares a ceiling and an
-  eviction rule before it is written.
-- Long work goes to a bounded worker and its result is admitted by document and
-  workspace revision, never applied because it arrived.
-- The language server is the largest process in the system. Bound what is
-  retained from it and never let its lifetime follow a document's.
+## Language intelligence: quiet by default
 
-Feature target: local editing, tabs, panes, search, and the language registry.
-Not in scope: AI, multiplayer, extensions, terminal, database views, agent dock.
+- One server per workspace and language, started on the first visible file of
+  that language. Idle shutdown applies only to unattached slots; hard cap 5.
+  rust-analyzer alone is 1 to 4 GB on a real crate. Eviction and shutdown never
+  run on the main thread.
+- didChange is incremental, built from edit transactions and coalesced per
+  tick. The outbound queue is bounded; when full, pending changes merge.
+  Typing never waits on a server.
+- Completion fires on trigger characters, a typing pause or a key: one request
+  in flight, cancelled on supersede, filtered locally while the prefix grows,
+  details resolved only for the selected item.
+- Hover on a key or a deliberate mouse rest; signature help on `(` and `,`;
+  code actions and references only when asked. Diagnostics render after a
+  typing pause, capped, visible range only. Inlay hints are off by default.
+  Highlighting uses local lexers, never semantic tokens.
+- JSON parses off the main thread; the main thread admits results within a
+  per-frame budget, by document revision. Cancellation is advisory; local
+  revocation by request ID is authoritative.
+- While a server reports indexing, suppress optional requests and show status.
+- Missing server: show the exact install command. Never download one.
 
-## Design
+## Git: the CLI, long-lived
 
-Zed is the visual reference. Every surface follows one written design spec
-covering type scale, spacing, colour roles, focus treatment and chrome density.
-Do not invent per-surface styling; if the spec does not answer a question,
-extend the spec and then apply it everywhere it applies.
-
-Surfaces that must agree: file tree, tab strip, gutter, status bar, find and
-replace, command palette, quick open, project search. Incoherence between any
-two of them is a defect, and it is the current state.
+Detect the repository without spawning and start nothing until a feature needs
+it. One persistent `git cat-file --batch` serves file contents. The gutter diff
+runs on a worker after a typing pause. `git blame --porcelain -L` covers the
+visible range on demand. The branch comes from reading `.git/HEAD`. `git status
+--porcelain=v2 -z` is debounced and capped. Stage and commit are explicit. At
+most two git processes, each with a timeout.
 
 ## Verification
 
-A command in `commands.rs` with no menu item, no key and no visible affordance
-is not a feature. That error has already been made here.
-
-Check every user-visible change by launching the app and capturing the window
-through ScreenCaptureKit, as `tools/onscreen-sdr-capture` does, comparing
-against the spec and against Zed for the same surface. `screencapture -l`
-cannot see the Metal layer and reports a blank window. Use a disposable `HOME` so a restored session is not mistaken for
-current behavior. Latency and memory claims follow the root guide's measurement
-rules and need a matched workload on both sides.
+Launch `~/Applications/Alpine Editor.app` from the Dock with a disposable HOME,
+which hides `~/.rustup`: set `RUSTUP_HOME` and `CARGO_HOME` or
+`ALPINE_RUST_ANALYZER`. Capture through ScreenCaptureKit
+(`tools/onscreen-sdr-capture`); `screencapture -l` cannot see the Metal layer.
+The capturing terminal needs Screen Recording permission; accessibility tools
+need Accessibility trust. Compare against the same surface in Zed.
 
 ## Correctness that must never regress
 
-Own document, workspace and focus revisions across bounded worker results.
-Preserve unsaved documents across language-server restarts. Test multiline
-lexical invalidation, grapheme and UTF-16 boundaries, atomic-save failure,
-external changes on disk, restore corruption, quit and cancel, IME composition,
-and accessibility text ranges. Use disposable fixtures and clean up processes
-the capture owns.
+Own document, workspace and focus revisions across worker results. Preserve
+unsaved documents across server restarts. Test multiline lexical invalidation,
+grapheme and UTF-16 boundaries, atomic-save failure, external changes on disk,
+restore corruption, quit and cancel, IME composition and accessibility ranges.
+Panes hold a tab identity and their own scroll; the tab store alone owns
+buffers.
 
-Settings, session and recovery journals live under
-`~/Library/Application Support/Alpine Editor`. Data already in the current
-location wins per file, the pre-rename `Alpine Studio` directory is never
-modified, and corrupt or conflicting input produces a visible recovery outcome
-rather than silent replacement.
-
-## Known open defects
-
-Open issues are the backlog; read them, not a list here. One matters before
-touching rendering: `presentedTime` is always zero on the development Mac
-(#511), so presentation cannot be timed there.
-
-Daily use is the acceptance test. A defect you hit while editing is the backlog.
+Settings, session and recovery live under
+`~/Library/Application Support/Alpine Editor`. Current data wins per file, the
+pre-rename `Alpine Studio` directory is never modified, and corrupt input gives
+a visible recovery outcome.

@@ -1,118 +1,159 @@
 ---
-product: Alpine GPUI
-scope: framework
-execution: serial, one feature at a time, one worktree
-verification: launch the installed app and look at it; reading code is not verification
-parity_reference: pinned Zed v1.15.0 at alpine-zed-lab/.lab/zed
-delivery: docs/delivery.md
+program: Alpine GPUI framework, Alpine Editor app, a terminal app later
+updated: 2026-09-30
+precedence: AGENTS.md files, then code comments, then README.md, then vault notes and issue text
+archive: ARCHIVE.md (history only, never an operating rule)
+scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md]
+dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
+goals:
+  editor: daily driver that beats Zed at parity in core editing, navigation and search, language intelligence, and git
+  framework: beats Zed GPUI and is the best Metal framework for these apps; stability and durability before public API
+  later: a separate terminal app that hosts the editor as a native pane
+beat_zed_on: [keypress_to_screen, memory_with_servers, frame_cadence, startup_and_big_inputs, reliability, energy, under_load]
+comparators:
+  app: /Applications/Zed.app, same workload
+  framework: Zed GPUI scenarios in bench/ (M5)
+  native: AppKit reference app in bench/ (M1)
+budgets:
+  event_to_target_present_p95_ms: 25
+  event_to_target_present_p95_ms_target: 16.7
+  frame_interval_during_input_ms: 8.33
+  missed_frames_pct: 1
+  cpu_frame_prep_p95_ms: 4
+  event_to_submit_p95_ms: 4
+  idle_cpu_pct_of_one_core: 1
+  idle_frame_submissions: 0
+  editor_footprint_steady: first M1 baseline plus 10 percent
+  language_servers: reported per server, not gated
+milestones:
+  - {id: M0, name: "reset: docs, CI, hygiene", status: active}
+  - {id: M1, name: "measurement: perf recorder and bench", status: next}
+  - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
+  - {id: M3, name: "daily-use defects and durability", status: planned}
+  - {id: M4, name: "language intelligence, phase 2 close", status: planned}
+  - {id: M5, name: "framework bench against Zed GPUI", status: planned}
+  - {id: M6, name: "editing parity, phase 3", status: planned}
+  - {id: M7, name: "git and context, phase 4", status: planned}
+  - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
+ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, anything that costs money]
 ---
 
-# Alpine GPUI
+# Alpine
 
-An application framework for Apple Silicon macOS, in Rust, with a Direct Metal
-backend. It exists to make one thing structurally true: an application built on
-it uses far less memory and has more predictable latency than the alternatives,
-because the framework refuses the designs that make those costs unbounded.
+Alpine GPUI is a Rust application framework for Apple Silicon macOS with a
+Direct Metal renderer. Alpine Editor is the daily-driver editor built on it.
+This file is the program: goals, budgets, rules and how agents work. Scoped
+AGENTS.md files hold local rules. This file overrides vault notes about Alpine.
 
-[apps/alpine-editor/AGENTS.md](apps/alpine-editor/AGENTS.md) owns the editor
-built on it. This file owns the framework and the shared engineering rules.
+## Contract
 
-## The contract
+Budgets in the frontmatter gate every PR on the dev Mac. "Beats Zed" is
+checked at each milestone close on matched workloads: ten fresh-process trials,
+confidence intervals, unfavorable results reported. None of it is measured
+until M1 lands; hosted CI cannot measure it.
 
-These are the numbers the framework exists to hit. None is currently proven.
+## Invariants
 
-| Property | Target |
-| --- | --- |
-| Matched footprint against the comparator | at least 20% lower, accepted only when the upper 95% bound on the ratio is <= 0.80 |
-| CPU frame preparation | p95 <= 4 ms, p99 <= 6 ms |
-| Event received through submission | p95 <= 4 ms, p99 <= 8 ms |
-| Actual 120 Hz presentation | under 1% missed opportunities, where measurable |
-| Idle CPU | under 1% of one core |
+Relaxing one is a product decision that needs approval.
 
-Honest status: the footprint advantage is **unmeasured**. An early comparison
-only measured idle footprint after opening a folder, which Alpine never reads,
-so it compared an idle shell against an IDE doing real work. On the one renderer
-fixture with statistical treatment, pinned GPUI is about 12% faster at
-`renderer-submit-readback`. On the development Mac `presentedTime` is always
-zero, so presentation cannot be timed there at all (issues #511 and #622).
+- No reactive graph and no general async executor. Work is demand-driven; a
+  frame happens because an invalidation asked for one. Idle submits nothing.
+- Everything is bounded: queues, caches, workers, retained bytes, frames. A new
+  allocation without a ceiling and an eviction rule is a defect.
+- Scenes are immutable with explicit painter order.
+- Lay out the visible range plus overscan. Cost scales with the viewport.
+- Stale results are rejected by revision, never applied because they arrived.
+- Direct Metal in the hot path. No generic GPU abstraction.
+- Optimize in this order: correctness, responsiveness, efficiency, delivery.
 
-## Invariants that produce the contract
+## Measuring
 
-Violating any of these forfeits the reason the framework exists. Treat a change
-that relaxes one as a product decision, not an implementation detail.
+- Separate stages: event admission, mutation, layout, shaping, scene build,
+  upload, encode, commit, GPU completion, display-link target, presentation.
+- GPU completion is not presentation. presentedTime reads zero on the dev Mac
+  even for a plain MTKView app, so use CAMetalDisplayLinkUpdate timestamps in
+  process and the black-box keypress-to-screen tool across apps.
+- Memory is phys_footprint, editor and each child separately, never RSS.
+- Installed app, fresh process, disposable HOME, AC power, quiet machine.
+- A comparison that does less work fails. Sample memory at semantic points; a
+  bounded cache still fails if footprint never plateaus.
+- Metal validation on for correctness runs, off for timing runs.
+- Hosted runners expose "Apple Paravirtual device" and no display. They prove
+  correctness, never timing, presentation or footprint.
 
-- **No reactive graph and no general async executor.** Work is demand-driven.
-  Nothing recomputes because something else changed; a frame happens because an
-  invalidation asked for one.
-- **Everything is bounded.** Queues, caches, workers, retained bytes, in-flight
-  frames. Current budgets: layout cache 32 MiB, glyph atlas 16 MiB, 3 frame
-  slots, 3 overscan lines, 1 MiB per line, 64 atlas row patches before resync.
-  A new allocation without a ceiling is a defect.
-- **Scenes are immutable and painter order is explicit.** No implicit z-order,
-  no retained mutable view tree.
-- **Work is laid out for what is visible**, plus overscan. Cost must scale with
-  the viewport, not the document.
-- **Stale results are rejected by revision**, not by hoping they arrive in order.
-- **Direct Metal in the hot path.** No generic GPU abstraction between the scene
-  and the command buffer.
+## Testing tiers
 
-## Measuring anything here
+- T0, before every commit: `cargo test --locked -p <crate>`, clippy, fmt.
+- T1, CI: build, test, clippy, fmt, deny; native validation for crate changes.
+  Guard latency invariants with deterministic work counters, not wall clocks.
+- T2, dev Mac bench (from M1): any frame-path, startup, LSP or cache change,
+  and every milestone close.
+- T3, dogfood: the in-app perf recorder (from M1), local only.
+- A flaky test is a defect: no blind reruns, no weaker thresholds.
 
-- Separate the stages and never collapse them: state mutation, layout, scene
-  build, adaptation, upload, encode, commit, GPU completion, presentation.
-- GPU completion is not presentation. Requested bytes are not physical
-  residency. Absent presentation is missing evidence, never a timestamp
-  substituted from callback arrival or a target deadline.
-- Memory means `phys_footprint`, summed across every process the app owns, not
-  RSS. Fresh process per trial, isolated `HOME`, one launch method throughout.
-- A number without a matched workload measures product scope, not efficiency.
-  State what the other side was doing.
-- At least ten trials, and report a confidence interval rather than a point
-  estimate.
+## How the lead agent works
+
+- Merge routine PRs once gates pass. Ask Deepak first for anything listed under
+  `ask_first`.
+- One feature in flight. Explore agents search in parallel; a Plan agent
+  drafts milestone designs; one implementer at a time works in its own
+  worktree; a fresh-context reviewer checks every PR.
+- An implementer brief states: objective and why, the exact gate, invariants
+  and budgets in play, files in and out of scope, constraints, deliverables
+  (branch, commits, PR body, raw gate output), and the stop condition.
+- Before merging, the lead (never a subagent):
+  1. re-runs the gate on the PR head;
+  2. reads the full diff, including untracked files;
+  3. resolves or explains every review finding;
+  4. checks evidence by change type: Dock-launch screenshot for UI, bench rows
+     for performance paths, a real-server run for LSP, a failure-path test for
+     data;
+  5. squash-merges, confirms main CI on the merged SHA, rebuilds the installed
+     app from main and smoke-tests it.
+- Milestone close: ten-trial bench run, frontmatter updated, one ARCHIVE line
+  with numbers and PR links.
+- Two failed attempts on the same blocker: stop and ask.
+
+## PRs
+
+One outcome per PR, about 500 lines of product code unless justified, and a
+type prefix that matches the content. Body sections: Context, Root cause (bug
+fixes), Evidence, Risk and scope, Test plan. Update frontmatter in the same PR.
+
+## Provenance
+
+- No copied third-party source without its license header and an ARCHIVE
+  line. Zed source never enters this repo; Apache-2.0 GPUI may appear only in
+  `bench/`, after approval.
+- The app downloads and executes nothing at runtime. Language servers are
+  discovered, not fetched.
+- Every installed bundle and bench row names its commit and dirty state.
+
+## Docs and issues
+
+Only AGENTS.md files, ARCHIVE.md and README.md, plus LICENSE.md. No ledgers,
+registries or scripts that test scripts. Code-local contracts are comments of at
+most 3 lines. Caps: this file 1,200 words, scoped files 900. Rules overflow into
+a scoped AGENTS.md, history into ARCHIVE.md. Issues are a thin defect inbox
+(steps, expected, observed), closed by the fixing PR; no board, no hierarchy.
 
 ## Working rules
 
 - Inspect branch, upstream and dirty state. Preserve unfinished work.
-- Measure a differentiator before building on it. An unmeasured hypothesis
-  outranks any feature.
-- Read affected code and tests first. Use [docs/architecture](docs/architecture/README.md).
-- Verify relevant behavior once; repeat after changes or failures. Review the
-  full diff, including untracked files.
-- An environmental blocker needs a re-check after a real delay before it becomes
-  a blocked goal. Three reads in one minute is one observation.
-- Ask about a new public contract, dependency, unsafe boundary or copied source.
-- Never publish secrets, rewrite published history or bypass branch protection.
-
-## Pitfalls with scars
-
-- Lock and RefCell reentrancy across native callbacks, and main-thread blocking.
-  Native handles, callback generations and teardown need explicit ownership.
-- Unsafe code needs a local safety argument and focused tests, and lives only in
-  the audited boundary files that `check-policy.sh` lists.
-- Preserve blended painter order. A cross-GPU pixel hash alone proves nothing;
-  native rendering needs semantic and readback checks.
-- Zed application source stays in the isolated GPL lab.
+- Measure a differentiator before building on it.
+- Read the affected code and tests first; review the full diff.
+- Re-check an environmental blocker after a real delay before calling it one.
+- Never publish secrets, rewrite published history or bypass protection.
 
 ## Commands
 
 ```sh
 cargo run --locked -p alpine-editor
-cargo test --locked -p <affected-crate>
-scripts/check-native.sh physical shipping
+cargo test --locked -p <crate>
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
 scripts/check.sh
+scripts/check-native.sh physical shipping
+scripts/build-alpine-editor-app.sh
+scripts/launch-alpine-editor-app.sh <file-or-folder>
 ```
-
-## How work is delivered
-
-Serially. One feature at a time, one worktree, no parallel branches of work.
-Phases and acceptance criteria are in [docs/delivery.md](docs/delivery.md); a
-phase does not begin until the previous one passes **on main** with evidence.
-
-Verify by using the installed application, not by reading the code that
-implements it. A command reachable only from the command palette is not
-shipped: that is how this project's language-server work sat unusable for
-months while looking complete in source.
-
-Each AGENTS.md is capped at 900 words; adding a rule requires removing one. No
-new script may test another script. No workflow may file issues. Retired process
-is deleted, not archived; history at tag `pre-cleanup-2026-09` restores nothing.

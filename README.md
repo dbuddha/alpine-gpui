@@ -1,88 +1,121 @@
 # Alpine Editor
 
 Alpine Editor is a local code editor for Apple Silicon macOS, written in Rust on
-Alpine GPUI, an independently written application framework with a direct Metal
-renderer. The goal is one editor its author can use every day, with a memory
-footprint the alternatives cannot match, owned end to end and understandable
-without a plugin API.
+Alpine GPUI, an independently written application framework with a Direct Metal
+renderer. The goal is one editor its author uses every day: lower latency and
+memory than Zed, a steady 120 Hz, and nothing loaded until it is needed.
 
 Alpine GPUI's programming model is conceptually adapted from
 [Zed GPUI](https://github.com/zed-industries/zed/tree/e17dc4f9d50db73a458b64dcce50ecd4878b98a3/crates/gpui).
 Alpine is an independent implementation, not a fork or a source-compatible
-distribution, and is not affiliated with or endorsed by Zed Industries. Upstream
-source is not copied, vendored, or linked.
+distribution, and is not affiliated with or endorsed by Zed Industries.
 
-## Current state
+## Status
 
-Alpine Editor is a prototype. It builds, launches, renders, and edits files, and
-it is not yet a daily driver. Being accurate about the gap matters more than the
-feature list, so:
+A prototype, not yet a daily driver. Performance has not been measured against
+Zed yet; that is the next milestone.
 
-**Works today**
+Works today: opening files and folders from the File menu or at launch,
+editing, atomic save, undo and redo, tabs, splits, a lazy file tree, session
+restore, find and replace, quick open, project search, syntax highlighting for
+nine languages, and language-server features (diagnostics, completion, hover,
+definition, references, symbols, rename and format previews). Those are
+verified for Rust and C++; the other languages use the same layer once their
+server is installed.
 
-- Opening a file or folder passed at launch, editing, atomic save, undo and redo
-- Tabs, bounded splits, a virtualized file tree, session restore
-- Find and replace, quick open, project search
-- Syntax highlighting for Rust, Markdown, TOML and JSON
-- Rust language support against a pinned `rust-analyzer`: diagnostics,
-  completion, hover, go to definition, references, document and workspace
-  symbols, and rename and format previews
-- Unicode, IME composition, clipboard, and accessibility semantics
+Not yet: git features, a file watcher, multiple windows, a design system, vim
+mode and multi-cursor editing.
 
-**Not built yet**
+## Requirements
 
-- No menu bar, so every command is keyboard-only
-- No open or save dialog, so files and folders can only be chosen at launch
-- One window per process
-- No git integration, no file watcher, no terminal, no extensions
-- No language support beyond the four above
-- No design system, which is why surfaces are not yet visually consistent
-
-**Not planned for version 1**
-
-Intel Macs, Linux, Windows, web, mobile, GPUI source compatibility, AI features,
-and multiplayer editing.
-
-## Performance
-
-The premise is lower memory use than comparable editors. That premise is
-**unverified**. An early comparison measured only idle footprint after opening a
-folder, which is not a like-for-like test because Alpine does not read file
-contents until a file is opened. No performance claim is currently supported by
-evidence, and an earlier renderer measurement favored pinned Zed GPUI by about
-12 percent at one stage on one workload.
+- An Apple Silicon Mac with macOS 15 or newer.
+- Rust 1.97.1; `rust-toolchain.toml` selects it through rustup.
+- Xcode Command Line Tools. Full Xcode is needed only to change
+  `shaders/offscreen.metal`; the compiled library is checked in.
 
 ## Build and run
 
 ```sh
-cargo run --locked -p alpine-editor              # run against the current tree
-cargo run --locked -p alpine-editor path/to/file # open a file or folder
-scripts/check.sh                                 # full local gate
+cargo run --locked -p alpine-editor [file-or-folder]
+scripts/build-alpine-editor-app.sh
+scripts/launch-alpine-editor-app.sh <file-or-folder>
 ```
 
-Build a local application bundle:
+The build script installs an unsigned `~/Applications/Alpine Editor.app` from a
+clean checkout.
+
+## Languages
+
+| Language | Extensions | Server Alpine looks for | Override |
+| --- | --- | --- | --- |
+| Rust | rs | rust-analyzer (from rustup toolchains) | `ALPINE_RUST_ANALYZER` |
+| Python | py, pyi | pylsp, basedpyright, pyright-langserver | `ALPINE_PYTHON_LS` |
+| C and C++ | c, cc, cpp, cxx, h, hh, hpp, hxx | clangd | `ALPINE_CLANGD` |
+| Java | java | jdtls | `ALPINE_JDTLS` |
+| TypeScript, JavaScript | ts, tsx, mts, cts, js, jsx, mjs, cjs | typescript-language-server (one shared server) | `ALPINE_TYPESCRIPT_LS` |
+| Markdown, TOML, JSON | md, toml, json | none | none |
+
+Highlighting never waits for a server. Alpine never downloads servers; install
+the ones you want:
 
 ```sh
-scripts/build-alpine-editor-app.sh               # installs ~/Applications/Alpine Editor.app
-scripts/launch-alpine-editor-app.sh path/to/file-or-folder
+rustup component add rust-analyzer
+pipx install python-lsp-server
+npm install -g typescript-language-server typescript
+xcode-select --install
 ```
 
-The bundle is local dogfood infrastructure. Signing, notarization and
-distribution are later work.
+The last command provides clangd. For Java, install a JDK and put Eclipse
+`jdtls` on `PATH`. An override variable takes the full path of a server
+executable. To remove a language, write `disabled = ["java"]` to
+`~/Library/Application Support/Alpine Editor/languages.overlay.toml`.
 
-Native execution is separate from the ordinary test suite:
-`scripts/check-native.sh physical shipping` runs the shipping smoke. Neither
-workspace tests nor hosted CI prove physical presentation.
+## Settings
 
-Development is PR-first: problem and outcome, change, then verification and
-remaining risks. See [CONTRIBUTING.md](CONTRIBUTING.md) and
-[docs/architecture](docs/architecture/README.md).
+Alpine reads local JSON only: compiled defaults, then
+`~/Library/Application Support/Alpine Editor/settings.json`, then
+`<workspace>/.alpine/settings.json`. Later layers override earlier ones and
+missing files are ignored. A malformed layer rejects the whole reload and keeps
+the previous settings. Each file is capped at 64 KiB.
+
+```json
+{
+  "version": 1,
+  "editor": { "font_name": "Menlo-Regular", "font_size": 15, "font_scale": 2,
+              "line_height": 22, "tab_columns": 4 },
+  "theme": { "background": [0.035, 0.04, 0.045, 1.0],
+             "syntax": { "comment": [0.48, 0.60, 0.53, 1.0] } },
+  "keymap": { "bindings": [ { "physical_key": 1, "modifiers": ["command"],
+                              "action": "save_file", "label": "Cmd+S" } ] }
+}
+```
+
+`editor` and `theme` are partial; theme colours are linear RGBA from 0.0 to
+1.0, and `font_name` accepts only `Menlo-Regular`. A supplied keymap replaces
+the defaults and holds at most 64 bindings. Reload with the command palette
+action "Preferences: Reload Settings". Version 0 files (top-level `font_size`,
+`font_scale`, `line_height`, `tab_columns`) migrate in memory; the file is never
+rewritten.
+
+## Data and recovery
+
+Settings, the session and the recovery journal live in
+`~/Library/Application Support/Alpine Editor`. On first launch Alpine copies the
+pre-rename `Alpine Studio` folder if the new one is absent, and never modifies
+the old one. Unsaved buffers are journaled: at most 32 documents, 32 MiB each
+and 64 MiB in total.
+
+## Limitations
+
+The bundle is unsigned and built locally. Typing latency, 120 Hz presentation,
+IME candidate placement and VoiceOver are not yet qualified. There is no
+terminal, extension system, AI feature, account or telemetry; use an external
+terminal and git.
 
 ## Ownership and license
 
 Public visibility does not make Alpine open source. Alpine's independently
 written source is proprietary under [LICENSE.md](LICENSE.md), which grants no
 permission beyond viewing this repository and using GitHub's permitted
-repository features. Zed's `gpui` crate declares Apache-2.0 at the reviewed
-commit, and that license governs Zed source, which is kept in a separate GPL
-comparison repository and never in this one.
+repository features. No Zed source is in this repository. Zed's `gpui` crate
+declares Apache-2.0 at the reviewed commit.
