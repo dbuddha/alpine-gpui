@@ -7,6 +7,12 @@ Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 
 ## 2026-09-30: reset after an adversarial review
 
+2026-10-01: issues and the Project board retired as working tools; tag
+`docs-final-2026-09-30` marks the last docs tree (`6e6282b`). M0c removed the
+CI path classifier, 15 `test-*.sh` scripts and 6 other helpers, the release
+notes config, the retrying upload action, 18 of 21 `alpine-assurance`
+commands, `alpine-trace`, and the assurance data only they read.
+
 Decisions (Deepak):
 - Editor first: beat Zed at parity in core editing, navigation and search,
   language intelligence and git. A separate terminal app comes later.

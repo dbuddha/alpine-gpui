@@ -87,8 +87,7 @@ Relaxing one is a product decision that needs approval.
 ## Testing tiers
 
 - T0, before every commit: `cargo test --locked -p <crate>`, clippy, fmt.
-- T1, CI: build, test, clippy, fmt, deny. Native validation covers every crate
-  from M0c; today core, scene, renderer, platform and text crates skip it.
+- T1, CI on every change: build, test, clippy, fmt, deny and native validation.
 - T2, dev Mac bench (from M1): frame-path, startup, LSP or cache changes, and
   every milestone close.
 - T3, dogfood: the in-app perf recorder (from M1), local only.
@@ -131,17 +130,18 @@ fixes), Evidence, Risk and scope, Test plan. Update frontmatter in the same PR.
   line. Zed application (GPL) source never enters this repo; Apache-2.0 GPUI
   may appear only in `bench/`.
 - The app downloads and executes nothing at runtime.
-- Every bench row names its commit and dirty state; bundle stamps gain a dirty
-  flag in M0d.
+- Every bench row names its commit and dirty state; bundle stamps record the
+  tree state.
 
 ## Docs and issues
 
 Only AGENTS.md files, ARCHIVE.md and README.md, plus LICENSE.md. Document
 implemented behavior and label targets as targets. A change that makes an
-instruction wrong corrects it. No ledgers, registries or new scripts that test
+instruction wrong corrects it. No ledgers, registries or scripts that test
 scripts. Code-local contracts are comments of at most 3 lines. Caps: this file
 1,200 words, scoped files 900; rules overflow into a scoped AGENTS.md, history
-into ARCHIVE.md. Issues are a thin defect inbox closed by the fixing PR.
+into ARCHIVE.md. Issues and the Project board are retired; defects live in the
+scoped AGENTS.md `known_defects` lists and close with the fixing PR.
 
 ## Working rules
 
