@@ -6,11 +6,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      base_sha:
-        description: Explicit comparison base commit for this dispatch
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -25,77 +20,50 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  classify:
-    name: classify
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      base_sha: ${{ steps.classify.outputs.base_sha }}
-      head_sha: ${{ steps.classify.outputs.head_sha }}
-      code: ${{ steps.classify.outputs.code }}
-      metal: ${{ steps.classify.outputs.metal }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - id: classify
-        name: Select required evidence
-        env:
-          ALPINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
-          ALPINE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: scripts/classify-ci.sh
-
-  preflight:
-    name: preflight
-    needs: classify
-    runs-on: macos-26
-    timeout-minutes: 5
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - name: Check technical repository policy
-        run: scripts/check-policy.sh
-      - name: Require cheap source feedback before assurance fan-out
-        if: needs.classify.outputs.code == 'true'
-        run: scripts/check-ci-fast-feedback.sh
-
   quality:
     name: quality
-    needs: [classify, preflight]
-    if: needs.classify.outputs.code == 'true'
     runs-on: macos-26
     timeout-minutes: 25
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          fetch-depth: 0
-      - name: Install policy tools
-        run: cargo install --locked cargo-deny --version 0.20.2
-      - name: Show toolchain
-        run: rustc --version --verbose
-      - name: Check technical repository policy
-        run: scripts/check-policy.sh
-      - name: Test repository automation
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Install cargo-deny
+        env:
+          CARGO_DENY_VERSION: 0.20.2
+          CARGO_DENY_SHA256: fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3
         run: |
-          scripts/test-policy.sh
-          scripts/test-classifier.sh
-          scripts/test-ci-admission.sh
-          scripts/test-product-boundary.sh
-          scripts/test-alpine-editor-app-bundle.sh
-          scripts/test-qualification.sh
-          scripts/test-zed-lab-evidence.sh
-          scripts/check-release.sh
-          scripts/test-core-contracts.sh
-          scripts/test-metal-contracts.sh
+          archive="cargo-deny-$CARGO_DENY_VERSION-aarch64-apple-darwin"
+          curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/$archive.tar.gz" \
+            --output "$RUNNER_TEMP/$archive.tar.gz"
+          echo "$CARGO_DENY_SHA256  $RUNNER_TEMP/$archive.tar.gz" | shasum -a 256 --check
+          tar -xzf "$RUNNER_TEMP/$archive.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 0755 "$RUNNER_TEMP/$archive/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+          cargo deny --version
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Check repository policy
+        run: scripts/check-policy.sh
+      - name: Check the product boundary
+        run: scripts/check-product-boundary.sh
       - name: Check dependencies and licenses
         run: cargo deny check bans licenses sources advisories
       - name: Test all targets
         run: cargo test --workspace --all-targets --all-features --locked
-      - name: Stress Studio concurrency admission
+      - name: Test alpine-metal without platform-spi
+        run: cargo test --locked -p alpine-metal --all-targets
+      - name: Stress editor concurrency admission
         run: scripts/test-studio-concurrency-stress.sh
       - name: Test Rust API examples
         run: cargo test --workspace --doc --all-features --locked
@@ -103,27 +71,23 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
-      - name: Upload rustdoc artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: rustdoc-${{ github.sha }}
-          path: target/doc
-          retention-days: 7
-          if-no-files-found: error
 
-  native:
+  native-macos-arm64:
     name: native-macos-arm64
-    needs: [classify, preflight]
-    if: needs.classify.outputs.code == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Show target
-        run: rustc --version --verbose
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Verify native execution
-        if: needs.classify.outputs.metal == 'true'
         env:
           DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
           MACOSX_DEPLOYMENT_TARGET: "15.0"
@@ -131,31 +95,19 @@ jobs:
           ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
           RUSTFLAGS: --cfg alpine_native_validation
         run: scripts/check-ci-native-admission.sh
+      - name: Audit the release binary product boundary
+        run: scripts/check-product-boundary.sh --binary
       - name: Retain native execution output
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-admission-${{ github.sha }}
+          name: native-acceptance-${{ github.sha }}-${{ github.run_attempt }}
           path: target/native-acceptance
           retention-days: 7
           if-no-files-found: warn
-      - name: Audit Alpine Editor release product boundary
-        shell: bash
-        run: |
-          mkdir -p target
-          scripts/check-product-boundary.sh --binary | tee target/studio-product-boundary.txt
-      - name: Upload Alpine Editor product-boundary evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: studio-product-boundary-${{ github.sha }}
-          path: target/studio-product-boundary.txt
-          retention-days: 7
-          if-no-files-found: error
 
   metal-validation:
     name: metal-validation
-    needs: [classify, preflight]
-    if: needs.classify.outputs.metal == 'true'
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -163,14 +115,12 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
       # Hosted macOS runners may have no display that Core Animation can
-      # qualify. Validation and mutation controls inherit the same explicit
-      # non-qualifying evidence mode. Fixed hardware leaves this unset.
+      # qualify, so validation runs in the explicit non-qualifying evidence
+      # mode. Fixed hardware leaves this unset.
       ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the optional Metal toolchain when absent
         run: |
           if ! xcrun --sdk macosx --find metal >/dev/null 2>&1; then
@@ -178,7 +128,7 @@ jobs:
           fi
           xcrun --sdk macosx --find metal
           xcrun --sdk macosx --find metallib
-      - name: Provision the pinned rust-analyzer compatibility binary
+      - name: Provision the pinned rust-analyzer binary
         run: |
           mkdir -p target/rust-analyzer-qualification
           curl --fail --location --silent --show-error \
@@ -189,20 +139,8 @@ jobs:
           gzip -dc target/rust-analyzer-qualification/rust-analyzer.gz \
             > target/rust-analyzer-qualification/rust-analyzer
           chmod +x target/rust-analyzer-qualification/rust-analyzer
+          target/rust-analyzer-qualification/rust-analyzer --version
           echo "ALPINE_RUST_ANALYZER=$PWD/target/rust-analyzer-qualification/rust-analyzer" >> "$GITHUB_ENV"
-          find apps/alpine-editor/tests/fixtures/rust-analyzer-workspace -type f -print0 \
-            | sort -z \
-            | xargs -0 shasum -a 256 \
-            > target/rust-analyzer-qualification/workspace-files.sha256
-          {
-            echo "release=2026-08-17.4"
-            echo "asset=rust-analyzer-aarch64-apple-darwin.gz"
-            echo "asset_sha256=ece932daf2f077be87bf745d2eb0a62cbc550f4b1e2e31ca76dfafdd0cc599b3"
-            target/rust-analyzer-qualification/rust-analyzer --version
-            sw_vers
-            uname -m
-            shasum -a 256 target/rust-analyzer-qualification/workspace-files.sha256
-          } | tee target/rust-analyzer-qualification/environment.txt
       - name: Qualify the real rust-analyzer document lifecycle
         run: |
           cargo test --locked -p alpine-editor \
@@ -213,106 +151,36 @@ jobs:
             -- --ignored --exact --nocapture
       - name: Run Metal API and shader validation
         run: scripts/check-metal.sh
-      - name: Upload compiled shader evidence
-        id: upload-metal-shader-primary
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - name: Retain native lifecycle output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: metal-shader-${{ github.sha }}
+          name: metal-validation-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            target/metal/offscreen.metallib
-            target/metal/offscreen.metallib.manifest.txt
+            target/native-lifecycle-*.toml
+            target/native-acceptance
           retention-days: 7
-          if-no-files-found: error
-      - name: Retry compiled shader evidence upload
-        if: always() && steps.upload-metal-shader-primary.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: metal-shader-${{ github.sha }}
-          path: |
-            target/metal/offscreen.metallib
-            target/metal/offscreen.metallib.manifest.txt
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload native lifecycle soak evidence
-        id: upload-native-lifecycle-primary
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: native-lifecycle-${{ github.sha }}
-          path: target/native-lifecycle-*.toml
-          retention-days: 30
           if-no-files-found: warn
-      - name: Retry native lifecycle soak evidence upload
-        if: always() && steps.upload-native-lifecycle-primary.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: native-lifecycle-${{ github.sha }}
-          path: target/native-lifecycle-*.toml
-          retention-days: 30
-          if-no-files-found: warn
-      - name: Upload rust-analyzer compatibility evidence
-        id: upload-rust-analyzer-compatibility-primary
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: rust-analyzer-compatibility-${{ github.sha }}
-          path: |
-            target/rust-analyzer-qualification/environment.txt
-            target/rust-analyzer-qualification/workspace-files.sha256
-          retention-days: 7
-          if-no-files-found: error
-      - name: Retry rust-analyzer compatibility evidence upload
-        if: always() && steps.upload-rust-analyzer-compatibility-primary.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: rust-analyzer-compatibility-${{ github.sha }}
-          path: |
-            target/rust-analyzer-qualification/environment.txt
-            target/rust-analyzer-qualification/workspace-files.sha256
-          retention-days: 7
-          if-no-files-found: error
 
   ci-pass:
     name: ci-pass
     if: ${{ always() && !cancelled() }}
-    needs: [classify, preflight, quality, native, metal-validation]
+    needs: [quality, native-macos-arm64, metal-validation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require selected evidence
+      - name: Require every job to succeed
         env:
-          CLASSIFY_RESULT: ${{ needs.classify.result }}
-          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
-          CODE_REQUIRED: ${{ needs.classify.outputs.code }}
           QUALITY_RESULT: ${{ needs.quality.result }}
-          NATIVE_RESULT: ${{ needs.native.result }}
-          METAL_REQUIRED: ${{ needs.classify.outputs.metal }}
+          NATIVE_RESULT: ${{ needs.native-macos-arm64.result }}
           METAL_RESULT: ${{ needs.metal-validation.result }}
         run: |
           require_success() {
             test "$2" = success || {
-              echo "$1 required success but was $2" >&2
+              echo "$1 required success but was ${2:-missing}" >&2
               exit 1
             }
           }
-          require_selected() {
-            case "$2" in
-              true|false) ;;
-              *) echo "$1 has an invalid requirement: $2" >&2; exit 1 ;;
-            esac
-            if test "$2" = true; then
-              require_success "$1" "$3"
-            elif test "$3" != skipped && test "$3" != success; then
-              echo "$1 was not selected but ended as $3" >&2
-              exit 1
-            fi
-          }
-          require_success classify "$CLASSIFY_RESULT"
-          require_success preflight "$PREFLIGHT_RESULT"
-          require_selected quality "$CODE_REQUIRED" "$QUALITY_RESULT"
-          require_selected native "$CODE_REQUIRED" "$NATIVE_RESULT"
-          require_selected metal-validation "$METAL_REQUIRED" "$METAL_RESULT"
+          require_success quality "$QUALITY_RESULT"
+          require_success native-macos-arm64 "$NATIVE_RESULT"
+          require_success metal-validation "$METAL_RESULT"

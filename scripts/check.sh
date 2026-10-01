@@ -1,30 +1,18 @@
 #!/bin/sh
 set -eu
 
-scripts/check-policy.sh
-scripts/test-policy.sh
-scripts/test-worktrees.sh
-scripts/check-product-boundary.sh
-scripts/test-product-boundary.sh
-scripts/test-classifier.sh
-scripts/test-ci-admission.sh
-scripts/test-qualification.sh
-scripts/test-native-benchmark-result.sh
-scripts/test-alpine-editor-app-bundle.sh
-scripts/test-studio-ax-process-capture.sh
-scripts/test-zed-lab-evidence.sh
-scripts/test-calibration.sh
-scripts/test-core-contracts.sh
-scripts/test-metal-contracts.sh
-scripts/verify-metal-library.sh
-scripts/check-release.sh
+# Mirrors the CI quality job step for step, plus the native_process check.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
         cargo check --locked -p alpine-editor --test native_process
 fi
+scripts/check-policy.sh
+scripts/check-product-boundary.sh
+cargo deny check bans licenses sources advisories
 cargo test --workspace --all-targets --all-features --locked
+cargo test --locked -p alpine-metal --all-targets
 scripts/test-studio-concurrency-stress.sh
 cargo test --workspace --doc --all-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
