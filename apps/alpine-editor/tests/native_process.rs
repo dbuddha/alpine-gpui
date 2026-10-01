@@ -586,4 +586,5 @@ fn main() {
             && std::env::var_os("ALPINE_EDITOR_NATIVE_PROCESS_SCOPE").is_none(),
         "native execution requested, but alpine_native_validation on Apple Silicon macOS is missing"
     );
+    eprintln!("skipped: needs --cfg alpine_native_validation on Apple Silicon macOS");
 }

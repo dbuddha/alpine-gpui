@@ -549,4 +549,6 @@ fn pending_text_owner()
 }
 
 #[cfg(not(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64")))]
-fn main() {}
+fn main() {
+    eprintln!("skipped: needs --cfg alpine_native_validation on Apple Silicon macOS");
+}
