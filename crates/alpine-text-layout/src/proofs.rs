@@ -2,7 +2,6 @@ use std::num::NonZeroU32;
 
 use crate::{AtlasRect, DirtyAtlasRows, DirtyRowRange, atlas_probe_slot, merge_rects};
 
-/// AEP-0141-C03, EV-0141-KANI03.
 #[kani::proof]
 fn adjacent_horizontal_rectangles_merge_without_loss() {
     let first_width = u32::from(kani::any::<u8>()).saturating_add(1);
@@ -33,7 +32,6 @@ fn adjacent_horizontal_rectangles_merge_without_loss() {
     kani::cover!(first_width.get() == 256 && second_width.get() == 256);
 }
 
-/// AEP-0141-C07, EV-0141-KANI07.
 #[kani::proof]
 fn power_of_two_probe_never_escapes_the_index() {
     let exponent = kani::any::<u8>();
@@ -48,7 +46,6 @@ fn power_of_two_probe_never_escapes_the_index() {
     kani::cover!(slot_count == 128 && start == 127 && probe == 127);
 }
 
-/// AEP-0141-C08, EV-0141-KANI08A.
 #[kani::unwind(8)]
 #[kani::proof]
 fn dirty_row_small_actions_preserve_sorted_disjoint_storage() {
@@ -70,7 +67,6 @@ fn dirty_row_small_actions_preserve_sorted_disjoint_storage() {
     kani::cover!(dirty.len > 1);
 }
 
-/// AEP-0141-C08, EV-0141-KANI08B.
 #[kani::unwind(8)]
 #[kani::proof]
 fn dirty_row_capacity_merge_remains_bounded() {

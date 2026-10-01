@@ -2,7 +2,6 @@
 
 use crate::{LinearRgba, Point, Rect, Size};
 
-/// AEP-0016-C01, EV-0016-KANI01.
 #[kani::proof]
 fn bounded_sizes_preserve_constructor_contract() {
     let width = f32::from(kani::any::<u16>());
@@ -21,7 +20,6 @@ fn bounded_sizes_preserve_constructor_contract() {
     assert_eq!(size.is_empty(), width == 0.0 || height == 0.0);
 }
 
-/// AEP-0016-C02, EV-0016-KANI02.
 #[kani::proof]
 fn byte_colors_always_normalize_to_valid_channels() {
     let red = f32::from(kani::any::<u8>()) / 255.0;
@@ -34,7 +32,6 @@ fn byte_colors_always_normalize_to_valid_channels() {
     assert!(LinearRgba::new(red, green, blue, alpha).is_some());
 }
 
-/// AEP-0016-C03, EV-0016-KANI03.
 #[kani::proof]
 fn bounded_intersections_remain_inside_both_inputs() {
     let first_x = f32::from(kani::any::<u8>());

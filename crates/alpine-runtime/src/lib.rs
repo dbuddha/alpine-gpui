@@ -808,6 +808,9 @@ impl<T: Send + 'static> WorkerPool<T> {
 
     #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn shutdown(&mut self) {
+        // Drop both channel ends before join: recv fails once queued requests
+        // drain, and a send into a full result queue fails, so join waits only
+        // for jobs, never for a channel.
         self.request_sender.take();
         self.result_receiver.take();
         for worker in self.workers.drain(..) {
@@ -845,6 +848,8 @@ fn worker_loop<T: Send + 'static>(
         let active = counters.active_jobs.fetch_add(1, Ordering::AcqRel) + 1;
         update_peak(&counters.peak_active_jobs, active);
         counters.queued_requests.fetch_sub(1, Ordering::AcqRel);
+        // The release profile sets panic = "abort", so this isolates job panics
+        // only in dev and test builds; a shipped build aborts the process.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(request.job))
             .map_or_else(
                 |_| {

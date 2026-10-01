@@ -1,6 +1,5 @@
 use crate::{Edit, transform_offset};
 
-/// AEP-0139-C01, EV-0139-KANI01.
 #[kani::proof]
 fn selection_transform_stays_at_or_after_replacement_start() {
     let start = usize::from(kani::any::<u8>());

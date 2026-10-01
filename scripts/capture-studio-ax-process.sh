@@ -13,7 +13,7 @@ usage: capture-studio-ax-process.sh \
 Normal capture requires a clean Apple Silicon macOS checkout and uses
 /usr/bin/footprint. Fixture mode is non-physical and requires explicit fake
 assurance and sampler executables. The output is an intermediate Task #504 package
-and is not AEP-0273 physical qualification evidence.
+and is not physical qualification evidence.
 
 Rejected captures retain private, bounded diagnostics beside the requested
 output, never a successful package. Diagnostic copies may be truncated and

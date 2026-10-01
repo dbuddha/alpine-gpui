@@ -5,3 +5,4 @@
 *.profraw
 *.profdata
 /mutants.out*/
+/.claude/worktrees/

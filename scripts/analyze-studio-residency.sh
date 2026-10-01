@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Input is JSON from `/usr/bin/footprint --pid P --sample I --sample-duration D
+# --noCategories --format bytes --json F`, exactly one process per artifact;
+# capture child processes such as language servers as separate artifacts.
+
 usage() {
     cat <<'EOF'
 usage: analyze-studio-residency.sh RAW_JSON EXPECTED_PID WARMUP_SECONDS OUTPUT_DIR [SLOPE_LIMIT_BYTES_PER_SECOND]

@@ -103,8 +103,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps --locked
-      - name: Check evidence registry consistency
-        run: scripts/test-assurance.sh
       - name: Upload rustdoc artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

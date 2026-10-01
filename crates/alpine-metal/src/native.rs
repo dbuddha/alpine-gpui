@@ -1524,6 +1524,8 @@ impl NativeBackend {
         let atlas_commit = resources.atlas_commit;
         command.commit();
         self.atlas_cache.commit(atlas_commit);
+        // The drawable comes from CAMetalDisplayLink, which Apple documents as
+        // invalid with presentAtTime and presentAfterMinimumDuration.
         drawable.present();
         NativeDrawableSubmitAttempt::Submitted(NativeDrawableSubmission { id })
     }

@@ -5,38 +5,53 @@ use std::env;
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use std::ffi::OsStr;
 
+// ALPINE_EDITOR_PERSISTED_PROFILE=1 at launch mirrors points into unified
+// logging. Read them with `log show --style json --predicate` followed by
+// 'subsystem == "com.dbuddha.alpine-editor" && category == "PersistedProfile"'
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const PERSISTED_PROFILE_ENVIRONMENT: &str = "ALPINE_EDITOR_PERSISTED_PROFILE";
 
 /// Stable stage vocabulary emitted by the Alpine Editor release hot path.
+///
+/// Payload values `a`, `b` and `c` that a stage does not name are zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum EditorSignpostStage {
-    /// Native event dispatch entered Studio state.
+    /// Native event dispatch entered editor state; `a` is the event kind code
+    /// and `b` the selection revision.
     EventDispatchBegin = 0,
-    /// Synchronous Studio state mutation and admission completed.
+    /// Synchronous editor state mutation and admission completed; `a` is 1 if
+    /// visible output changed, `b` is 1 if the document changed, and `c` is
+    /// the selection revision.
     StateMutationComplete = 1,
-    /// Immutable scene construction began.
+    /// Immutable scene construction began; `a` and `b` are the viewport width
+    /// and height as `f32` bits.
     FrameBuildBegin = 2,
     /// Visible editor-line layout began.
     VisibleLayoutBegin = 3,
-    /// Visible editor-line layout completed.
+    /// Visible editor-line layout completed; `a` is the rendered line count.
     VisibleLayoutComplete = 4,
-    /// Shaping and confirmed glyph-rasterization deltas were sampled.
+    /// Shaping and confirmed glyph-rasterization deltas were sampled; `a` is
+    /// shaping calls, `b` rasterizations, and `c` lines shaped by the layout
+    /// cache.
     TextSummary = 5,
-    /// Current-frame line-layout cache deltas were sampled.
+    /// Current-frame line-layout cache deltas were sampled; `a` is hits, `b`
+    /// misses, and `c` the bytes the cache currently retains.
     LayoutCacheSummary = 6,
-    /// Current-frame glyph-atlas lookup and residency deltas were sampled.
+    /// Current-frame glyph-atlas lookup and residency deltas were sampled; `a`
+    /// is hits, `b` misses, and `c` current CPU atlas pixel and metadata bytes.
     GlyphAtlasSummary = 7,
-    /// CPU atlas publication planning began.
+    /// CPU atlas publication planning began; `a` is the pending glyph count.
     AtlasPublicationBegin = 8,
-    /// CPU atlas publication completed.
+    /// CPU atlas publication completed; `a` is 0 unchanged, 1 full or 2 rows,
+    /// `b` payload bytes, and `c` payload groups.
     AtlasPublicationComplete = 9,
-    /// CPU atlas publication failed structurally.
+    /// CPU atlas publication failed structurally; `a` is 1.
     AtlasPublicationFailed = 10,
-    /// Immutable scene construction completed.
+    /// Immutable scene construction completed; `a` is paint operations, `b`
+    /// glyph instances, and `c` is 1 when the fallback scene was built.
     FrameBuildComplete = 11,
-    /// Scene construction failed and the fallback path was selected.
+    /// Scene construction failed and the fallback path was selected; `a` is 1.
     FrameBuildFailed = 12,
     /// Synchronous native event handling completed; `a` is elapsed nanoseconds.
     NativeEventHandlerLatency = 13,
@@ -122,7 +137,7 @@ impl EditorSignpost {
         self.buffer_revision
     }
 
-    /// Returns the stage-specific numeric values documented by the capture protocol.
+    /// Returns the values `a`, `b` and `c` described on each stage.
     #[must_use]
     pub const fn values(self) -> [u64; 3] {
         self.values
