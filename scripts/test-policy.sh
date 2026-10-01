@@ -109,8 +109,6 @@ if ! grep -Fq 'required artifact helper must retain one tolerated primary and on
 fi
 unset ALPINE_REQUIRED_ARTIFACT_ACTION
 
-perl -0pe 's#uses: \Q./.github/actions/upload-required-artifact\E#uses: actions/upload-artifact\@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a#' \
-
 sed 's/types: \[opened,/types: [edited, opened,/' \
     "$fixture_dir/ci.yml" > "$fixture_dir/opened-pr-fanout-ci.yml"
 if ALPINE_CI_WORKFLOW="$fixture_dir/opened-pr-fanout-ci.yml" run_policy > "$fixture_dir/opened-pr-fanout-ci.log" 2>&1; then
