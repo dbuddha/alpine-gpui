@@ -101,6 +101,8 @@ Relaxing one is a product decision that needs approval.
 - An implementer brief states: objective and why, the exact gate, invariants
   and budgets in play, files in and out of scope, constraints, deliverables
   (branch, commits, PR body, raw gate output), and the stop condition.
+  Implementers keep their worktree's own `target/`: a shared one caches
+  build-script paths from the wrong checkout.
 - Before merging, the lead (never a subagent):
   1. re-runs the gate on the PR head;
   2. reads the full diff, including untracked files;
