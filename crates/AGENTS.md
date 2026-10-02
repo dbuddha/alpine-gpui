@@ -2,10 +2,7 @@
 scope: framework crates under crates/
 parent: ../AGENTS.md
 updated: 2026-10-02
-known_defects:
-  - "native_wake SIGSEGV on hosted runners (was #533): QuartzCore's display-change callback races invalidate() during a close; M0e.2 moves invalidate() to owner teardown (same-VM A/B: main 6 of 10,000, fix 0 of 10,000); remove after M0e.3's clean runs"
-  - "an accessibility omission control in native_process can miss its 10 s frame deadline under hosted Metal validation (was #622); M0e.1 fixes it, remove after 10 clean hosted runs"
-known_flaky_ci: "#533 and #622 run in the known-flaky-native job, which ci-pass does not require; fix next, then require it"
+known_defects: []
 ---
 
 # Framework internals
