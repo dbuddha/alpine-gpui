@@ -38,7 +38,7 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M0e.2 drain-window flake and #533: pump diagnostics, CI crash capture, 2,000 hosted iterations, then fix what they show"
+  - "M0e.2 #533: fix the QuartzCore display-change race the A/B stacks show, then a 5,000-run hosted A/B; drain-window bound awaits Deepak"
   - "M0e.3 require known-flaky-native after 10 clean hosted runs plus a 300-iteration native_wake run, then stop"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
