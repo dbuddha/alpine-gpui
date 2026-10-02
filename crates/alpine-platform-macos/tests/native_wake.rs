@@ -17,15 +17,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         rc::Rc,
         sync::{Arc, Mutex, mpsc::sync_channel},
         thread,
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use alpine_platform_macos::{
         SurfaceDescriptor, SurfaceEvent, SurfaceLifecycle, SurfaceResponse, SurfaceWakeAdmission,
         native_validation,
     };
-    use objc2::rc::autoreleasepool;
-    use objc2_foundation::{NSDate, NSRunLoop};
 
     fn drain_native_callbacks(
         surface: &alpine_platform_macos::NativeSurface,
@@ -33,17 +31,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let drain = native_validation::arm_run_loop_drain_marker(surface);
         assert!(!drain.executed());
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while (!drain.executed() || !callbacks_drained()) && Instant::now() < deadline {
-            autoreleasepool(|_| {
-                NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
-            });
-        }
+        let report = native_validation::drain_run_loop(
+            || drain.executed() && callbacks_drained(),
+            native_validation::RUN_LOOP_DRAIN_PUMPS,
+            native_validation::RUN_LOOP_DRAIN_HANG_CAP,
+        );
         if !drain.executed() {
-            return Err("native wake callbacks did not drain before owner release".into());
+            return Err(format!(
+                "native wake callbacks did not drain before owner release: {report:?}"
+            )
+            .into());
         }
         if !callbacks_drained() {
-            return Err("queued native wake did not terminate before owner release".into());
+            return Err(format!(
+                "queued native wake did not terminate before owner release: {report:?}"
+            )
+            .into());
         }
         Ok(())
     }

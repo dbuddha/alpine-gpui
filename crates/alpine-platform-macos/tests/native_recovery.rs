@@ -692,13 +692,14 @@ mod validation {
 
     fn close_recovery_surface(surface: NativeSurface, scenario: &str) -> TestResult {
         let drain = native_validation::arm_run_loop_drain_marker(&surface);
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while !drain.executed() && Instant::now() < deadline {
-            drain_framework_work();
-        }
+        let report = native_validation::drain_run_loop(
+            || drain.executed(),
+            native_validation::RUN_LOOP_DRAIN_PUMPS,
+            native_validation::RUN_LOOP_DRAIN_HANG_CAP,
+        );
         if !drain.executed() {
             return Err(format!(
-                "{scenario} close did not drain admitted native callbacks before owner release"
+                "{scenario} close did not drain admitted native callbacks before owner release: {report:?}"
             )
             .into());
         }
