@@ -5539,19 +5539,21 @@ impl NativeSurface {
 
     #[cfg(alpine_native_validation)]
     pub(crate) fn arm_run_loop_drain_marker(&self, executed: Arc<std::sync::atomic::AtomicBool>) {
-        let marker_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
-            RcBlock::new(move |timer: NonNull<NSTimer>| {
-                // SAFETY: Foundation supplies a valid borrowed timer for the
-                // complete callback, and the reference does not escape.
-                unsafe { timer.as_ref() }.invalidate();
-                executed.store(true, Ordering::Release);
-            });
-        // SAFETY: The block is scheduled on the process main run loop,
-        // Foundation copies it for the timer lifetime, and the callback
-        // receives a valid NSTimer. The scheduled timer retains itself.
-        let _timer = unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &marker_block)
-        };
+        schedule_run_loop_drain_marker(executed);
+    }
+
+    // A pump returns right after it services the main queue, so the marker
+    // armed by this block can run only in a later pump, after the hold.
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn arm_held_run_loop_drain_marker(
+        &self,
+        executed: Arc<std::sync::atomic::AtomicBool>,
+        hold: Duration,
+    ) {
+        DispatchQueue::main().exec_async(move || {
+            schedule_run_loop_drain_marker(executed);
+            std::thread::sleep(hold);
+        });
     }
 
     #[cfg(alpine_native_validation)]
@@ -5996,6 +5998,30 @@ fn stop_validation_event_loop(application: &NSApplication) {
     ) {
         application.postEvent_atStart(&event, true);
     }
+}
+
+#[cfg(alpine_native_validation)]
+fn schedule_run_loop_drain_marker(executed: Arc<AtomicBool>) {
+    let marker_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+        RcBlock::new(move |timer: NonNull<NSTimer>| {
+            // SAFETY: Foundation supplies a valid borrowed timer for the
+            // complete callback, and the reference does not escape.
+            unsafe { timer.as_ref() }.invalidate();
+            executed.store(true, Ordering::Release);
+        });
+    // SAFETY: The block is scheduled on the process main run loop,
+    // Foundation copies it for the timer lifetime, and the callback
+    // receives a valid NSTimer. The scheduled timer retains itself.
+    let _timer =
+        unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &marker_block) };
+}
+
+// One bounded pass of the main run loop, as the native tests pump it.
+#[cfg(alpine_native_validation)]
+pub(crate) fn pump_main_run_loop() {
+    autoreleasepool(|_| {
+        NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.001));
+    });
 }
 
 #[cfg(alpine_native_validation)]

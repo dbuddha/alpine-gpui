@@ -88,6 +88,7 @@ mod validation {
         }
 
         validate_resident_policy_controls()?;
+        validate_held_drain()?;
         validate_bounded_child(MISSING_CLOSE_SCENARIO, Duration::from_secs(2))?;
         validate_bounded_child(POST_COMMIT_CLOSE_SCENARIO, Duration::from_secs(8))?;
         validate_bounded_child(SILENT_CLOSE_SCENARIO, Duration::from_secs(8))?;
@@ -243,8 +244,45 @@ mod validation {
         native_validation::close_window(&surface);
         let drain = native_validation::arm_run_loop_drain_marker(&surface);
         assert!(!drain.executed());
-        drain_framework_work_until(&drain);
-        assert!(drain.executed());
+        let report = drain_run_loop_until(&drain);
+        assert!(
+            drain.executed(),
+            "missing-close drain marker did not run: {report:?}"
+        );
+        assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
+        Ok(())
+    }
+
+    // Drains are bounded by a pump count and a hang cap, not a 250 ms window,
+    // so one pump held past 250 ms still drains. Misses report how they ended.
+    fn validate_held_drain() -> TestResult {
+        const HOLD: Duration = Duration::from_millis(300);
+        let descriptor = SurfaceDescriptor::new("Alpine held drain", 32.0, 24.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+
+        let limited = native_validation::drain_run_loop(
+            || false,
+            3,
+            native_validation::RUN_LOOP_DRAIN_HANG_CAP,
+        );
+        assert!(!limited.drained(), "{limited:?}");
+        assert_eq!(limited.pumps(), 3, "{limited:?}");
+        let capped = native_validation::drain_run_loop(
+            || false,
+            native_validation::RUN_LOOP_DRAIN_PUMPS,
+            Duration::ZERO,
+        );
+        assert!(!capped.drained(), "{capped:?}");
+        assert_eq!(capped.pumps(), 1, "{capped:?}");
+
+        let held = native_validation::arm_held_run_loop_drain_marker(&surface, HOLD);
+        assert!(!held.executed());
+        let report = drain_run_loop_until(&held);
+        assert!(held.executed(), "held drain marker did not run: {report:?}");
+        // The marker runs only in a pump after the held one, so a 250 ms
+        // window had already expired when it ran.
+        assert!(report.pumps() >= 2, "{report:?}");
+        assert!(report.longest_pump() >= HOLD, "{report:?}");
         assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
         Ok(())
     }
@@ -767,11 +805,14 @@ mod validation {
         });
     }
 
-    fn drain_framework_work_until(drain: &native_validation::RunLoopDrainEvidence) {
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while !drain.executed() && Instant::now() < deadline {
-            drain_framework_work();
-        }
+    fn drain_run_loop_until(
+        drain: &native_validation::RunLoopDrainEvidence,
+    ) -> native_validation::DrainReport {
+        native_validation::drain_run_loop(
+            || drain.executed(),
+            native_validation::RUN_LOOP_DRAIN_PUMPS,
+            native_validation::RUN_LOOP_DRAIN_HANG_CAP,
+        )
     }
 
     fn resident_bytes() -> TestResult<u64> {

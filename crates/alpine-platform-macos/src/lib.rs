@@ -730,13 +730,19 @@ pub mod native_validation {
             Arc,
             atomic::{AtomicBool, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use crate::{
         ClipboardError, ClipboardOperation, NativeSurface, SurfaceDescriptor, SurfaceError,
         SurfaceEvent, SurfaceResponse, native,
     };
+
+    /// Pumps one run-loop drain may take before it reports a miss.
+    pub const RUN_LOOP_DRAIN_PUMPS: u32 = 200;
+
+    /// Wall-clock cap that ends a drain whose pumps hang.
+    pub const RUN_LOOP_DRAIN_HANG_CAP: Duration = Duration::from_secs(2);
 
     /// Evidence that bounds a production event-loop validation run.
     #[derive(Debug)]
@@ -775,6 +781,48 @@ pub mod native_validation {
         #[must_use]
         pub fn executed(&self) -> bool {
             self.executed.load(Ordering::Acquire)
+        }
+    }
+
+    /// How one bounded run-loop drain ended, for failure messages.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct DrainReport {
+        drained: bool,
+        pumps: u32,
+        first_pump: Duration,
+        longest_pump: Duration,
+        elapsed: Duration,
+    }
+
+    impl DrainReport {
+        /// Returns whether the drain condition held after the last pump.
+        #[must_use]
+        pub const fn drained(self) -> bool {
+            self.drained
+        }
+
+        /// Returns the main run-loop pumps performed.
+        #[must_use]
+        pub const fn pumps(self) -> u32 {
+            self.pumps
+        }
+
+        /// Returns the duration of the first pump.
+        #[must_use]
+        pub const fn first_pump(self) -> Duration {
+            self.first_pump
+        }
+
+        /// Returns the duration of the longest pump.
+        #[must_use]
+        pub const fn longest_pump(self) -> Duration {
+            self.longest_pump
+        }
+
+        /// Returns the wall-clock time the whole drain took.
+        #[must_use]
+        pub const fn elapsed(self) -> Duration {
+            self.elapsed
         }
     }
 
@@ -1796,6 +1844,48 @@ pub mod native_validation {
             .implementation
             .arm_run_loop_drain_marker(Arc::clone(&executed));
         RunLoopDrainEvidence { executed }
+    }
+
+    /// Queues a main-queue block that arms one drain marker, then holds the
+    /// main thread for `hold`, so the marker can run only in a later pump.
+    #[must_use]
+    pub fn arm_held_run_loop_drain_marker(
+        surface: &NativeSurface,
+        hold: Duration,
+    ) -> RunLoopDrainEvidence {
+        let executed = Arc::new(AtomicBool::new(false));
+        surface
+            .implementation
+            .arm_held_run_loop_drain_marker(Arc::clone(&executed), hold);
+        RunLoopDrainEvidence { executed }
+    }
+
+    /// Pumps the main run loop until `drained` holds, checking after each
+    /// pump, for at most `max_pumps` pumps or until `hang_cap` has elapsed.
+    /// The report says how the drain ended.
+    pub fn drain_run_loop(
+        mut drained: impl FnMut() -> bool,
+        max_pumps: u32,
+        hang_cap: Duration,
+    ) -> DrainReport {
+        let started = Instant::now();
+        let mut report = DrainReport::default();
+        while report.pumps < max_pumps {
+            let pump_started = Instant::now();
+            native::pump_main_run_loop();
+            let pump = pump_started.elapsed();
+            if report.pumps == 0 {
+                report.first_pump = pump;
+            }
+            report.longest_pump = report.longest_pump.max(pump);
+            report.pumps += 1;
+            report.drained = drained();
+            if report.drained || started.elapsed() >= hang_cap {
+                break;
+            }
+        }
+        report.elapsed = started.elapsed();
+        report
     }
 
     /// Schedules a production close request after a bounded validation delay.
