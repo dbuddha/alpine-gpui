@@ -202,7 +202,10 @@ mod validation {
             assert!(snapshot.submitted_frame_slots() <= snapshot.occupied_frame_slots());
             assert_eq!(snapshot.last_presented_time_bits(), 0);
             assert!(snapshot.failed_count() >= 1);
-            assert!(snapshot.callback_count() >= 2);
+            assert!(
+                terminal_polled_after_commit(surface, &snapshot, hosted_direct),
+                "{snapshot:?}"
+            );
             eprintln!(
                 "hosted-direct evidence: the latest callback drawable was committed, directly presented, reported not presented by Core Animation, and released"
             );
@@ -220,9 +223,24 @@ mod validation {
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert_ne!(snapshot.last_presented_time_bits(), 0);
         assert_eq!(snapshot.failed_count(), 0);
-        assert!(snapshot.callback_count() >= 2);
+        assert!(
+            terminal_polled_after_commit(surface, &snapshot, hosted_direct),
+            "{snapshot:?}"
+        );
         assert!(snapshot.display_link_paused());
         Ok(Some(snapshot))
+    }
+
+    // The committing callback cannot observe its own terminal. A later update
+    // does; on hosted runners, where updates can stop, the timer may instead.
+    fn terminal_polled_after_commit(
+        surface: &NativeSurface,
+        snapshot: &SurfaceSnapshot,
+        hosted_direct: bool,
+    ) -> bool {
+        snapshot.callback_count() >= 2
+            || hosted_direct
+                && native_validation::frame_progress_evidence(surface).timer_terminals() >= 1
     }
 
     fn validate_failure_and_recovery(

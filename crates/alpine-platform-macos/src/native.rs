@@ -32,13 +32,13 @@ use objc2_core_foundation::{CFRunLoop, kCFRunLoopCommonModes};
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 #[cfg(alpine_native_validation)]
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
+#[cfg(alpine_native_validation)]
+use objc2_foundation::NSDate;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
-    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
+    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
     NSUTF8StringEncoding,
 };
-#[cfg(alpine_native_validation)]
-use objc2_foundation::{NSDate, NSTimer};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{
     CACurrentMediaTime, CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate,
@@ -651,11 +651,9 @@ struct ActiveFrame {
     token: FrameToken,
     lease: FrameSlotLease,
     submission: platform_spi::DrawableSubmission,
-    #[allow(
-        dead_code,
-        reason = "the callback drawable must remain retained until terminal presentation evidence"
-    )]
-    drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
+    // Released once the command is terminal so the display link can reuse it;
+    // presented handlers receive the drawable from Metal, not from this owner.
+    drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
     frame: Option<PendingFrame>,
     observation: PresentationObservation,
     command_terminal: bool,
@@ -992,34 +990,42 @@ impl PresentationDriver {
         match self.try_update(update, counters) {
             Ok(directive) => directive,
             Err(error) => {
-                let recovery = render_recovery(&error);
-                if discards_pending_work(recovery) {
-                    self.pending = None;
-                }
-                self.last_error = Some(error);
-                counters.failed.fetch_add(1, Ordering::Relaxed);
-                let active = self.active.take();
-                let timing = active.as_ref().map_or_else(
-                    || AttemptTiming::from_update(update, None),
-                    |active| active.timing,
-                );
-                let token = active
-                    .as_ref()
-                    .map(|active| active.token)
-                    .or_else(|| self.state.active_token());
-                if let Some(token) = token {
-                    self.state
-                        .apply(PresentationAction::FailActive(token))
-                        .ok()
-                        .and_then(|transition| {
-                            self.record_terminal(transition, timing, 0, recovery, counters)
-                                .ok()
-                        })
-                        .unwrap_or(DisplayLinkDirective::Pause)
-                } else {
-                    DisplayLinkDirective::Pause
-                }
+                self.fail_after_error(error, AttemptTiming::from_update(update, None), counters)
             }
+        }
+    }
+
+    fn fail_after_error(
+        &mut self,
+        error: SurfaceError,
+        fallback_timing: AttemptTiming,
+        counters: &FrameCounters,
+    ) -> DisplayLinkDirective {
+        let recovery = render_recovery(&error);
+        if discards_pending_work(recovery) {
+            self.pending = None;
+        }
+        self.last_error = Some(error);
+        counters.failed.fetch_add(1, Ordering::Relaxed);
+        let active = self.active.take();
+        let timing = active
+            .as_ref()
+            .map_or(fallback_timing, |active| active.timing);
+        let token = active
+            .as_ref()
+            .map(|active| active.token)
+            .or_else(|| self.state.active_token());
+        if let Some(token) = token {
+            self.state
+                .apply(PresentationAction::FailActive(token))
+                .ok()
+                .and_then(|transition| {
+                    self.record_terminal(transition, timing, 0, recovery, counters)
+                        .ok()
+                })
+                .unwrap_or(DisplayLinkDirective::Pause)
+        } else {
+            DisplayLinkDirective::Pause
         }
     }
 
@@ -1031,15 +1037,23 @@ impl PresentationDriver {
         if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
             return Ok(DisplayLinkDirective::Invalidate);
         }
-        if let Some(directive) = self.reconcile_active_presentation(counters)? {
+        if let Some(directive) = self.reconcile_active_presentation(counters, true)? {
             return Ok(directive);
+        }
+        // A queued update can arrive after the timer paused the link. Return
+        // None so the caller confirms the pause instead of failing Prepare.
+        if !matches!(self.state.display_link(), DisplayLinkState::Running) {
+            return Ok(DisplayLinkDirective::None);
         }
         self.submit_pending(update, counters)
     }
 
+    // `in_callback` keeps the physical link running when a newer frame waits;
+    // the frame-progress timer reconciles that resume itself.
     fn reconcile_active_presentation(
         &mut self,
         counters: &FrameCounters,
+        in_callback: bool,
     ) -> Result<Option<DisplayLinkDirective>, SurfaceError> {
         if let Some(directive) = self.poll_active_command(counters)? {
             return Ok(Some(directive));
@@ -1074,7 +1088,7 @@ impl PresentationDriver {
             counters.failed.fetch_add(1, Ordering::Relaxed);
             let transition = self.state.apply(PresentationAction::FailActive(token))?;
             let directive = self.record_terminal(transition, active.timing, 0, None, counters)?;
-            if self.pending.is_some() {
+            if in_callback && self.pending.is_some() {
                 // A newer immutable frame is genuine work, not a replay of the
                 // dropped attempt. The physical link is still running in this
                 // callback, so reconcile the portable pause before allowing
@@ -1111,7 +1125,7 @@ impl PresentationDriver {
             .state
             .apply(PresentationAction::FailActive(active.token))?;
         let directive = self.record_terminal(transition, active.timing, 0, None, counters)?;
-        if self.pending.is_some() {
+        if in_callback && self.pending.is_some() {
             self.state.apply(PresentationAction::Resume)?;
             return Ok(Some(DisplayLinkDirective::None));
         }
@@ -1181,7 +1195,40 @@ impl PresentationDriver {
             .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
         active.command_terminal = true;
         active.presentation_polls = 0;
+        drop(active.drawable.take());
         Ok(None)
+    }
+
+    // Frame-progress timer step: polls completion every tick, but counts a
+    // presentation poll and may fall back only when no display-link update
+    // arrived since the previous tick. It never acquires a drawable.
+    fn progress_without_display_link(
+        &mut self,
+        counters: &FrameCounters,
+        link_silent: bool,
+    ) -> DisplayLinkDirective {
+        let prior_link = self.state.display_link();
+        let progressed = if link_silent {
+            self.reconcile_active_presentation(counters, false)
+        } else {
+            self.poll_active_command(counters)
+        };
+        let resumed = progressed.and_then(|_| {
+            // A newer frame still waits for a display-link drawable.
+            if self.active.is_none() && self.pending.is_some() && self.state.needs_resume() {
+                self.state.apply(PresentationAction::Resume)?;
+            }
+            Ok(())
+        });
+        if let Err(error) = resumed {
+            return self.fail_after_error(error, AttemptTiming::default(), counters);
+        }
+        match (prior_link, self.state.display_link()) {
+            (_, DisplayLinkState::Invalid) => DisplayLinkDirective::Invalidate,
+            (DisplayLinkState::Paused, DisplayLinkState::Running) => DisplayLinkDirective::Resume,
+            (DisplayLinkState::Running, DisplayLinkState::Paused) => DisplayLinkDirective::Pause,
+            _ => DisplayLinkDirective::None,
+        }
     }
 
     fn submit_pending(
@@ -1246,7 +1293,7 @@ impl PresentationDriver {
                     token,
                     lease,
                     submission,
-                    drawable,
+                    drawable: Some(drawable),
                     frame: Some(frame),
                     observation: PresentationObservation::new(presentation),
                     command_terminal: false,
@@ -2866,6 +2913,50 @@ struct DisplayLinkDelegateIvars {
     active_frame_observer: RefCell<Option<Box<dyn FnOnce()>>>,
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
+    display_link_updates: Cell<u64>,
+    last_display_link_update: Cell<Option<Instant>>,
+    frame_progress_seen_updates: Cell<u64>,
+    frame_progress_timer: Cell<Option<FrameProgressTimer>>,
+    display_link_invalidated: Cell<bool>,
+    native_close_finished: Cell<bool>,
+    #[cfg(alpine_native_validation)]
+    display_link_silence: Cell<bool>,
+    #[cfg(alpine_native_validation)]
+    frame_progress: FrameProgressCounters,
+}
+
+// A live 30 Hz link updates every 33.3 ms. A delayed tick pulls the next one
+// early, so silence needs no update since the last tick and none for a full
+// interval. A silent frame still ends within three ticks.
+const FRAME_PROGRESS_INTERVAL: Duration = Duration::from_millis(40);
+const FRAME_PROGRESS_TOLERANCE: Duration = Duration::from_millis(4);
+
+fn link_silent_for_tick(no_update_since_tick: bool, since_update: Option<Duration>) -> bool {
+    no_update_since_tick && since_update.is_none_or(|since| since >= FRAME_PROGRESS_INTERVAL)
+}
+
+// Owns the scheduled frame-progress timer; releasing it invalidates the timer.
+struct FrameProgressTimer(Retained<NSTimer>);
+
+impl Drop for FrameProgressTimer {
+    fn drop(&mut self) {
+        self.0.invalidate();
+    }
+}
+
+#[cfg(alpine_native_validation)]
+#[derive(Default)]
+struct FrameProgressCounters {
+    silenced_updates: Cell<u64>,
+    schedules: Cell<u64>,
+    ticks: Cell<u64>,
+    terminals: Cell<u64>,
+    close_drains: Cell<u64>,
+}
+
+#[cfg(alpine_native_validation)]
+fn increment_cell(cell: &Cell<u64>) {
+    cell.set(cell.get().saturating_add(1));
 }
 
 #[cfg(alpine_native_validation)]
@@ -3022,6 +3113,10 @@ define_class!(
             link: &CAMetalDisplayLink,
             update: &CAMetalDisplayLinkUpdate,
         ) {
+            #[cfg(alpine_native_validation)]
+            if self.display_link_update_silenced() {
+                return;
+            }
             let lifecycle = self.ivars().lifecycle.load(Ordering::Acquire);
             if lifecycle == SURFACE_LIVE {
                 if !admit_callback(
@@ -3048,6 +3143,7 @@ define_class!(
                         (DisplayLinkDirective::Pause, DisplayLinkState::Paused)
                     },
                     |mut driver| {
+                        self.record_display_link_update();
                         let directive = if lifecycle == SURFACE_CLOSING {
                             driver.drain_shutdown(&self.ivars().counters)
                         } else {
@@ -3069,31 +3165,17 @@ define_class!(
                 if lifecycle == SURFACE_CLOSING
                     && matches!(directive, DisplayLinkDirective::Invalidate)
                 {
-                    link.setPaused(true);
-                    stop_event_loop(&self.ivars().application);
+                    self.finish_native_close();
                 } else {
-                    apply_display_link_directive(link, directive);
+                    self.apply_link_directive(directive);
                     #[cfg(alpine_native_validation)]
                     self.ivars()
                         .pause_confirmation
                         .last_native_paused_after
                         .store(link.isPaused(), Ordering::Release);
-                    if should_schedule_display_link_pause_confirmation(
-                        directive,
-                        display_link_state,
-                        link.isPaused(),
-                    ) && let Some(display_link) = &self.ivars().display_link
-                    {
-                        #[cfg(alpine_native_validation)]
-                        schedule_display_link_pause_confirmation(
-                            display_link,
-                            driver,
-                            Arc::clone(&self.ivars().pause_confirmation),
-                        );
-                        #[cfg(not(alpine_native_validation))]
-                        schedule_display_link_pause_confirmation(display_link, driver);
-                    }
+                    self.confirm_link_pause(directive, display_link_state, link.isPaused());
                 }
+                self.reconcile_frame_progress_timer();
                 #[cfg(alpine_native_validation)]
                 if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
                     && !self.ivars().window_close_started.load(Ordering::Acquire)
@@ -3270,9 +3352,7 @@ impl DisplayLinkDelegate {
                         .reject_configuration(error.clone())
                         .unwrap_or(DisplayLinkDirective::Pause)
                 });
-            if let Some(display_link) = &self.ivars().display_link {
-                apply_display_link_directive(display_link, directive);
-            }
+            self.apply_link_directive(directive);
         }
         result
     }
@@ -3291,7 +3371,7 @@ impl DisplayLinkDelegate {
                 SurfaceOperation::NativeConfiguration,
             ));
         }
-        let (Some(window), Some(view), Some(layer), Some(display_link), Some(driver)) = (
+        let (Some(window), Some(view), Some(layer), Some(_), Some(driver)) = (
             &self.ivars().window,
             &self.ivars().view,
             &self.ivars().layer,
@@ -3308,7 +3388,7 @@ impl DisplayLinkDelegate {
             .try_borrow_mut()
             .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::NativeConfiguration))?
             .apply_configuration(configuration)?;
-        apply_display_link_directive(display_link, directive);
+        self.apply_link_directive(directive);
         let extent = crate::SurfaceExtent::new(
             configuration.logical_width,
             configuration.logical_height,
@@ -3472,12 +3552,10 @@ impl DisplayLinkDelegate {
             .try_borrow_mut()
             .map_err(|_| SurfaceError::owner_conflict(operation))?
             .request_frame(scene, clear)?;
-        let display_link = self
-            .ivars()
-            .display_link
-            .as_ref()
-            .ok_or(SurfaceError::invariant(operation))?;
-        apply_display_link_directive(display_link, directive);
+        if self.ivars().display_link.is_none() {
+            return Err(SurfaceError::invariant(operation));
+        }
+        self.apply_link_directive(directive);
         Ok(())
     }
 
@@ -3529,12 +3607,10 @@ impl DisplayLinkDelegate {
                 .try_borrow_mut()
                 .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Input))?
                 .request_frame_with_event(scene, clear, Some(event_timing))?;
-            let display_link = self
-                .ivars()
-                .display_link
-                .as_ref()
-                .ok_or(SurfaceError::invariant(SurfaceOperation::Input))?;
-            apply_display_link_directive(display_link, directive);
+            if self.ivars().display_link.is_none() {
+                return Err(SurfaceError::invariant(SurfaceOperation::Input));
+            }
+            self.apply_link_directive(directive);
         }
 
         if let Some(write) = clipboard_write {
@@ -3731,16 +3807,219 @@ impl DisplayLinkDelegate {
         }
         if drained {
             self.finish_native_close();
+        } else {
+            // The link may never update again; the timer drains and finishes.
+            self.ensure_frame_progress_timer();
         }
     }
 
     fn finish_native_close(&self) {
+        self.cancel_frame_progress_timer();
+        if self.ivars().native_close_finished.replace(true) {
+            return;
+        }
+        self.invalidate_display_link();
         if let Some(display_link) = &self.ivars().display_link {
-            display_link.setPaused(true);
-            display_link.invalidate();
             display_link.setDelegate(None);
         }
         stop_event_loop(&self.ivars().application);
+    }
+
+    fn apply_link_directive(&self, directive: DisplayLinkDirective) {
+        let Some(display_link) = &self.ivars().display_link else {
+            return;
+        };
+        match directive {
+            DisplayLinkDirective::None => {}
+            DisplayLinkDirective::Resume => display_link.setPaused(false),
+            DisplayLinkDirective::Pause => display_link.setPaused(true),
+            DisplayLinkDirective::Invalidate => self.invalidate_display_link(),
+        }
+    }
+
+    // Idempotent, so the validation probe counts only a real invalidate().
+    fn invalidate_display_link(&self) {
+        if self.ivars().display_link_invalidated.replace(true) {
+            return;
+        }
+        if let Some(display_link) = &self.ivars().display_link {
+            display_link.setPaused(true);
+            display_link.invalidate();
+            #[cfg(alpine_native_validation)]
+            if let Some(probe) = &self.ivars().validation_probe {
+                probe.record_link_invalidation();
+            }
+        }
+    }
+
+    fn confirm_link_pause(
+        &self,
+        directive: DisplayLinkDirective,
+        display_link_state: DisplayLinkState,
+        native_paused: bool,
+    ) {
+        if !should_schedule_display_link_pause_confirmation(
+            directive,
+            display_link_state,
+            native_paused,
+        ) {
+            return;
+        }
+        let (Some(display_link), Some(driver)) = (&self.ivars().display_link, &self.ivars().driver)
+        else {
+            return;
+        };
+        #[cfg(alpine_native_validation)]
+        schedule_display_link_pause_confirmation(
+            display_link,
+            driver,
+            Arc::clone(&self.ivars().pause_confirmation),
+        );
+        #[cfg(not(alpine_native_validation))]
+        schedule_display_link_pause_confirmation(display_link, driver);
+    }
+
+    fn record_display_link_update(&self) {
+        let updates = &self.ivars().display_link_updates;
+        updates.set(updates.get().wrapping_add(1));
+        self.ivars()
+            .last_display_link_update
+            .set(Some(Instant::now()));
+    }
+
+    fn reconcile_frame_progress_timer(&self) {
+        let Some(frame_in_flight) = self.ivars().driver.as_ref().and_then(|driver| {
+            driver
+                .try_borrow()
+                .ok()
+                .map(|driver| driver.active.is_some())
+        }) else {
+            return;
+        };
+        if frame_in_flight {
+            self.ensure_frame_progress_timer();
+        } else {
+            self.cancel_frame_progress_timer();
+        }
+    }
+
+    fn ensure_frame_progress_timer(&self) {
+        // A finished close has nothing left to progress; a timer would leak.
+        if self.ivars().native_close_finished.get() {
+            return;
+        }
+        let slot = &self.ivars().frame_progress_timer;
+        let current = slot.take();
+        if current.as_ref().is_some_and(|timer| timer.0.isValid()) {
+            slot.set(current);
+            return;
+        }
+        drop(current);
+        self.ivars()
+            .frame_progress_seen_updates
+            .set(self.ivars().display_link_updates.get());
+        let delegate = Weak::new(self);
+        let tick: RcBlock<dyn Fn(NonNull<NSTimer>)> =
+            RcBlock::new(move |timer: NonNull<NSTimer>| {
+                if let Some(delegate) = delegate.load() {
+                    delegate.frame_progress_tick();
+                } else {
+                    // SAFETY: Foundation supplies a valid borrowed timer for
+                    // the complete callback, and the reference does not escape.
+                    unsafe { timer.as_ref() }.invalidate();
+                }
+            });
+        // SAFETY: objc2 asks for a sendable block and this one holds a non-Send
+        // Weak. That is sound because the timer is added only to the main run
+        // loop, so it fires and is invalidated on the main thread.
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_repeats_block(
+                FRAME_PROGRESS_INTERVAL.as_secs_f64(),
+                true,
+                &tick,
+            )
+        };
+        timer.setTolerance(FRAME_PROGRESS_TOLERANCE.as_secs_f64());
+        // SAFETY: The delegate is main-thread-only, so this registers on the
+        // main run loop; the common-mode identifier is a process constant.
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        slot.set(Some(FrameProgressTimer(timer)));
+        #[cfg(alpine_native_validation)]
+        increment_cell(&self.ivars().frame_progress.schedules);
+    }
+
+    fn cancel_frame_progress_timer(&self) {
+        drop(self.ivars().frame_progress_timer.take());
+    }
+
+    fn frame_progress_tick(&self) {
+        #[cfg(alpine_native_validation)]
+        increment_cell(&self.ivars().frame_progress.ticks);
+        let updates = self.ivars().display_link_updates.get();
+        let no_update_since_tick =
+            self.ivars().frame_progress_seen_updates.replace(updates) == updates;
+        let since_update = self
+            .ivars()
+            .last_display_link_update
+            .get()
+            .map(|at| at.elapsed());
+        let link_silent = link_silent_for_tick(no_update_since_tick, since_update);
+        let Some(driver) = &self.ivars().driver else {
+            self.cancel_frame_progress_timer();
+            return;
+        };
+        let lifecycle = self.ivars().lifecycle.load(Ordering::Acquire);
+        if lifecycle == SURFACE_CLOSING {
+            let Ok(mut borrowed) = driver.try_borrow_mut() else {
+                return;
+            };
+            let directive = borrowed.drain_shutdown(&self.ivars().counters);
+            drop(borrowed);
+            if matches!(directive, DisplayLinkDirective::Invalidate) {
+                #[cfg(alpine_native_validation)]
+                increment_cell(&self.ivars().frame_progress.close_drains);
+                self.finish_native_close();
+            }
+            return;
+        }
+        if lifecycle != SURFACE_LIVE {
+            self.cancel_frame_progress_timer();
+            return;
+        }
+        let Ok(mut borrowed) = driver.try_borrow_mut() else {
+            return;
+        };
+        #[cfg(alpine_native_validation)]
+        let was_active = borrowed.active.is_some();
+        let directive = borrowed.progress_without_display_link(&self.ivars().counters, link_silent);
+        let display_link_state = borrowed.display_link_state();
+        let still_active = borrowed.active.is_some();
+        drop(borrowed);
+        #[cfg(alpine_native_validation)]
+        if was_active && !still_active {
+            increment_cell(&self.ivars().frame_progress.terminals);
+        }
+        self.apply_link_directive(directive);
+        if let Some(display_link) = &self.ivars().display_link {
+            self.confirm_link_pause(directive, display_link_state, display_link.isPaused());
+        }
+        if !still_active {
+            self.cancel_frame_progress_timer();
+        }
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn display_link_update_silenced(&self) -> bool {
+        let silenced = self.ivars().display_link_silence.get()
+            && self.ivars().driver.as_ref().is_some_and(|driver| {
+                driver
+                    .try_borrow()
+                    .is_ok_and(|driver| driver.active.is_some())
+            });
+        if silenced {
+            increment_cell(&self.ivars().frame_progress.silenced_updates);
+        }
+        silenced
     }
 }
 
@@ -3841,18 +4120,6 @@ fn validation_screen_configuration(
         visible.size.width,
         visible.size.height,
     )
-}
-
-fn apply_display_link_directive(link: &CAMetalDisplayLink, directive: DisplayLinkDirective) {
-    match directive {
-        DisplayLinkDirective::None => {}
-        DisplayLinkDirective::Resume => link.setPaused(false),
-        DisplayLinkDirective::Pause => link.setPaused(true),
-        DisplayLinkDirective::Invalidate => {
-            link.setPaused(true);
-            link.invalidate();
-        }
-    }
 }
 
 const fn should_confirm_display_link_pause(state: DisplayLinkState) -> bool {
@@ -4432,6 +4699,16 @@ impl NativeSurface {
                 active_frame_observer: RefCell::new(None),
                 #[cfg(alpine_native_validation)]
                 validation_probe: builder.validation_probe.clone(),
+                display_link_updates: Cell::new(0),
+                last_display_link_update: Cell::new(None),
+                frame_progress_seen_updates: Cell::new(0),
+                frame_progress_timer: Cell::new(None),
+                display_link_invalidated: Cell::new(false),
+                native_close_finished: Cell::new(false),
+                #[cfg(alpine_native_validation)]
+                display_link_silence: Cell::new(false),
+                #[cfg(alpine_native_validation)]
+                frame_progress: FrameProgressCounters::default(),
             },
         );
         builder.delegate = Some(delegate);
@@ -5147,7 +5424,7 @@ impl NativeSurface {
             .try_borrow_mut()
             .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Presentation))?
             .request_frame(scene, clear)?;
-        apply_display_link_directive(&self.display_link, directive);
+        self.delegate.apply_link_directive(directive);
         Ok(revision)
     }
 
@@ -5332,6 +5609,37 @@ impl NativeSurface {
             "frame={:?} owner_generation={:?} command_terminal={} native={native}",
             active.token, driver.owner_generation, active.command_terminal
         )
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_display_link_silence(&self, silenced: bool) {
+        self.delegate.ivars().display_link_silence.set(silenced);
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn frame_progress_evidence(
+        &self,
+    ) -> crate::native_validation::FrameProgressEvidence {
+        let ivars = self.delegate.ivars();
+        let timer = ivars.frame_progress_timer.take();
+        let armed = timer.as_ref().is_some_and(|timer| timer.0.isValid());
+        ivars.frame_progress_timer.set(timer);
+        let counters = &ivars.frame_progress;
+        crate::native_validation::FrameProgressEvidence::new(
+            counters.silenced_updates.get(),
+            counters.schedules.get(),
+            counters.ticks.get(),
+            counters.terminals.get(),
+            counters.close_drains.get(),
+            armed,
+        )
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn owner_evidence(&self) -> Option<crate::native_validation::NativeOwnerEvidence> {
+        self.validation_probe
+            .as_ref()
+            .map(InitializationProbe::evidence)
     }
 
     #[allow(
@@ -5571,7 +5879,7 @@ impl NativeSurface {
                     .try_borrow_mut()
                     .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
                     .reject_configuration(error.clone())?;
-                apply_display_link_directive(&self.display_link, directive);
+                self.delegate.apply_link_directive(directive);
                 return Err(error);
             }
         };
@@ -5581,7 +5889,7 @@ impl NativeSurface {
             .try_borrow_mut()
             .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?
             .apply_configuration(configuration)?;
-        apply_display_link_directive(&self.display_link, directive);
+        self.delegate.apply_link_directive(directive);
         Ok(())
     }
 
@@ -5798,22 +6106,19 @@ impl Drop for NativeSurface {
         self.wake_bridge.revoke();
         self.view.revoke_accessibility();
         self.application.setDelegate(None);
-        let native_close_started = self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE;
+        self.delegate.cancel_frame_progress_timer();
         let must_close_window = !self.window_close_started.load(Ordering::Acquire);
-        if !native_close_started {
+        if self.lifecycle.load(Ordering::Acquire) == SURFACE_LIVE {
             begin_close_observer_state(&self.lifecycle);
-            self.display_link.setPaused(true);
-            self.display_link.invalidate();
         }
+        // A close whose drain never finished still owns a live link. This is a
+        // no-op after a finished close, so every path invalidates exactly once.
+        self.delegate.invalidate_display_link();
         // A reentrant windowWillClose callback may be unable to borrow the
         // driver while it still revokes callback admission. Owner teardown is
         // therefore the final idempotent shutdown boundary in both paths.
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
             driver.shutdown(&self.counters);
-        }
-        #[cfg(alpine_native_validation)]
-        if let Some(probe) = &self.validation_probe {
-            probe.record_link_invalidation();
         }
         self.display_link.setDelegate(None);
         #[cfg(alpine_native_validation)]
@@ -6419,6 +6724,23 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn frame_progress_counts_silence_only_after_a_quiet_interval() {
+        assert!(!link_silent_for_tick(false, None));
+        assert!(!link_silent_for_tick(false, Some(FRAME_PROGRESS_INTERVAL)));
+        // A tick pulled early by a delayed one, 9 ms after a live update.
+        assert!(!link_silent_for_tick(true, Some(Duration::from_millis(9))));
+        assert!(link_silent_for_tick(true, Some(FRAME_PROGRESS_INTERVAL)));
+        assert!(link_silent_for_tick(true, None));
+    }
+
+    #[test]
+    fn frame_progress_tick_outlasts_a_live_thirty_hertz_display_turn() {
+        let thirty_hertz_turn = Duration::from_micros(33_334);
+        assert!(FRAME_PROGRESS_INTERVAL > thirty_hertz_turn);
+        assert!(FRAME_PROGRESS_TOLERANCE * 10 <= FRAME_PROGRESS_INTERVAL);
     }
 
     #[test]

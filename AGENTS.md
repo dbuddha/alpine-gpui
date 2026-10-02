@@ -27,7 +27,7 @@ budgets:
   language_servers: reported per server, not gated
 milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
-  - {id: M0e, name: "fix hosted native flakes #533, #622", status: active}
+  - {id: M0e, name: "fix hosted native flakes", status: active}
   - {id: M1, name: "measurement: perf recorder and bench", status: "next, design approval pending"}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
@@ -38,8 +38,7 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M0e.1 #622 family: frames and close drains advance without display-link callbacks"
-  - "M0e.2 #533: crash stack from hosted CI, then fix what it shows"
+  - "M0e.2 #533: fix the QuartzCore display-change race the A/B stacks show, then a 5,000-run hosted A/B; drain-window bound awaits Deepak"
   - "M0e.3 require known-flaky-native after 10 clean hosted runs plus a 300-iteration native_wake run, then stop"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---

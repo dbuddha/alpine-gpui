@@ -17,7 +17,8 @@ mod validation {
     use alpine_metal::{BackendState, RecoveryClassification, RenderError};
     use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
-        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceSnapshot, native_validation,
+        CloseDisposition, NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent,
+        SurfaceFrame, SurfaceResponse, SurfaceSnapshot, SurfaceWakeAdmission, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
     use objc2::rc::autoreleasepool;
@@ -40,8 +41,83 @@ mod validation {
         let (scene, clear) = validation_scene()?;
         validate_dropped_presentation(scene.clone(), clear, hosted_direct)?;
         validate_missing_presentation(scene.clone(), clear, hosted_direct)?;
+        validate_silent_display_link(scene.clone(), clear, hosted_direct)?;
         validate_supersession(scene.clone(), clear, hosted_direct)?;
         validate_device_loss(scene, clear, hosted_direct)
+    }
+
+    fn validate_silent_display_link(
+        scene: Scene,
+        clear: LinearRgba,
+        hosted_direct: bool,
+    ) -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine silent display link", 96.0, 64.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
+        let baseline = surface.snapshot();
+
+        // Only the missing-presentation fallback can end this frame: its
+        // presented handler is suppressed and, once it is in flight, no
+        // display-link update reaches the driver.
+        native_validation::inject_post_commit_omission(&surface);
+        native_validation::inject_display_link_silence(&surface, true);
+        let mut frame = Some(SurfaceFrame::new(scene, clear));
+        assert_eq!(surface.waker().wake(), SurfaceWakeAdmission::Scheduled);
+        native_validation::run_until_frame_terminal_with_handler(
+            &surface,
+            Duration::from_secs(5),
+            move |event| match event {
+                SurfaceEvent::Wake { .. } => {
+                    SurfaceResponse::new(frame.take(), None, CloseDisposition::NotRequested)
+                }
+                _ => SurfaceResponse::default(),
+            },
+        )?;
+        native_validation::inject_display_link_silence(&surface, false);
+
+        assert_eq!(surface.take_error()?, None);
+        let snapshot = surface.snapshot();
+        let progress = native_validation::frame_progress_evidence(&surface);
+        let terminal = snapshot.last_terminal().ok_or_else(|| {
+            format!(
+                "silent display link left the frame in flight: progress={progress:?}, completion={}, snapshot={snapshot:?}",
+                native_validation::completion_diagnostic(&surface)
+            )
+        })?;
+        assert_eq!(snapshot.occupied_frame_slots(), 0, "{snapshot:?}");
+        assert_eq!(snapshot.submitted_frame_slots(), 0, "{snapshot:?}");
+        assert!(snapshot.display_link_paused(), "{snapshot:?}");
+        assert_eq!(terminal.outcome(), PresentationOutcome::Failed);
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert!(terminal.eligible_at_commit());
+        assert_eq!(terminal.observed_presentation_time_bits(), 0);
+        assert_eq!(terminal.retained_bytes(), 0);
+        assert_eq!(terminal.recovery(), None);
+        let latency = terminal
+            .latency()
+            .ok_or("silent display link lost event latency evidence")?;
+        assert!(
+            latency.event_to_gpu_terminal_observed_ns().is_some(),
+            "the fallback must record when the GPU terminal was observed: {terminal:?}"
+        );
+        // AppKit configuration churn can requeue the frame for a second attempt
+        // that the one-shot omission does not cover; that attempt may report a
+        // zero-time (skipped) presentation instead of reaching the fallback.
+        let submissions = snapshot.submission_count() - baseline.submission_count();
+        assert!(submissions >= 1, "{snapshot:?}");
+        assert_eq!(
+            snapshot.failed_count() - baseline.failed_count(),
+            submissions,
+            "{snapshot:?}"
+        );
+        assert!(snapshot.skipped_count() - baseline.skipped_count() < submissions);
+        // Updates are silenced while any attempt is in flight, so only the
+        // frame-progress timer can have recorded these terminals.
+        assert_eq!(progress.timer_terminals(), submissions, "{progress:?}");
+        assert!(progress.timer_schedules() >= 1, "{progress:?}");
+        assert!(!progress.timer_armed(), "{progress:?}");
+        close_recovery_surface(surface, "silent display link")
     }
 
     fn validate_dropped_presentation(

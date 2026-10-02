@@ -1551,6 +1551,91 @@ pub mod native_validation {
         surface.implementation.completion_diagnostic()
     }
 
+    /// Drops display-link updates while a frame is in flight, modeling a link
+    /// that stops delivering updates. Pass `false` to restore delivery.
+    pub fn inject_display_link_silence(surface: &NativeSurface, silenced: bool) {
+        surface.implementation.inject_display_link_silence(silenced);
+    }
+
+    /// Validation-only counters for the frame-progress timer.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct FrameProgressEvidence {
+        silenced_updates: u64,
+        timer_schedules: u64,
+        timer_ticks: u64,
+        timer_terminals: u64,
+        timer_close_drains: u64,
+        timer_armed: bool,
+    }
+
+    impl FrameProgressEvidence {
+        pub(crate) const fn new(
+            silenced_updates: u64,
+            timer_schedules: u64,
+            timer_ticks: u64,
+            timer_terminals: u64,
+            timer_close_drains: u64,
+            timer_armed: bool,
+        ) -> Self {
+            Self {
+                silenced_updates,
+                timer_schedules,
+                timer_ticks,
+                timer_terminals,
+                timer_close_drains,
+                timer_armed,
+            }
+        }
+
+        /// Returns display-link updates dropped by injected silence.
+        #[must_use]
+        pub const fn silenced_updates(self) -> u64 {
+            self.silenced_updates
+        }
+
+        /// Returns frame-progress timers scheduled for in-flight frames.
+        #[must_use]
+        pub const fn timer_schedules(self) -> u64 {
+            self.timer_schedules
+        }
+
+        /// Returns frame-progress timer callbacks.
+        #[must_use]
+        pub const fn timer_ticks(self) -> u64 {
+            self.timer_ticks
+        }
+
+        /// Returns frames whose terminal state the timer recorded.
+        #[must_use]
+        pub const fn timer_terminals(self) -> u64 {
+            self.timer_terminals
+        }
+
+        /// Returns closes that the timer drained and finished.
+        #[must_use]
+        pub const fn timer_close_drains(self) -> u64 {
+            self.timer_close_drains
+        }
+
+        /// Returns whether a frame-progress timer is scheduled now.
+        #[must_use]
+        pub const fn timer_armed(self) -> bool {
+            self.timer_armed
+        }
+    }
+
+    /// Returns frame-progress timer and injected-silence evidence.
+    #[must_use]
+    pub fn frame_progress_evidence(surface: &NativeSurface) -> FrameProgressEvidence {
+        surface.implementation.frame_progress_evidence()
+    }
+
+    /// Returns ownership and cleanup counts without closing the surface.
+    #[must_use]
+    pub fn owner_evidence(surface: &NativeSurface) -> Option<NativeOwnerEvidence> {
+        surface.implementation.owner_evidence()
+    }
+
     /// Last display-link directive observed by native pause qualification.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub enum PauseDirectiveEvidence {
