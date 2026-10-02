@@ -1248,6 +1248,7 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     )?;
     let second_cache = app.syntax_cache.snapshot();
     assert!(second_cache.hits() > first_cache.hits());
+    assert_eq!(second_cache.misses(), first_cache.misses());
     assert!(second_cache.current_bytes() <= second_cache.budget_bytes());
 
     let palette = app.settings.active().theme.syntax;

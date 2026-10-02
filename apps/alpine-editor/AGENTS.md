@@ -9,7 +9,7 @@ parity:
   language_intelligence: {status: partial, closes: M4}
   git: {status: none, closes: M7}
 criteria:
-  "2.1": "recorded pass; its test times warm cache hits only, re-measure cold in M1"
+  "2.1": "CI proves warm frames lex nothing (SyntaxCache counters and the editor scene path); the 100 ms budget, cold and warm, becomes a bench row in M1"
   "2.2": "Rust passes; C++ shows clangd diagnostics only; Python, Java, TypeScript and JavaScript need a server"
   "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
   "2.4": "passes on main"

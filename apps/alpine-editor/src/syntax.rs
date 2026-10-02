@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_lines_of_a_5000_line_file_highlight_within_100ms() -> Result<(), SyntaxError> {
+    fn warm_visible_lines_of_a_5000_line_file_lex_nothing() -> Result<(), SyntaxError> {
         const LINES: usize = 5_000;
         const VISIBLE: usize = 48;
         let mut source = String::new();
@@ -1206,24 +1206,33 @@ mod tests {
             SyntaxLanguage::Java,
             SyntaxLanguage::TypeScript,
         ];
+        let mut warm = Vec::new();
+        warm.try_reserve(languages.len() * VISIBLE)
+            .map_err(|_| SyntaxError::AllocationFailed)?;
         cache.begin_frame();
         for language in languages {
             for line in 0..VISIBLE {
-                let _ = cache.line(&snapshot, line, language)?;
+                warm.push(cache.line(&snapshot, line, language)?);
             }
         }
+        let expected_hits = (languages.len() * VISIBLE) as u64;
+        // The 100 ms budget moves to an M1 bench row; warm frames lex nothing.
         for trial in 0..10 {
-            let started = std::time::Instant::now();
+            let before = cache.snapshot();
             cache.begin_frame();
+            let mut warm_lines = warm.iter();
             for language in languages {
                 for line in 0..VISIBLE {
-                    let _ = cache.line(&snapshot, line, language)?;
+                    let cached = cache.line(&snapshot, line, language)?;
+                    let reused = warm_lines.next().is_some_and(|w| Arc::ptr_eq(w, &cached));
+                    assert!(reused, "trial {trial} rebuilt line {line} on a hit");
                 }
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_millis(100),
-                "visible-range highlight trial {trial} exceeded 100ms"
-            );
+            let after = cache.snapshot();
+            let lexed = after.misses().checked_sub(before.misses());
+            assert_eq!(lexed, Some(0), "trial {trial} lexed lines");
+            let hits = after.hits().checked_sub(before.hits());
+            assert_eq!(hits, Some(expected_hits), "trial {trial}");
         }
         Ok(())
     }
