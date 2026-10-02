@@ -49,8 +49,8 @@ Phase 5 (M8): independent windows; the design system as one tokens module; no
 element shift; the final run against Zed.
 
 Parity also needs auto-indent, bracket pairing, deep undo, huge files, inline
-diagnostics, rename, format, code actions, inlay hints, signature help, file
-finder and outline.
+diagnostics, completion, rename, format, code actions, inlay hints, signature
+help, file finder, outline.
 
 ## Two bars
 
