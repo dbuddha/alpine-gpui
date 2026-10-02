@@ -658,6 +658,8 @@ fn input_args(action: Action, pid: i32, window: &WindowInfo) -> Vec<String> {
                 "scroll".into(),
                 "--pid".into(),
                 pid,
+                "--window-id".into(),
+                window.id.to_string(),
                 "--at".into(),
                 center,
                 "--pixels".into(),
@@ -1052,7 +1054,38 @@ mod tests {
         );
         assert!(scroll.windows(2).any(|pair| pair == ["--at", "756,505"]));
         assert!(scroll.windows(2).any(|pair| pair == ["--pixels", "-66"]));
+        assert!(scroll.windows(2).any(|pair| pair == ["--window-id", "77"]));
         assert!(input_args(Action::Idle, 9, &window()).is_empty());
+    }
+
+    /// `bench-input` refuses to post without a target PID, so every script
+    /// the orchestrator builds must name the measured app's PID.
+    #[test]
+    fn every_input_script_targets_the_measured_pid() {
+        let actions = [
+            Action::Type {
+                phrase: "ab ",
+                count: 3,
+                interval_ms: 120,
+            },
+            Action::Keys {
+                keycode: 125,
+                count: 2,
+                interval_ms: 120,
+            },
+            Action::Scroll {
+                pixels: -66,
+                count: 2,
+                interval_ms: 8,
+            },
+        ];
+        for action in actions {
+            let args = input_args(action, 4242, &window());
+            let targets: Vec<&[String]> =
+                args.windows(2).filter(|pair| pair[0] == "--pid").collect();
+            assert_eq!(targets.len(), 1, "{action:?}");
+            assert_eq!(targets[0][1], "4242", "{action:?}");
+        }
     }
 
     #[test]

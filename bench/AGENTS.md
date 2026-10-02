@@ -5,7 +5,7 @@ updated: 2026-10-02
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
   - "bench-input and bench-capture have never run: they wait for the first permissioned trials"
-  - "unverified until then: the reference editor's 960x540 content fix (it measured 944x562 before), its caret blink suppression, and that negative scroll pixels move down"
+  - "unverified until then: the reference editor's 960x540 content fix (it measured 944x562 before), its caret blink suppression, and that PID-targeted scrolls (negative pixels) move each app down"
 ---
 
 # Bench
@@ -28,7 +28,7 @@ target/release/bench zed-isolation [--allow-window] [--open-fixture]
 
 Workloads live in `src/workload.rs`: `typing`, `caret`, `scroll`,
 `open-50mb`, `open-repo` and `idle`. Alpine is the installed
-`~/Applications/Alpine Editor.app`; rebuild it from a clean tree first.
+`~/Applications/Alpine Editor.app`, built from a clean tree.
 
 ## Protocol
 
@@ -62,8 +62,10 @@ prints the state.
 | `bench-input` | Accessibility (post events) | `typing`, `caret`, `scroll` |
 | `bench-capture` | Screen Recording | `typing`, `caret`, `scroll` |
 
-`bench-input` checks before every event that the target still owns the
-foreground and aborts otherwise, so keys never reach another app.
+`bench-input` posts every event to the measured app's PID
+(`CGEventPostToPid`), never to the HID stream, so no other process can
+receive it; it refuses to run without a PID. It still aborts when the target
+loses the foreground, and occlusion still invalidates the trial.
 
 ## Metrics
 
@@ -74,8 +76,9 @@ foreground and aborts otherwise, so keys never reach another app.
   phase's boundary samples. CPU and wakeups include reaped children; energy
   counts processes alive at the phase end.
 - Keypress-to-screen: post time to the display time of the first captured
-  frame whose region hash changed. A key sent before the previous key's
-  response is counted as overlapped, not timed.
+  frame whose region hash changed. PID-targeted input skips HID routing,
+  the same for every app. A key sent before the previous key's response is
+  counted as overlapped, not timed.
 - Frame interval while scrolling: display-time gaps between changed frames;
   `frame_late_pct` counts gaps over 1.5 refresh periods.
 - Output: raw TSV in `results/<run>/` (gitignored). `bench baseline` appends
@@ -106,7 +109,7 @@ A bench Zed gets a disposable HOME (logs, caches and config follow HOME),
 `--user-data-dir`, seeded settings, `ZED_UPDATE_EXPLANATION` and a dead
 `ZED_SERVER_URL`. `bench zed-isolation` launches it that way and compares
 about 56,000 real Zed paths and the app version before and after. On 2026-10-02,
-with the owner's Zed running, the probe migrated its own databases in the
+with the owner's Zed running, the probe migrated its databases in the
 disposable home, met the single-instance check after 409 ms and exited with
 no window; nothing real changed. macOS state outside HOME stays shared:
 Zed calls `noteNewRecentDocumentURL`, so fixture paths can join Zed's Dock

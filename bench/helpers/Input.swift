@@ -3,9 +3,9 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-// bench-input: posts CGEvent keyboard and mouse events to the HID stream.
+// bench-input: posts CGEvent keyboard and mouse events to one process with
+// CGEventPostToPid, never to the HID stream, so no other app can get them.
 // Needs Accessibility (post-event access) for the terminal that runs bench.
-// Before each event it checks that the target still owns the foreground.
 
 let ansiKeycodes: [Character: CGKeyCode] = [
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8,
@@ -26,8 +26,8 @@ struct ForegroundGuard {
         self.pid = pid
     }
 
-    // Frontmost by NSWorkspace and owner of the top normal window, so a
-    // stale workspace answer alone cannot let events reach another app.
+    // Input is PID-targeted, so this no longer protects other apps; it stops
+    // a trial whose target is no longer frontmost and so not measurable.
     mutating func verify(force: Bool) throws {
         let now = Clock.now()
         if !force, now - lastCheck < Clock.ticks(nanos: guardIntervalNanos) { return }
@@ -55,11 +55,35 @@ struct ForegroundGuard {
     }
 }
 
+// Every event leaves through deliver(), which posts to the target PID only.
+// There is no HID-tap path, so a focus change cannot redirect input.
 final class Poster {
+    private let pid: pid_t
+    private let windowID: UInt32?
     private let source: CGEventSource?
 
-    init() {
+    init(pid: pid_t, windowID: UInt32?) throws {
+        guard pid > 0 else {
+            throw HelperFailure.usage("input needs a target process id")
+        }
+        self.pid = pid
+        self.windowID = windowID
         source = CGEventSource(stateID: .hidSystemState)
+    }
+
+    private func deliver(_ event: CGEvent) {
+        event.postToPid(pid)
+    }
+
+    // A PID-targeted mouse event has no window resolved from the cursor,
+    // so it names the measured window itself.
+    private func aim(_ event: CGEvent) {
+        guard let windowID else { return }
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(windowID))
+        event.setIntegerValueField(
+            .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+            value: Int64(windowID)
+        )
     }
 
     func key(_ code: CGKeyCode, text: String?) throws -> UInt64 {
@@ -77,9 +101,9 @@ final class Poster {
         down.flags = []
         up.flags = []
         let stamp = Clock.now()
-        down.post(tap: .cghidEventTap)
+        deliver(down)
         Clock.wait(until: stamp + Clock.ticks(nanos: keyHoldNanos))
-        up.post(tap: .cghidEventTap)
+        deliver(up)
         return stamp
     }
 
@@ -90,7 +114,8 @@ final class Poster {
         ) else {
             throw HelperFailure.runtime("cannot create a mouse move event")
         }
-        event.post(tap: .cghidEventTap)
+        aim(event)
+        deliver(event)
     }
 
     func click(at point: CGPoint) throws -> UInt64 {
@@ -103,10 +128,12 @@ final class Poster {
         ) else {
             throw HelperFailure.runtime("cannot create a click event")
         }
+        aim(down)
+        aim(up)
         let stamp = Clock.now()
-        down.post(tap: .cghidEventTap)
+        deliver(down)
         Clock.wait(until: stamp + Clock.ticks(nanos: keyHoldNanos))
-        up.post(tap: .cghidEventTap)
+        deliver(up)
         return stamp
     }
 
@@ -118,8 +145,9 @@ final class Poster {
             throw HelperFailure.runtime("cannot create a scroll event")
         }
         event.location = point
+        aim(event)
         let stamp = Clock.now()
-        event.post(tap: .cghidEventTap)
+        deliver(event)
         return stamp
     }
 }
@@ -156,38 +184,43 @@ func paced(count: Int, intervalMs: Int, step: (Int) throws -> Void) throws {
     }
 }
 
-func runScript(_ options: inout Options) throws {
+enum ScriptAction {
+    case type([(CGKeyCode, String)])
+    case keys(CGKeyCode, Int)
+    case scroll(CGPoint, Int32, Int)
+    case click(CGPoint)
+}
+
+struct Script {
+    let pid: pid_t
+    let windowID: UInt32?
+    let intervalMs: Int
+    let action: ScriptAction
+}
+
+// The target PID is parsed first and is mandatory: events have nowhere else
+// to go, because this helper never falls back to the HID stream.
+func parseScript(_ options: inout Options) throws -> Script {
     let pid = try options.pid()
     let intervalMs = try options.int("interval-ms", default: 120)
-    var guardian = ForegroundGuard(pid: pid)
-    let poster = Poster()
-    var prelude: (() throws -> Void)?
-    var steps: [(Int) throws -> Void] = []
-    var label = options.command
+    var windowID: UInt32?
+    if let text = options.optional("window-id") {
+        guard let id = UInt32(text), id > 0 else {
+            throw HelperFailure.usage("--window-id must be a window number")
+        }
+        windowID = id
+    }
+    let action: ScriptAction
     switch options.command {
     case "type":
-        let text = try options.string("text")
-        let codes = try keycodes(for: text)
-        steps = codes.map { code, character in
-            { index in
-                try guardian.verify(force: true)
-                let stamp = try poster.key(code, text: character)
-                Output.emit(["event", String(index + 1), String(stamp), "key", character])
-            }
-        }
+        action = .type(try keycodes(for: try options.string("text")))
     case "keys":
         let keycode = try options.int("keycode")
         let count = try options.int("count")
         guard let code = CGKeyCode(exactly: keycode), count > 0 else {
             throw HelperFailure.usage("--keycode must fit a key code and --count must be positive")
         }
-        steps = (0..<count).map { _ in
-            { index in
-                try guardian.verify(force: true)
-                let stamp = try poster.key(code, text: nil)
-                Output.emit(["event", String(index + 1), String(stamp), "key", "keycode-\(keycode)"])
-            }
-        }
+        action = .keys(code, count)
     case "scroll":
         let point = try options.point("at")
         let pixels = try options.int("pixels")
@@ -195,37 +228,58 @@ func runScript(_ options: inout Options) throws {
         guard let delta = Int32(exactly: pixels), count > 0 else {
             throw HelperFailure.usage("--pixels must fit Int32 and --count must be positive")
         }
-        label = "scroll \(pixels)"
-        prelude = {
-            try guardian.verify(force: true)
-            try poster.move(to: point)
-            Clock.sleep(milliseconds: 50)
-        }
-        steps = (0..<count).map { _ in
-            { index in
-                try guardian.verify(force: false)
-                let stamp = try poster.scroll(pixels: delta, at: point)
-                Output.emit(["event", String(index + 1), String(stamp), "scroll", String(pixels)])
-            }
-        }
+        action = .scroll(point, delta, count)
     case "click":
-        let point = try options.point("at")
-        steps = [{ index in
-            try guardian.verify(force: true)
-            let stamp = try poster.click(at: point)
-            Output.emit(["event", String(index + 1), String(stamp), "click", ""])
-        }]
+        action = .click(try options.point("at"))
     default:
         throw HelperFailure.usage(
             "unknown command \(options.command); expected type, keys, scroll, click or self-test"
         )
     }
     try options.finish()
+    return Script(pid: pid, windowID: windowID, intervalMs: intervalMs, action: action)
+}
+
+func run(_ script: Script) throws {
     // Nothing is posted before this preflight, which never prompts.
     try requirePostEventAccess()
-    try prelude?()
-    try paced(count: steps.count, intervalMs: intervalMs) { index in try steps[index](index) }
-    Output.emit(["done", String(Clock.now()), String(steps.count), label])
+    let poster = try Poster(pid: script.pid, windowID: script.windowID)
+    var guardian = ForegroundGuard(pid: script.pid)
+    let interval = script.intervalMs
+    var posted = 0
+    switch script.action {
+    case .type(let codes):
+        try paced(count: codes.count, intervalMs: interval) { index in
+            let (code, character) = codes[index]
+            try guardian.verify(force: true)
+            let stamp = try poster.key(code, text: character)
+            Output.emit(["event", String(index + 1), String(stamp), "key", character])
+            posted += 1
+        }
+    case .keys(let code, let count):
+        try paced(count: count, intervalMs: interval) { index in
+            try guardian.verify(force: true)
+            let stamp = try poster.key(code, text: nil)
+            Output.emit(["event", String(index + 1), String(stamp), "key", "keycode-\(code)"])
+            posted += 1
+        }
+    case .scroll(let point, let delta, let count):
+        try guardian.verify(force: true)
+        try poster.move(to: point)
+        Clock.sleep(milliseconds: 50)
+        try paced(count: count, intervalMs: interval) { index in
+            try guardian.verify(force: false)
+            let stamp = try poster.scroll(pixels: delta, at: point)
+            Output.emit(["event", String(index + 1), String(stamp), "scroll", String(delta)])
+            posted += 1
+        }
+    case .click(let point):
+        try guardian.verify(force: true)
+        let stamp = try poster.click(at: point)
+        Output.emit(["event", "1", String(stamp), "click", ""])
+        posted = 1
+    }
+    Output.emit(["done", String(Clock.now()), String(posted), String(script.pid)])
 }
 
 func inputSelfTest() throws {
@@ -238,6 +292,26 @@ func inputSelfTest() throws {
     var ran: [Int] = []
     try paced(count: 3, intervalMs: 1) { ran.append($0) }
     try check(ran == [0, 1, 2], "paced order")
+    // Without a target PID no script parses, so nothing can be posted.
+    let scripts: [[String]] = [
+        ["type", "--text", "ab"],
+        ["keys", "--keycode", "125", "--count", "2"],
+        ["scroll", "--at", "10,10", "--pixels", "-66", "--count", "2", "--window-id", "9"],
+        ["click", "--at", "10,10"],
+    ]
+    for arguments in scripts {
+        var missing = try Options(arguments)
+        try check((try? parseScript(&missing)) == nil, "\(arguments[0]) without --pid refused")
+        var zero = try Options(arguments + ["--pid", "0"])
+        try check((try? parseScript(&zero)) == nil, "\(arguments[0]) with pid 0 refused")
+        var targeted = try Options(arguments + ["--pid", "4242"])
+        let script = try parseScript(&targeted)
+        try check(script.pid == 4242, "\(arguments[0]) keeps its target pid")
+    }
+    var bad = try Options(["click", "--at", "1,1", "--pid", "7", "--window-id", "0"])
+    try check((try? parseScript(&bad)) == nil, "window 0 refused")
+    try check((try? Poster(pid: 0, windowID: nil)) == nil, "poster refuses pid 0")
+    try check((try? Poster(pid: -1, windowID: nil)) == nil, "poster refuses a negative pid")
     Output.emit(["self-test", "ok"])
 }
 
@@ -250,7 +324,7 @@ struct InputMain {
                 try options.finish()
                 try inputSelfTest()
             } else {
-                try runScript(&options)
+                try run(try parseScript(&options))
             }
         }
     }
