@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_lines_of_a_5000_line_file_highlight_within_100ms() -> Result<(), SyntaxError> {
+    fn warm_visible_lines_of_a_5000_line_file_lex_nothing() -> Result<(), SyntaxError> {
         const LINES: usize = 5_000;
         const VISIBLE: usize = 48;
         let mut source = String::new();
@@ -1212,17 +1212,28 @@ mod tests {
                 let _ = cache.line(&snapshot, line, language)?;
             }
         }
+        let expected_hits =
+            u64::try_from(languages.len() * VISIBLE).map_err(|_| SyntaxError::SequenceExhausted)?;
+        // The 100 ms budget is a bench row; CI proves warm frames lex nothing.
         for trial in 0..10 {
-            let started = std::time::Instant::now();
+            let before = cache.snapshot();
             cache.begin_frame();
             for language in languages {
                 for line in 0..VISIBLE {
                     let _ = cache.line(&snapshot, line, language)?;
                 }
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_millis(100),
-                "visible-range highlight trial {trial} exceeded 100ms"
+            let after = cache.snapshot();
+            assert_eq!(
+                after.misses(),
+                before.misses(),
+                "trial {trial} lexed a line"
+            );
+            assert_eq!(after.omitted_lines(), before.omitted_lines());
+            assert_eq!(
+                after.hits().checked_sub(before.hits()),
+                Some(expected_hits),
+                "trial {trial}"
             );
         }
         Ok(())
