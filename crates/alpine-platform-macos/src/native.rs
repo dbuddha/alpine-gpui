@@ -1224,6 +1224,7 @@ impl PresentationDriver {
             return self.fail_after_error(error, AttemptTiming::default(), counters);
         }
         match (prior_link, self.state.display_link()) {
+            (_, DisplayLinkState::Invalid) => DisplayLinkDirective::Invalidate,
             (DisplayLinkState::Paused, DisplayLinkState::Running) => DisplayLinkDirective::Resume,
             (DisplayLinkState::Running, DisplayLinkState::Paused) => DisplayLinkDirective::Pause,
             _ => DisplayLinkDirective::None,
@@ -3903,6 +3904,10 @@ impl DisplayLinkDelegate {
     }
 
     fn ensure_frame_progress_timer(&self) {
+        // A finished close has nothing left to progress; a timer would leak.
+        if self.ivars().native_close_finished.get() {
+            return;
+        }
         let slot = &self.ivars().frame_progress_timer;
         let current = slot.take();
         if current.as_ref().is_some_and(|timer| timer.0.isValid()) {
