@@ -1,6 +1,6 @@
 name: CI
 
-# Throwaway branch exp/m0e-ab: same-VM A/B of main against the #641 head.
+# Throwaway branch exp/m0e-ab: same-VM A/B of main against the M0e.2 #533 fix.
 on:
   workflow_dispatch:
 
@@ -26,11 +26,11 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
       ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
-      AB_A_SHA: 4b1bdf57d007dfb96f6e9431b239bde600452dad
-      AB_B_SHA: fe529cd2b60d2788d556ac3873fbcba47f3da277
-      AB_PAIRS: "300"
-      AB_CLOSE_PAIRS: "150"
-      AB_LLDB_RUNS: ${{ matrix.shard == 4 && '150' || '0' }}
+      AB_A_SHA: fd2a390ca8d82f77742eb4c24f544d8a2002b655
+      AB_B_SHA: 1760a872fd08bddf198a1b2008c354151b918b3b
+      AB_PAIRS: "1250"
+      AB_CLOSE_PAIRS: "100"
+      AB_LLDB_RUNS: "0"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
