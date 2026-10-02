@@ -5,6 +5,7 @@ updated: 2026-10-02
 known_defects:
   - "native_wake can SIGSEGV in teardown after close.armed on hosted runners (was #533); 0 of 25 locally"
   - "an accessibility omission control in native_process can miss its 10 s frame deadline under hosted Metal validation (was #622)"
+  - "native_lifecycle missing-close drain can fail to run on hosted runners (drain.executed); listed under the #622 family, a re-run is allowed"
   - "suspected: windowWillClose with work in flight pauses the display link without invalidate() (alpine-platform-macos/src/native.rs near 3070)"
 known_flaky_ci: "#533 and #622 run in the known-flaky-native job, which ci-pass does not require; fix next, then require it"
 ---
@@ -68,6 +69,7 @@ and destroy elements before revoking the handler.
 - The release profile is `panic = "abort"`: `catch_unwind` protects only debug
   and test builds.
 - Never mutate the process environment after threads exist.
+- Metal validation on for correctness runs, off for timing runs.
 
 ## Native tests
 
@@ -83,3 +85,16 @@ Admitted: triple buffering, reusable upload memory, batching, offline built-in
 assets, GPU profiling. Rejected: GPUI's entity graph and global registries,
 tokio, WGPU/Naga/WGSL in shipping code, render graphs, ECS, CSS or flexbox
 layout, generalized animation, continuous game loops, MetalFX.
+
+## Commands
+
+```sh
+cargo run --locked -p alpine-editor
+cargo test --locked -p <crate>
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
+scripts/check.sh
+scripts/check-native.sh physical shipping
+scripts/build-alpine-editor-app.sh
+scripts/launch-alpine-editor-app.sh <file-or-folder>
+```
