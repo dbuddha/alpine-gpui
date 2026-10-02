@@ -3,10 +3,9 @@ scope: framework crates under crates/
 parent: ../AGENTS.md
 updated: 2026-10-02
 known_defects:
-  - "native_wake can SIGSEGV in teardown after close.armed on hosted runners (was #533); 0 of 25 locally"
-  - "an accessibility omission control in native_process can miss its 10 s frame deadline under hosted Metal validation (was #622)"
-  - "native_lifecycle missing-close drain can fail to run on hosted runners (drain.executed); listed under the #622 family, a re-run is allowed"
-  - "suspected: windowWillClose with work in flight pauses the display link without invalidate() (alpine-platform-macos/src/native.rs near 3070)"
+  - "native_wake can SIGSEGV in teardown after close.armed on hosted runners (was #533); none in 800 hosted iterations on 2026-10-02"
+  - "an accessibility omission control in native_process can miss its 10 s frame deadline under hosted Metal validation (was #622); M0e.1 fixes it, remove after 10 clean hosted runs"
+  - "run-loop drain markers can miss their 250 ms pump window on hosted runners (native_lifecycle missing-close, native_wake under NSZombie); not #622, cause unproven, a re-run is allowed"
 known_flaky_ci: "#533 and #622 run in the known-flaky-native job, which ci-pass does not require; fix next, then require it"
 ---
 
