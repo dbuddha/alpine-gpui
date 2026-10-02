@@ -5,7 +5,6 @@ updated: 2026-10-02
 known_defects:
   - "native_wake can SIGSEGV on hosted runners (was #533): during window close, after our invalidate(), QuartzCore +[CADisplayLink notifyDisplayChange:] faults at 0x20 on a dispatch thread; 3 of 2,400 runs, same rate on main and M0e.1 (same-VM A/B, 2026-10-02)"
   - "an accessibility omission control in native_process can miss its 10 s frame deadline under hosted Metal validation (was #622); M0e.1 fixes it, remove after 10 clean hosted runs"
-  - "run-loop drain markers can miss their 250 ms pump window on hosted runners (native_lifecycle missing-close, native_wake under NSZombie); not #622, cause unproven, a re-run is allowed"
 known_flaky_ci: "#533 and #622 run in the known-flaky-native job, which ci-pass does not require; fix next, then require it"
 ---
 
