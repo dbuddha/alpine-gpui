@@ -1,7 +1,12 @@
 ---
 scope: framework crates under crates/
 parent: ../AGENTS.md
-updated: 2026-10-01
+updated: 2026-10-02
+known_defects:
+  - "native_wake can SIGSEGV in teardown after close.armed on hosted runners (was #533); 0 of 25 locally"
+  - "an accessibility omission control in native_process can miss its 10 s frame deadline under hosted Metal validation (was #622)"
+  - "suspected: windowWillClose with work in flight pauses the display link without invalidate() (alpine-platform-macos/src/native.rs near 3070)"
+known_flaky_ci: "#533 and #622 run in the known-flaky-native job, which ci-pass does not require; fix next, then require it"
 ---
 
 # Framework internals

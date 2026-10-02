@@ -5,6 +5,20 @@ AGENTS.md files are. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
 
+## 2026-10-02: M0 closed
+
+- **Delivered:** #636 (docs and registry) and #637 (CI slimming) merged.
+- **Cleanup:** 24 GB of lab build cache, the orphaned pylsp download and the leaked staging folders deleted. Merged branches removed. Project board closed and alpine-zed-lab archived.
+- **Installed app:** rebuilt from main and smoke-tested by a Dock-style launch with a disposable HOME. It opened one on-screen window (960x572) at 30 MB phys_footprint with no language server.
+- **Open issues closed,** each pointing at its new home:
+  - #543, #555 (rest) and #576 moved to editor `known_defects`.
+  - #533 and #622 moved to framework `known_defects` (milestone M0e).
+  - #304 became M2, #522 became M1.
+  - #511 is not an Alpine defect: the zero reproduces in standalone Swift and MetalKit programs.
+- **CI flakes (owner decision):** #637's metal-validation failed on #533, then on #622 after one approved re-run. Both moved to the non-required `known-flaky-native` job and are fixed next, in M0e. Locally on the M4 they did not reproduce (`native_wake` 0 of 25, `native_process` under validation passed), which points at the hosted environment.
+- **New rule:** re-run only a failure already listed in `known_defects`.
+- **Moved from the editor AGENTS.md for space:** `SelectionSet` and `Transaction` already handle multi-cursor, so phase 3 is an app-layer change.
+
 ## 2026-10-01: M0c and retired tracking
 
 Issues and the Project board retired as working tools; tag

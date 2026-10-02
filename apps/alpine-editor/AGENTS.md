@@ -1,7 +1,7 @@
 ---
 product: Alpine Editor
 parent: ../../AGENTS.md
-updated: 2026-10-01
+updated: 2026-10-02
 phase: "2, language agnostic: active, closes in M4"
 parity:
   core_editing: {status: partial, closes: M6}
@@ -14,11 +14,14 @@ criteria:
   "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
   "2.4": "passes on main"
 known_defects:
-  - "server eviction and idle shutdown join the supervisor on the main thread, up to 5 s (language_services.rs evict_one, reap_idle)"
-  - "a sixth language with five attached slots kills an open tab's server; untested"
+  - "eviction and idle shutdown block the main thread up to 5 s (evict_one, reap_idle)"
+  - "a sixth language with five attached slots kills an open tab's server"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "workspace.applyEdit is advertised but server requests get MethodNotFound"
-defects_to_reverify: ["#543", "#555", "#576", "#533", "#622", "#304", "#511", "#522"]
+  - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
+  - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
+  - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
+  - "two mock LSP tests time out under load (wait_for_running_peer); a real race is possible"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"
 out_of_scope: [AI, collaboration, extensions, remote development, debugger, built-in terminal]
 ---
@@ -37,36 +40,35 @@ language with no code change.
 
 Phase 3 (M6): `cmd-shift-l` edits all matches; syntax-node expand and shrink; a
 Vim subset; 500 cursors on 10,000 lines under 16 ms per keystroke; undo restores
-every cursor. `SelectionSet` and `Transaction` already handle multi-cursor.
+every cursor.
 
 Phase 4 (M7): breadcrumbs; branch name within 1 s of checkout; blame for the
 visible range; gutter diff; a stage-and-commit panel; no layout shift.
 
 Phase 5 (M8): independent windows; the design system as one tokens module; no
-element shift; the parity sweep and final run against Zed.
+element shift; the final run against Zed.
 
-Parity also needs auto-indent, bracket pairing, deep undo, huge-file budgets,
-inline diagnostics, completion, rename, format, code actions, inlay hints,
-signature help, file finder and outline.
+Parity also needs auto-indent, bracket pairing, deep undo, huge files, inline
+diagnostics, completion, rename, format, code actions, inlay hints, signature
+help, file finder, outline.
 
 ## Two bars
 
-**A real macOS app:** File, Edit and Window menus exist; add the rest as
-features land, installed before first activation. Open and save panels, an
+**A real macOS app:** File, Edit and Window menus exist; new menus install
+before first activation. Open and save panels, an
 installed bundle, a stable identity, an icon, one visual language. A command
 reachable only from the command palette is not shipped.
 
 **The framework's budget:** read nothing until it is opened; folder open lists a
-directory and nothing more. Lay out the visible range. Every cache, history or
-result set declares a ceiling and eviction rule first. Long work goes to a
-bounded worker and is admitted by revision. Degrade visibly on huge input; keep
-indexing and restore off the startup path.
+directory and nothing more. Every cache, history or result set declares a
+ceiling and eviction rule first. Degrade visibly on huge input; keep indexing
+and restore off the startup path.
 
 ## Language intelligence: quiet by default (M4 target)
 
 Today: one server per workspace and language, hard cap 5, idle shutdown of
-unattached slots, local-lexer highlighting. The `known_defects` above still
-hold. rust-analyzer alone is 1 to 4 GB on a real crate.
+unattached slots, local-lexer highlighting, plus the `known_defects` above.
+rust-analyzer alone is 1 to 4 GB on a real crate.
 
 The M4 design:
 - Start a server on the first visible file of its language. Evict and shut down
@@ -90,7 +92,7 @@ The M4 design:
 Detect the repository without spawning; start nothing until a feature needs it.
 One persistent `git cat-file --batch` serves file contents. The gutter diff runs
 on a worker after a typing pause. `git blame --porcelain -L` covers the visible
-range on demand. The branch comes from reading `.git/HEAD`. `git status
+range on demand. Read the branch from `.git/HEAD`. `git status
 --porcelain=v2 -z` is debounced and capped. Stage and commit are explicit. At
 most two git processes, each with a timeout.
 
@@ -101,7 +103,7 @@ That hides `~/.rustup`, so set `RUSTUP_HOME` or `ALPINE_RUST_ANALYZER`. Capture
 through ScreenCaptureKit (`tools/onscreen-sdr-capture`); `screencapture -l`
 cannot see the Metal layer. The capturing terminal needs Screen Recording
 permission. Clean up only the processes a capture owns; never close unrelated
-apps. Compare against the same surface in Zed.
+apps.
 
 ## Correctness that must never regress
 
