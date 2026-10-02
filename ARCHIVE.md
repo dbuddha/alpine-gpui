@@ -17,6 +17,7 @@ Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
   - #511 is not an Alpine defect: the zero reproduces in standalone Swift and MetalKit programs.
 - **CI flakes (owner decision):** #637's metal-validation failed on #533, then on #622 after one approved re-run. Both moved to the non-required `known-flaky-native` job and are fixed next, in M0e. Locally on the M4 they did not reproduce (`native_wake` 0 of 25, `native_process` under validation passed), which points at the hosted environment.
 - **New rule:** re-run only a failure already listed in `known_defects`.
+- **LSP and git performance plan:** folded into `apps/alpine-editor/src/AGENTS.md` (owner decision): server memory settings, memory-pressure shutdown, UTF-8 positions, typed decoding, an FSEvents watcher, `--no-optional-locks`, blame on the buffer and a HEAD blob cache, with background priority adopted only if the bench shows no response cost.
 - **Moved from the editor AGENTS.md for space:** `SelectionSet` and `Transaction` already handle multi-cursor, so phase 3 is an app-layer change.
 
 ## 2026-10-01: M0c and retired tracking

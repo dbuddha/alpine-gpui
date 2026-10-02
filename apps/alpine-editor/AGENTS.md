@@ -64,37 +64,9 @@ directory and nothing more. Every cache, history or result set declares a
 ceiling and eviction rule first. Degrade visibly on huge input; keep indexing
 and restore off the startup path.
 
-## Language intelligence: quiet by default (M4 target)
+## Language intelligence and git
 
-Today: one server per workspace and language, hard cap 5, idle shutdown of
-unattached slots, local-lexer highlighting, plus the `known_defects` above.
-rust-analyzer alone is 1 to 4 GB on a real crate.
-
-The M4 design:
-- Start a server on the first visible file of its language. Evict and shut down
-  off the main thread.
-- Incremental didChange from edit transactions, coalesced per tick, through a
-  bounded queue that merges when full. Typing never waits on a server.
-- Completion on trigger characters, a typing pause or a key: one request in
-  flight, cancelled on supersede, filtered locally as the prefix grows, details
-  resolved only for the selected item.
-- Hover on a key or a deliberate mouse rest; signature help on `(` and `,`;
-  code actions and references only when asked. Diagnostics render after a
-  typing pause, capped, visible range only. Inlay hints off by default. Never
-  semantic tokens.
-- Parse JSON off the main thread; admit results within a per-frame budget, by
-  document revision. Cancellation is advisory; local revocation by request ID
-  is authoritative. While a server indexes, suppress optional requests.
-- A missing server shows its install command. Never download one.
-
-## Git: the CLI, long-lived (M7 target)
-
-Detect the repository without spawning; start nothing until a feature needs it.
-One persistent `git cat-file --batch` serves file contents. The gutter diff runs
-on a worker after a typing pause. `git blame --porcelain -L` covers the visible
-range on demand. Read the branch from `.git/HEAD`. `git status
---porcelain=v2 -z` is debounced and capped. Stage and commit are explicit. At
-most two git processes, each with a timeout.
+Design rules for M4 and M7, and the M4 slices, live in src/AGENTS.md.
 
 ## Verification
 
