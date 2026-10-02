@@ -6,9 +6,9 @@ archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
 goals:
-  editor: daily driver that beats Zed at parity in core editing, navigation and search, language intelligence, and git
-  framework: beats Zed GPUI and is the best Metal framework for these apps; stability and durability before public API
-  later: a separate terminal app that hosts the editor as a native pane
+  editor: daily driver that beats Zed at parity (see apps/alpine-editor/AGENTS.md)
+  framework: beats Zed GPUI; stability and durability before public API
+  later: a separate terminal app hosting the editor as a pane
 beat_zed_on: [keypress_to_screen, memory_with_servers, frame_cadence, startup_and_big_inputs, reliability, energy, under_load]
 comparators:
   app: /Applications/Zed.app, version recorded on every bench row
@@ -36,7 +36,11 @@ milestones:
   - {id: M6, name: "editing parity, phase 3", status: planned}
   - {id: M7, name: "git and context, phase 4", status: planned}
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
-autonomy: "Deepak, 2026-09-30: agents may push branches, open PRs and merge in this repo, except ask_first"
+autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
+next:
+  - "M0e.1 #622 family: frames and close drains advance without display-link callbacks"
+  - "M0e.2 #533: crash stack from hosted CI, then fix what it shows"
+  - "M0e.3 require known-flaky-native after 10 clean hosted runs plus a 300-iteration native_wake run, then stop"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
@@ -55,8 +59,6 @@ confidence intervals, unfavorable results reported. Nothing is measured until
 M1 lands.
 
 ## Invariants
-
-Relaxing one is a product decision that needs approval.
 
 - No reactive graph and no general async executor. Work is demand-driven; a
   frame happens only when an invalidation asks. Idle submits nothing.
@@ -81,7 +83,6 @@ Relaxing one is a product decision that needs approval.
 - Installed app, fresh process, disposable HOME, AC power, quiet machine.
 - A comparison that does less work fails. Sample memory at semantic points; a
   bounded cache still fails if footprint never plateaus.
-- Metal validation on for correctness runs, off for timing runs.
 - Hosted runners expose "Apple Paravirtual device" and no display. They prove
   correctness, never timing, presentation or footprint.
 
@@ -100,7 +101,8 @@ Relaxing one is a product decision that needs approval.
 
 ## How the lead agent works
 
-- Merge routine PRs once gates pass; ask first for `ask_first` items.
+- Merge routine PRs once gates pass; ask first for `ask_first` items. Keep
+  `next:`, the loop's checklist, current in every PR.
 - One feature in flight. Explore agents search in parallel; a Plan agent
   drafts milestone designs; one implementer at a time works in its own
   worktree; a fresh-context reviewer checks every PR.
@@ -115,8 +117,9 @@ Relaxing one is a product decision that needs approval.
   4. checks evidence by change type: Dock-launch screenshot for UI, bench rows
      for performance paths, a real-server run for LSP, a failure-path test for
      data;
-  5. squash-merges, confirms main CI on the merged SHA, rebuilds the installed
-     app from main and smoke-tests it.
+  5. arms `gh pr merge --auto --squash --delete-branch` and the app's CI-failure
+     wake-up; any later push disarms it until steps 1-4 repeat. After merge:
+     main CI on the merged SHA, rebuild, smoke-test.
 - Milestone close: ten-trial bench run, frontmatter updated, one ARCHIVE line
   with numbers and PR links.
 - Two failed attempts on the same blocker: stop and ask.
@@ -153,13 +156,4 @@ into ARCHIVE.md. Issues and the board are retired; defects live in scoped
 
 ## Commands
 
-```sh
-cargo run --locked -p alpine-editor
-cargo test --locked -p <crate>
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo fmt --all -- --check
-scripts/check.sh
-scripts/check-native.sh physical shipping
-scripts/build-alpine-editor-app.sh
-scripts/launch-alpine-editor-app.sh <file-or-folder>
-```
+In crates/AGENTS.md.
