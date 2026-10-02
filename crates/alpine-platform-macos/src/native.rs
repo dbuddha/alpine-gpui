@@ -3850,8 +3850,9 @@ impl DisplayLinkDelegate {
         }
     }
 
-    // Ends callbacks without invalidate(): QuartzCore can still walk a link
-    // that is invalidated but not released, so only teardown invalidates.
+    // Ends callbacks without invalidate(). invalidate() races QuartzCore's
+    // display-change callback (#533), so only owner teardown, after the close,
+    // invalidates.
     fn retire_display_link(&self) {
         if self.ivars().display_link_retired.replace(true) {
             return;

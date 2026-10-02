@@ -1455,8 +1455,8 @@ pub mod native_validation {
             self.link_invalidations
         }
 
-        /// Returns display-link invalidations performed before the window
-        /// close finished, while `QuartzCore` could still walk the link.
+        /// Returns display-link invalidations made outside owner teardown,
+        /// which runs after the window close.
         #[must_use]
         pub const fn early_link_invalidations(self) -> u64 {
             self.early_link_invalidations

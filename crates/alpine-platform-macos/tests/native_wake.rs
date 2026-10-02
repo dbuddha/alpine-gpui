@@ -48,8 +48,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
-    // QuartzCore can walk an invalidated link while the window orders out,
-    // so the close only pauses and detaches it; teardown invalidates it.
+    // invalidate() can race QuartzCore's display-change callback during a
+    // close (#533), so the close only pauses and detaches the link.
     fn assert_link_kept_through_close(
         surface: &alpine_platform_macos::NativeSurface,
     ) -> Result<(), Box<dyn std::error::Error>> {
