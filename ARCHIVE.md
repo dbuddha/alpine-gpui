@@ -12,15 +12,15 @@ Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
   - #642: the warm-highlight test uses cache counters.
   - #643: drains are bounded by a pump count.
   - #644: the display link is invalidated only after the window close (#533).
-  - The M0e.3 PR folds known-flaky-native back into the required metal-validation job.
+  - #645: known-flaky-native folds back into the required metal-validation job.
 - **#622:** only display-link callbacks read GPU completion. A 40 ms frame-progress timer now runs only while a frame is in flight; it treats the link as silent after a full interval with no update, and finishes frames and closes. Tests failed on base with the exact stall signature.
-- **#533:** core dumps from same-VM A/B runs gave the first stacks: QuartzCore's display-change callback races `invalidate()` (disassembly in the #644 review). Moving `invalidate()` to owner teardown gave main 6 SIGSEGV in 10,000 hosted runs and the fix 0 in 10,000. A residual overlap at teardown is possible in theory.
+- **#533:** hosted `.ips` crash reports first gave the crash site: QuartzCore's display-change callback races `invalidate()` (disassembly in the #644 review). Core dumps from a same-VM A/B added the all-thread view. Moving `invalidate()` to owner teardown left main with 8 failures in 10,000 hosted runs (6 SIGSEGV, 2 drain timeouts) and the fix with 0 in 10,000 (runs 37032035015 and 37035759936). A residual overlap at teardown is possible in theory.
 - **Drain window:** 250 ms wall-clock drains became 200 pumps with a 2 s hang cap (owner decision). Healthy hosted drains had used up to 136 ms.
-- **Required again:** known-flaky-native passed 11 clean hosted runs after #641. Both of its runs moved back into metal-validation.
-- **Method:** throwaway `exp/*` branches, never merged, dispatch hosted runs: before and after rates, pump diagnostics, and a same-VM A/B with alternating order. Hosted runners write no `.ips` crash reports; core dumps need the `get-task-allow` entitlement, then `lldb -c`.
-- **Not qualified:** physical-display checks fail identically before and after these changes while the owner uses the Mac (`visible=Some(false)`). Physical evidence needs a hands-off window.
+- **Required again:** known-flaky-native passed 11 of 11 hosted runs after #641. That alone is weak evidence for #622: 11 clean runs would happen about 35% of the time unfixed. The real evidence is #641's tests, which fail on base. Both runs moved back into metal-validation.
+- **Method:** throwaway `exp/*` branches, never merged, dispatch hosted runs: before and after rates, pump diagnostics, and a same-VM A/B with alternating order. Hosted runners do write `.ips` crash reports to `~/Library/Logs/DiagnosticReports`, and metal-validation now uploads them on failure. Core dumps need the `get-task-allow` entitlement, then `lldb -c`.
+- **Not qualified:** physical-display checks failed identically before and after these changes while the owner used the Mac (`visible=Some(false)`, observed locally). Physical evidence needs a hands-off window, now scheduled with CP1.
 - **Main went red once** on a wall-clock unit test, which #641 did not cause. It became a cache-counter check (owner decision).
-- **Installed app** rebuilt from 26597c0 and smoke-tested with a disposable HOME: one on-screen window. phys_footprint swings from 30 to 121 MB within 10 s of launch, from graphics allocations (IOSurface drawables, reclaimable GPU memory), so single smoke samples are not comparable. M1's 1 Hz recorder measures it properly, including why an idle editor climbs back to 88 MB.
+- **Installed app** rebuilt from 26597c0 and smoke-tested with a disposable HOME: one on-screen window. Locally observed phys_footprint swung from 30 to 121 MB within 10 s of launch, from graphics allocations (IOSurface drawables, reclaimable GPU memory), so single smoke samples are not comparable. M1 (approved 2026-10-02) adds a 1 Hz recorder to measure this.
 
 ## 2026-10-02: M0 closed
 

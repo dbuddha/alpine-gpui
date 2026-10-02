@@ -28,7 +28,7 @@ budgets:
 milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
   - {id: M0e, name: "fix hosted native flakes", status: done}
-  - {id: M1, name: "measurement: perf recorder and bench", status: "next, design approval pending"}
+  - {id: M1, name: "measurement: perf recorder and bench", status: active}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
   - {id: M4, name: "language intelligence, phase 2 close", status: planned}
@@ -38,7 +38,10 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M1 kickoff: Deepak approves the measurement design and grants Screen Recording and Accessibility to the shell host"
+  - "M1.1 recorder: frame-stage rings, 1 Hz footprint per process, idle counters, menu export"
+  - "M1.2 bench/: orchestrator, Swift input and capture helpers, AppKit reference"
+  - "M1.3 CI work counters replace wall-clock asserts; 2.1 measures cold start"
+  - "M1.4 ten-trial baseline against Zed and AppKit, budgets set, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
