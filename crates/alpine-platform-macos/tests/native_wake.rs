@@ -51,6 +51,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
+    // invalidate() can race QuartzCore's display-change callback during a
+    // close (#533), so the close only pauses and detaches the link.
+    fn assert_link_kept_through_close(
+        surface: &alpine_platform_macos::NativeSurface,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let owners = native_validation::owner_evidence(surface).ok_or("close owner evidence")?;
+        assert_eq!(owners.link_invalidations(), 0, "{owners:?}");
+        assert!(surface.snapshot().display_link_paused());
+        Ok(())
+    }
+
+    fn assert_link_invalidated_after_close(owners: native_validation::NativeOwnerEvidence) {
+        assert_eq!(owners.link_invalidations(), 1, "{owners:?}");
+        assert_eq!(owners.early_link_invalidations(), 0, "{owners:?}");
+    }
+
     eprintln!("native_wake phase=revoked_surface.create.begin");
     let revoked_descriptor = SurfaceDescriptor::new("Alpine revoked worker wake", 96.0, 64.0, 1.0)?;
     let revoked_surface = native_validation::new_surface(&revoked_descriptor)?;
@@ -64,6 +80,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("native_wake phase=revoked_surface.close.begin");
     native_validation::close_window(&revoked_surface);
     assert_eq!(revoked_observer.lifecycle(), SurfaceLifecycle::Closing);
+    assert_link_kept_through_close(&revoked_surface)?;
     eprintln!("native_wake phase=revoked_surface.closed drain.begin");
     // The timer alone is not evidence that the queued main-queue wake ran.
     drain_native_callbacks(&revoked_surface, || {
@@ -78,6 +95,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("native_wake phase=revoked_surface.drained release.begin");
     let revoked_owners = native_validation::close_with_owner_evidence(revoked_surface)?;
     assert_eq!(revoked_owners.active(), [0; 10]);
+    assert_link_invalidated_after_close(revoked_owners);
     assert_eq!(revoked_owners.pasteboard_releases(), 0);
     assert_eq!(revoked_owners.release_order_violations(), 0);
     eprintln!("native_wake phase=revoked_surface.released");
@@ -148,6 +166,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     assert!(received[1] > received[0]);
     drop(received);
     assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+    assert_link_kept_through_close(&surface)?;
     assert_eq!(surface.snapshot().submission_count(), 0);
     assert_eq!(
         *admissions.lock().map_err(|_| "admissions poisoned")?,
@@ -172,6 +191,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let surface = Rc::try_unwrap(surface).map_err(|_| "native wake surface remained retained")?;
     let owners = native_validation::close_with_owner_evidence(surface)?;
     assert_eq!(owners.active(), [0; 10]);
+    assert_link_invalidated_after_close(owners);
     assert_eq!(owners.pasteboard_releases(), 0);
     assert_eq!(owners.release_order_violations(), 0);
     eprintln!("native_wake phase=worker_surface.released");

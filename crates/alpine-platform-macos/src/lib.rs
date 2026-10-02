@@ -892,6 +892,7 @@ pub mod native_validation {
         active: [u64; 10],
         run_loop_registrations: u64,
         link_invalidations: u64,
+        early_link_invalidations: u64,
         delegate_revocations: u64,
         window_closes: u64,
         pasteboard_releases: u64,
@@ -1452,6 +1453,7 @@ pub mod native_validation {
             active: [u64; 10],
             run_loop_registrations: u64,
             link_invalidations: u64,
+            early_link_invalidations: u64,
             delegate_revocations: u64,
             window_closes: u64,
             pasteboard_releases: u64,
@@ -1463,6 +1465,7 @@ pub mod native_validation {
                 active,
                 run_loop_registrations,
                 link_invalidations,
+                early_link_invalidations,
                 delegate_revocations,
                 window_closes,
                 pasteboard_releases,
@@ -1498,6 +1501,13 @@ pub mod native_validation {
         #[must_use]
         pub const fn link_invalidations(self) -> u64 {
             self.link_invalidations
+        }
+
+        /// Returns display-link invalidations made outside owner teardown,
+        /// which runs after the window close.
+        #[must_use]
+        pub const fn early_link_invalidations(self) -> u64 {
+            self.early_link_invalidations
         }
 
         /// Returns native delegate revocations performed before release.
@@ -1790,6 +1800,13 @@ pub mod native_validation {
         #[must_use]
         pub const fn observed(self) -> u64 {
             self.observed
+        }
+
+        /// Returns display-link callbacks that reached the delegate's driver
+        /// path, live or closing.
+        #[must_use]
+        pub const fn callback_observations(self) -> u64 {
+            self.callback_observations
         }
 
         /// Returns the last callback's portable-to-native directive.
@@ -2341,6 +2358,7 @@ pub mod native_validation {
                 [73, 79, 83, 89, 97, 101, 103, 107, 109, 113],
                 127,
                 131,
+                157,
                 137,
                 139,
                 149,
@@ -2358,6 +2376,7 @@ pub mod native_validation {
             );
             assert_eq!(evidence.run_loop_registrations(), 127);
             assert_eq!(evidence.link_invalidations(), 131);
+            assert_eq!(evidence.early_link_invalidations(), 157);
             assert_eq!(evidence.delegate_revocations(), 137);
             assert_eq!(evidence.window_closes(), 139);
             assert_eq!(evidence.pasteboard_releases(), 149);
