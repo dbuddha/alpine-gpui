@@ -68,6 +68,7 @@ and destroy elements before revoking the handler.
 - The release profile is `panic = "abort"`: `catch_unwind` protects only debug
   and test builds.
 - Never mutate the process environment after threads exist.
+- Metal validation on for correctness runs, off for timing runs.
 
 ## Native tests
 
@@ -83,3 +84,16 @@ Admitted: triple buffering, reusable upload memory, batching, offline built-in
 assets, GPU profiling. Rejected: GPUI's entity graph and global registries,
 tokio, WGPU/Naga/WGSL in shipping code, render graphs, ECS, CSS or flexbox
 layout, generalized animation, continuous game loops, MetalFX.
+
+## Commands
+
+```sh
+cargo run --locked -p alpine-editor
+cargo test --locked -p <crate>
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo fmt --all -- --check
+scripts/check.sh
+scripts/check-native.sh physical shipping
+scripts/build-alpine-editor-app.sh
+scripts/launch-alpine-editor-app.sh <file-or-folder>
+```
