@@ -27,7 +27,7 @@ budgets:
   language_servers: reported per server, not gated
 milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
-  - {id: M0e, name: "fix hosted native flakes", status: active}
+  - {id: M0e, name: "fix hosted native flakes", status: done}
   - {id: M1, name: "measurement: perf recorder and bench", status: "next, design approval pending"}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
@@ -38,7 +38,7 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M0e.3 make known-flaky-native required again after 10 clean hosted runs plus a 300-iteration native_wake run, then stop for the M1 kickoff"
+  - "M1 kickoff: Deepak approves the measurement design and grants Screen Recording and Accessibility to the shell host"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 

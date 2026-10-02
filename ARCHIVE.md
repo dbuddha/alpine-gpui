@@ -5,6 +5,23 @@ AGENTS.md files are. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
 
+## 2026-10-02: M0e closed
+
+- **Delivered:**
+  - #641: frames and closes finish without display-link updates (#622).
+  - #642: the warm-highlight test uses cache counters.
+  - #643: drains are bounded by a pump count.
+  - #644: the display link is invalidated only after the window close (#533).
+  - The M0e.3 PR folds known-flaky-native back into the required metal-validation job.
+- **#622:** only display-link callbacks read GPU completion. A 40 ms frame-progress timer now runs only while a frame is in flight; it treats the link as silent after a full interval with no update, and finishes frames and closes. Tests failed on base with the exact stall signature.
+- **#533:** core dumps from same-VM A/B runs gave the first stacks: QuartzCore's display-change callback races `invalidate()` (disassembly in the #644 review). Moving `invalidate()` to owner teardown gave main 6 SIGSEGV in 10,000 hosted runs and the fix 0 in 10,000. A residual overlap at teardown is possible in theory.
+- **Drain window:** 250 ms wall-clock drains became 200 pumps with a 2 s hang cap (owner decision). Healthy hosted drains had used up to 136 ms.
+- **Required again:** known-flaky-native passed 11 clean hosted runs after #641. Both of its runs moved back into metal-validation.
+- **Method:** throwaway `exp/*` branches, never merged, dispatch hosted runs: before and after rates, pump diagnostics, and a same-VM A/B with alternating order. Hosted runners write no `.ips` crash reports; core dumps need the `get-task-allow` entitlement, then `lldb -c`.
+- **Not qualified:** physical-display checks fail identically before and after these changes while the owner uses the Mac (`visible=Some(false)`). Physical evidence needs a hands-off window.
+- **Main went red once** on a wall-clock unit test, which #641 did not cause. It became a cache-counter check (owner decision).
+- **Installed app** rebuilt from 26597c0 and smoke-tested with a disposable HOME: one on-screen window. phys_footprint swings from 30 to 121 MB within 10 s of launch, from graphics allocations (IOSurface drawables, reclaimable GPU memory), so single smoke samples are not comparable. M1's 1 Hz recorder measures it properly, including why an idle editor climbs back to 88 MB.
+
 ## 2026-10-02: M0 closed
 
 - **Delivered:** #636 (docs and registry) and #637 (CI slimming) merged.
