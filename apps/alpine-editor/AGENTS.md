@@ -66,7 +66,7 @@ and restore off the startup path.
 
 ## Language intelligence and git
 
-Design rules and slice plans for M4 and M7 live in src/AGENTS.md.
+Design rules for M4 and M7, and the M4 slices, live in src/AGENTS.md.
 
 ## Verification
 
