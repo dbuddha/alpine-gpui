@@ -1,6 +1,6 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
-updated: 2026-10-01
+updated: 2026-10-02
 precedence: AGENTS.md files, code comments, README.md, vault notes
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md]
@@ -26,8 +26,9 @@ budgets:
   editor_footprint_steady: first M1 baseline plus 10 percent
   language_servers: reported per server, not gated
 milestones:
-  - {id: M0, name: "reset: docs, CI, hygiene", status: active}
-  - {id: M1, name: "measurement: perf recorder and bench", status: next}
+  - {id: M0, name: "reset: docs, CI, hygiene", status: done}
+  - {id: M0e, name: "fix hosted native flakes #533, #622", status: active}
+  - {id: M1, name: "measurement: perf recorder and bench", status: "next, design approval pending"}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
   - {id: M4, name: "language intelligence, phase 2 close", status: planned}
@@ -51,7 +52,7 @@ overrides vault notes about Alpine.
 Budgets in the frontmatter gate every PR on the dev Mac. "Beats Zed" is
 checked at each milestone close on matched workloads: ten fresh-process trials,
 confidence intervals, unfavorable results reported. Nothing is measured until
-M1 lands; hosted CI cannot measure it.
+M1 lands.
 
 ## Invariants
 
@@ -94,7 +95,8 @@ Relaxing one is a product decision that needs approval.
 - Guard latency invariants with deterministic work counters, not wall clocks.
   A bug fix lands with a test that fails before it (script fixes: manual
   evidence in the PR). Randomized tests print a
-  replayable seed. A flaky test is a defect, never a rerun.
+  replayable seed. A flaky test is a defect; re-run only a failure listed in
+  `known_defects`, and say so in the PR.
 
 ## How the lead agent works
 
@@ -131,8 +133,7 @@ fixes), Evidence, Risk and scope, Test plan. Update frontmatter in the same PR.
   line. Zed application (GPL) source never enters this repo; Apache-2.0 GPUI
   may appear only in `bench/`.
 - The app downloads and executes nothing at runtime.
-- Every bench row names its commit and dirty state; bundle stamps record the
-  tree state.
+- Bench rows and bundle stamps record commit and tree state.
 
 ## Docs and issues
 
@@ -141,14 +142,13 @@ implemented behavior and label targets as targets. A change that makes an
 instruction wrong corrects it. No ledgers, registries or scripts that test
 scripts. Code-local contracts are comments of at most 3 lines. Caps: this file
 1,200 words, scoped files 900; rules overflow into a scoped AGENTS.md, history
-into ARCHIVE.md. Issues and the Project board are retired; defects live in the
-scoped AGENTS.md `known_defects` lists and close with the fixing PR.
+into ARCHIVE.md. Issues and the board are retired; defects live in scoped
+`known_defects` lists and close with the fixing PR.
 
 ## Working rules
 
 - Inspect branch, upstream and dirty state. Preserve unfinished work.
-- Measure a differentiator before building on it.
-- Read the affected code and tests first; review the full diff.
+- Measure a difference before building on it.
 - Never publish secrets, rewrite published history or bypass protection.
 
 ## Commands
