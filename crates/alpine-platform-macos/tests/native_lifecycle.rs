@@ -378,6 +378,19 @@ mod validation {
         assert_eq!(snapshot.submitted_frame_slots(), 0);
         assert!(snapshot.display_link_paused());
 
+        // The link ran until the close drained; the close paused and detached
+        // it, so several display intervals deliver no update to the delegate.
+        let delivered = native_validation::pause_confirmation_evidence(&surface);
+        NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.1));
+        let after_close = native_validation::pause_confirmation_evidence(&surface);
+        assert_eq!(
+            after_close.callback_observations(),
+            delivered.callback_observations(),
+            "a display-link update reached the delegate after close: {after_close:?}"
+        );
+        let owners = native_validation::owner_evidence(&surface).ok_or("closed owner evidence")?;
+        assert_eq!(owners.link_invalidations(), 0, "{owners:?}");
+
         let admitted = observer.callback_count();
         let rejected = observer.rejected_callback_count();
         native_validation::inject_late_callback(&surface);
@@ -425,7 +438,9 @@ mod validation {
         timeout.cancel();
 
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
-        assert_eq!(owners.link_invalidations(), 1, "{owners:?}");
+        // The close pauses and detaches the link; teardown invalidates it.
+        assert_eq!(owners.link_invalidations(), 0, "{owners:?}");
+        assert_eq!(owners.early_link_invalidations(), 0, "{owners:?}");
         assert_eq!(owners.window_closes(), 1, "{owners:?}");
         assert_eq!(progress.timer_close_drains(), 1, "{progress:?}");
         assert!(!progress.timer_armed(), "{progress:?}");
@@ -951,6 +966,7 @@ mod validation {
         assert_eq!(evidence.active(), [0; OWNER_KINDS]);
         assert_eq!(evidence.run_loop_registrations(), 1);
         assert_eq!(evidence.link_invalidations(), 1);
+        assert_eq!(evidence.early_link_invalidations(), 0, "{evidence:?}");
         assert_eq!(evidence.delegate_revocations(), 1);
         assert_eq!(evidence.window_closes(), 1);
         assert_eq!(evidence.pasteboard_releases(), 0);

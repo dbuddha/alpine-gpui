@@ -708,6 +708,7 @@ mod validation {
             || evidence.active() != [0; 10]
             || evidence.run_loop_registrations() != 1
             || evidence.link_invalidations() != 1
+            || evidence.early_link_invalidations() != 0
             || evidence.delegate_revocations() != 1
             || evidence.window_closes() != 1
             || evidence.pasteboard_releases() != 0

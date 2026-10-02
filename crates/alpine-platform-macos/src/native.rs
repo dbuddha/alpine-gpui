@@ -324,8 +324,10 @@ struct InitializationProbeState {
     active: Cell<[u64; NATIVE_OWNER_KINDS]>,
     run_loop_registrations: Cell<u64>,
     link_invalidations: Cell<u64>,
+    early_link_invalidations: Cell<u64>,
     delegate_revocations: Cell<u64>,
     window_closes: Cell<u64>,
+    window_close_finished: Cell<bool>,
     pasteboard_releases: Cell<u64>,
     release_order_violations: Cell<u64>,
     window: RefCell<Option<Weak<NSWindow>>>,
@@ -366,6 +368,9 @@ impl InitializationProbe {
         self.0
             .link_invalidations
             .set(self.0.link_invalidations.get() + 1);
+        if !self.0.window_close_finished.get() {
+            increment_cell(&self.0.early_link_invalidations);
+        }
     }
 
     fn record_delegate_revocation(&self) {
@@ -376,6 +381,11 @@ impl InitializationProbe {
 
     fn record_window_close(&self) {
         self.0.window_closes.set(self.0.window_closes.get() + 1);
+    }
+
+    // Owner teardown calls this once no AppKit close can still be running.
+    fn record_window_close_finished(&self) {
+        self.0.window_close_finished.set(true);
     }
 
     fn record_window(&self, window: &Retained<NSWindow>) {
@@ -396,6 +406,7 @@ impl InitializationProbe {
             active,
             self.0.run_loop_registrations.get(),
             self.0.link_invalidations.get(),
+            self.0.early_link_invalidations.get(),
             self.0.delegate_revocations.get(),
             self.0.window_closes.get(),
             self.0.pasteboard_releases.get(),
@@ -2917,6 +2928,7 @@ struct DisplayLinkDelegateIvars {
     last_display_link_update: Cell<Option<Instant>>,
     frame_progress_seen_updates: Cell<u64>,
     frame_progress_timer: Cell<Option<FrameProgressTimer>>,
+    display_link_retired: Cell<bool>,
     display_link_invalidated: Cell<bool>,
     native_close_finished: Cell<bool>,
     #[cfg(alpine_native_validation)]
@@ -3818,10 +3830,7 @@ impl DisplayLinkDelegate {
         if self.ivars().native_close_finished.replace(true) {
             return;
         }
-        self.invalidate_display_link();
-        if let Some(display_link) = &self.ivars().display_link {
-            display_link.setDelegate(None);
-        }
+        self.retire_display_link();
         stop_event_loop(&self.ivars().application);
     }
 
@@ -3829,14 +3838,31 @@ impl DisplayLinkDelegate {
         let Some(display_link) = &self.ivars().display_link else {
             return;
         };
+        // A retired link has no delegate and must never resume.
+        if self.ivars().display_link_retired.get() {
+            return;
+        }
         match directive {
             DisplayLinkDirective::None => {}
             DisplayLinkDirective::Resume => display_link.setPaused(false),
             DisplayLinkDirective::Pause => display_link.setPaused(true),
-            DisplayLinkDirective::Invalidate => self.invalidate_display_link(),
+            DisplayLinkDirective::Invalidate => self.retire_display_link(),
         }
     }
 
+    // Ends callbacks without invalidate(): QuartzCore can still walk a link
+    // that is invalidated but not released, so only teardown invalidates.
+    fn retire_display_link(&self) {
+        if self.ivars().display_link_retired.replace(true) {
+            return;
+        }
+        if let Some(display_link) = &self.ivars().display_link {
+            display_link.setPaused(true);
+            display_link.setDelegate(None);
+        }
+    }
+
+    // Owner teardown only, after the window close and just before release.
     // Idempotent, so the validation probe counts only a real invalidate().
     fn invalidate_display_link(&self) {
         if self.ivars().display_link_invalidated.replace(true) {
@@ -4703,6 +4729,7 @@ impl NativeSurface {
                 last_display_link_update: Cell::new(None),
                 frame_progress_seen_updates: Cell::new(0),
                 frame_progress_timer: Cell::new(None),
+                display_link_retired: Cell::new(false),
                 display_link_invalidated: Cell::new(false),
                 native_close_finished: Cell::new(false),
                 #[cfg(alpine_native_validation)]
@@ -6111,19 +6138,18 @@ impl Drop for NativeSurface {
         if self.lifecycle.load(Ordering::Acquire) == SURFACE_LIVE {
             begin_close_observer_state(&self.lifecycle);
         }
-        // A close whose drain never finished still owns a live link. This is a
-        // no-op after a finished close, so every path invalidates exactly once.
-        self.delegate.invalidate_display_link();
+        // Pause and detach the link if no close did. It stays valid until
+        // the window close below has returned.
+        self.delegate.retire_display_link();
+        #[cfg(alpine_native_validation)]
+        if let Some(probe) = &self.validation_probe {
+            probe.record_delegate_revocation();
+        }
         // A reentrant windowWillClose callback may be unable to borrow the
         // driver while it still revokes callback admission. Owner teardown is
         // therefore the final idempotent shutdown boundary in both paths.
         if let Ok(mut driver) = self.driver.try_borrow_mut() {
             driver.shutdown(&self.counters);
-        }
-        self.display_link.setDelegate(None);
-        #[cfg(alpine_native_validation)]
-        if let Some(probe) = &self.validation_probe {
-            probe.record_delegate_revocation();
         }
         self.window.setDelegate(None);
         #[cfg(alpine_native_validation)]
@@ -6144,6 +6170,13 @@ impl Drop for NativeSurface {
                 probe.record_window_close();
             }
         }
+        // Every close path has returned, so invalidate exactly once here,
+        // just before the fields release the link.
+        #[cfg(alpine_native_validation)]
+        if let Some(probe) = &self.validation_probe {
+            probe.record_window_close_finished();
+        }
+        self.delegate.invalidate_display_link();
         finish_close_observer_state(&self.lifecycle);
     }
 }
@@ -6276,11 +6309,6 @@ impl Drop for NativeSurfaceBuilder {
         }
         if let Some(display_link) = &self.display_link {
             display_link.setPaused(true);
-            display_link.invalidate();
-            #[cfg(alpine_native_validation)]
-            if let Some(probe) = &self.validation_probe {
-                probe.record_link_invalidation();
-            }
             display_link.setDelegate(None);
             #[cfg(alpine_native_validation)]
             if let Some(probe) = &self.validation_probe {
@@ -6294,6 +6322,19 @@ impl Drop for NativeSurfaceBuilder {
             #[cfg(alpine_native_validation)]
             if let Some(probe) = &self.validation_probe {
                 probe.record_window_close();
+            }
+        }
+        // As in NativeSurface::drop: invalidate after the close, just before
+        // the fields release the link.
+        #[cfg(alpine_native_validation)]
+        if let Some(probe) = &self.validation_probe {
+            probe.record_window_close_finished();
+        }
+        if let Some(display_link) = &self.display_link {
+            display_link.invalidate();
+            #[cfg(alpine_native_validation)]
+            if let Some(probe) = &self.validation_probe {
+                probe.record_link_invalidation();
             }
         }
         #[cfg(alpine_native_validation)]
@@ -6423,6 +6464,11 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
             u64::from(owner_count > NativeOwnerKind::DisplayLink.index())
         );
         assert_eq!(
+            probe.0.early_link_invalidations.get(),
+            0,
+            "invalidation before window close after {stage:?}"
+        );
+        assert_eq!(
             probe.0.delegate_revocations.get(),
             u64::from(owner_count > NativeOwnerKind::Delegate.index())
         );
@@ -6448,6 +6494,7 @@ pub(crate) fn validate_initialization_rollback() -> Result<(), SurfaceError> {
     assert_eq!(active, [0; NATIVE_OWNER_KINDS]);
     assert_eq!(probe.0.run_loop_registrations.get(), 1);
     assert_eq!(probe.0.link_invalidations.get(), 1);
+    assert_eq!(probe.0.early_link_invalidations.get(), 0);
     assert_eq!(probe.0.delegate_revocations.get(), 1);
     assert_eq!(probe.0.window_closes.get(), 1);
     assert_eq!(probe.0.release_order_violations.get(), 0);
