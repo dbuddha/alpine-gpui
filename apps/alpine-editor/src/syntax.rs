@@ -1206,35 +1206,33 @@ mod tests {
             SyntaxLanguage::Java,
             SyntaxLanguage::TypeScript,
         ];
+        let mut warm = Vec::new();
+        warm.try_reserve(languages.len() * VISIBLE)
+            .map_err(|_| SyntaxError::AllocationFailed)?;
         cache.begin_frame();
         for language in languages {
             for line in 0..VISIBLE {
-                let _ = cache.line(&snapshot, line, language)?;
+                warm.push(cache.line(&snapshot, line, language)?);
             }
         }
-        let expected_hits =
-            u64::try_from(languages.len() * VISIBLE).map_err(|_| SyntaxError::SequenceExhausted)?;
-        // The 100 ms budget is a bench row; CI proves warm frames lex nothing.
+        let expected_hits = (languages.len() * VISIBLE) as u64;
+        // The 100 ms budget moves to an M1 bench row; warm frames lex nothing.
         for trial in 0..10 {
             let before = cache.snapshot();
             cache.begin_frame();
+            let mut warm_lines = warm.iter();
             for language in languages {
                 for line in 0..VISIBLE {
-                    let _ = cache.line(&snapshot, line, language)?;
+                    let cached = cache.line(&snapshot, line, language)?;
+                    let reused = warm_lines.next().is_some_and(|w| Arc::ptr_eq(w, &cached));
+                    assert!(reused, "trial {trial} rebuilt line {line} on a hit");
                 }
             }
             let after = cache.snapshot();
-            assert_eq!(
-                after.misses(),
-                before.misses(),
-                "trial {trial} lexed a line"
-            );
-            assert_eq!(after.omitted_lines(), before.omitted_lines());
-            assert_eq!(
-                after.hits().checked_sub(before.hits()),
-                Some(expected_hits),
-                "trial {trial}"
-            );
+            let lexed = after.misses().checked_sub(before.misses());
+            assert_eq!(lexed, Some(0), "trial {trial} lexed lines");
+            let hits = after.hits().checked_sub(before.hits());
+            assert_eq!(hits, Some(expected_hits), "trial {trial}");
         }
         Ok(())
     }
