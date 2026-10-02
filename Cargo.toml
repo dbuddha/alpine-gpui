@@ -12,7 +12,6 @@ members = [
   "crates/alpine-text-layout",
   "tools/alpine-assurance",
   "tools/alpine-ax-client",
-  "tools/alpine-trace",
 ]
 resolver = "3"
 

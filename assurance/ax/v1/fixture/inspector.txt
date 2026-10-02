@@ -1,3 +1,0 @@
-FIXTURE ONLY
-Accessibility Inspector: passed
-No physical capture is represented by this structural fixture.

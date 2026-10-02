@@ -1,7 +1,7 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
 updated: 2026-10-01
-precedence: AGENTS.md files, code comments, README.md, vault notes, issue text
+precedence: AGENTS.md files, code comments, README.md, vault notes
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
@@ -87,13 +87,13 @@ Relaxing one is a product decision that needs approval.
 ## Testing tiers
 
 - T0, before every commit: `cargo test --locked -p <crate>`, clippy, fmt.
-- T1, CI: build, test, clippy, fmt, deny. Native validation covers every crate
-  from M0c; today core, scene, renderer, platform and text crates skip it.
+- T1, CI on every change: build, test, clippy, fmt, deny and native validation.
 - T2, dev Mac bench (from M1): frame-path, startup, LSP or cache changes, and
   every milestone close.
 - T3, dogfood: the in-app perf recorder (from M1), local only.
 - Guard latency invariants with deterministic work counters, not wall clocks.
-  A bug fix lands with a test that fails before it. Randomized tests print a
+  A bug fix lands with a test that fails before it (script fixes: manual
+  evidence in the PR). Randomized tests print a
   replayable seed. A flaky test is a defect, never a rerun.
 
 ## How the lead agent works
@@ -131,17 +131,18 @@ fixes), Evidence, Risk and scope, Test plan. Update frontmatter in the same PR.
   line. Zed application (GPL) source never enters this repo; Apache-2.0 GPUI
   may appear only in `bench/`.
 - The app downloads and executes nothing at runtime.
-- Every bench row names its commit and dirty state; bundle stamps gain a dirty
-  flag in M0d.
+- Every bench row names its commit and dirty state; bundle stamps record the
+  tree state.
 
 ## Docs and issues
 
 Only AGENTS.md files, ARCHIVE.md and README.md, plus LICENSE.md. Document
 implemented behavior and label targets as targets. A change that makes an
-instruction wrong corrects it. No ledgers, registries or new scripts that test
+instruction wrong corrects it. No ledgers, registries or scripts that test
 scripts. Code-local contracts are comments of at most 3 lines. Caps: this file
 1,200 words, scoped files 900; rules overflow into a scoped AGENTS.md, history
-into ARCHIVE.md. Issues are a thin defect inbox closed by the fixing PR.
+into ARCHIVE.md. Issues and the Project board are retired; defects live in the
+scoped AGENTS.md `known_defects` lists and close with the fixing PR.
 
 ## Working rules
 

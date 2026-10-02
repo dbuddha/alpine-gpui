@@ -64,6 +64,7 @@ else
     esac
 fi
 
+supplied_executable=$executable
 if [ -z "$executable" ]; then
     if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
         printf 'app bundle error: release builds require Apple Silicon macOS\n' >&2
@@ -124,12 +125,18 @@ fi
 
 if [ -n "${ALPINE_BUNDLE_FIXTURE_REVISION-}" ]; then
     revision=$ALPINE_BUNDLE_FIXTURE_REVISION
+    tree=override
 else
     if [ -n "$(git -C "$repository_root" status --porcelain --untracked-files=normal)" ]; then
         printf 'app bundle error: revision-pinned bundle requires a clean worktree\n' >&2
         exit 1
     fi
     revision=$(git -C "$repository_root" rev-parse HEAD)
+    tree=clean
+fi
+# A supplied executable has no provable link to the revision above.
+if [ -n "$supplied_executable" ] && [ "$tree" = clean ]; then
+    tree=external
 fi
 case "$revision" in
     *[!0-9a-f]*|'')
@@ -211,6 +218,7 @@ plist_sha256=$(shasum -a 256 "$contents/Info.plist" | awk '{print $1}')
 cat > "$resources/alpine-build-identity.toml" <<EOF
 schema = "alpine-editor-dogfood-bundle/v1"
 revision = "$revision"
+tree = "$tree"
 workspace_version = "$workspace_version"
 build_profile = "release"
 target = "aarch64-apple-darwin"
@@ -234,6 +242,7 @@ if [ -e "$output" ]; then
     mv "$output" "$backup"
 fi
 if mv "$bundle" "$output"; then
+    rmdir "$staging_dir"
     staging_dir=
     if [ -e "$backup" ]; then
         rm -rf "$backup"

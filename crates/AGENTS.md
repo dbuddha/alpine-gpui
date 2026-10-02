@@ -1,7 +1,7 @@
 ---
 scope: framework crates under crates/
 parent: ../AGENTS.md
-updated: 2026-09-30
+updated: 2026-10-01
 ---
 
 # Framework internals
@@ -67,10 +67,10 @@ and destroy elements before revoking the handler.
 ## Native tests
 
 AppKit tests are `harness = false` main-thread executables that need
-`--cfg alpine_native_validation`; without it 13 of the 14 build an empty
-`main` and pass doing nothing (`native_surface` returns early instead). A
-test filter matching zero tests exits 0, so check the count. Hosted CI uses
-the test-only Metal route and `ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct`.
+`--cfg alpine_native_validation`; without it 13 of the 14 print a `skipped:`
+line and pass (`native_surface` returns early instead). A test filter
+matching zero tests exits 0, so check the count. Hosted CI uses the test-only
+Metal route and `ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct`.
 
 ## Technique boundary
 

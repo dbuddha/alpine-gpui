@@ -1,8 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Execute the union of the native package selections once. Mutator-copy
-# baselines remain enabled for explicitly requested assurance.
+# Execute the union of the native package selections once.
 if [ "${CARGO_INCREMENTAL:-}" != 0 ] ||
     [ "${RUSTFLAGS:-}" != '--cfg alpine_native_validation' ] ||
     [ "${ALPINE_PRESENTATION_EVIDENCE_MODE:-}" != hosted-direct ] ||
@@ -23,8 +22,7 @@ fi
 xcrun --sdk macosx --find metal
 xcrun --sdk macosx --find metallib
 
-# Do not use --all-features or a test-name filter: the failing mutator baselines
-# use these package sets with default features and the native validation cfg.
+# Default features and no test-name filter, so every native target runs.
 printf 'CI native admission: platform and Studio default-feature tests\n'
 mkdir -p target/native-acceptance
 log=$(mktemp target/native-acceptance/ci-admission.XXXXXX)
@@ -39,4 +37,4 @@ grep -Fxq 'alpine-native-process-complete scope=all' "$log" || {
     printf 'Native admission failed: process completion receipt missing; retained %s\n' "$log" >&2
     exit 1
 }
-printf 'CI native admission passed; mutation-copy baselines still required\n'
+printf 'CI native admission passed\n'

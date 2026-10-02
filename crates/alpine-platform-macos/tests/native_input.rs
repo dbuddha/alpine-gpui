@@ -297,4 +297,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64")))]
-fn main() {}
+fn main() {
+    assert!(
+        std::env::var_os("ALPINE_REQUIRE_NATIVE_VALIDATION").is_none(),
+        "native execution requested, but alpine_native_validation on Apple Silicon macOS is missing"
+    );
+    eprintln!("skipped: needs --cfg alpine_native_validation on Apple Silicon macOS");
+}

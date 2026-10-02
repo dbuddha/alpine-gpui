@@ -16,8 +16,6 @@ name = "alpine-assurance"
 version = "0.0.0"
 dependencies = [
  "alpine-ax-client",
- "alpine-metal",
- "alpine-trace",
  "serde",
  "serde_json",
  "toml",
@@ -130,15 +128,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-text",
-]
-
-[[package]]
-name = "alpine-trace"
-version = "0.0.0"
-dependencies = [
- "alpine-core",
- "alpine-metal",
- "alpine-scene",
 ]
 
 [[package]]

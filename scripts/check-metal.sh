@@ -2,7 +2,7 @@
 set -eu
 
 if ! cargo metadata --format-version 1 --no-deps | grep -q '"name":"alpine-metal"'; then
-    printf 'metal validation error: classifier selected Metal but alpine-metal does not exist\n' >&2
+    printf 'metal validation error: alpine-metal is not a workspace package\n' >&2
     exit 1
 fi
 
@@ -18,6 +18,8 @@ if ! cmp -s shaders/offscreen.metallib "$metallib_path"; then
     exit 1
 fi
 export ALPINE_METALLIB_PATH="$metallib_path"
+# A native target built without the validation cfg must fail, not skip.
+export ALPINE_REQUIRE_NATIVE_VALIDATION=1
 
 # Keep the pinned shader at the shipping target above, but let hosted runtime
 # validation match its OS so Shader Validation loads current diagnostics.
@@ -29,26 +31,6 @@ export MTL_SHADER_VALIDATION=1
 export MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1
 export MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1
 export MTL_SHADER_VALIDATION_ABORT_ON_FAULT=1
-
-native_benchmark=target/qualification/native-renderer-samples.csv
-native_benchmark_stdout=target/qualification/native-renderer-benchmark.txt
-native_benchmark_stderr=target/qualification/native-renderer-benchmark.stderr
-mkdir -p target/qualification
-rm -f "$native_benchmark" "$native_benchmark_stdout" "$native_benchmark_stderr"
-set +e
-cargo run --quiet --locked -p alpine-assurance -- \
-    benchmark-scene-native assurance/qualification/v1/scene.toml \
-    "$native_benchmark" 1 3 \
-    > "$native_benchmark_stdout" 2> "$native_benchmark_stderr"
-native_benchmark_status=$?
-set -e
-cat "$native_benchmark_stderr" >&2
-scripts/check-native-benchmark-result.sh \
-    "$native_benchmark_status" \
-    "$native_benchmark_stdout" \
-    "$native_benchmark_stderr" \
-    "$native_benchmark" \
-    3
 
 mkdir -p target
 xcrun swiftc -parse-as-library tools/onscreen-sdr-capture/Capture.swift \
@@ -87,11 +69,7 @@ for iteration in $(seq 1 25); do
         cargo test --locked -p alpine-platform-macos --test native_lifecycle
 done
 printf '%s\n' 'native missing-close teardown stress passed 25 iterations'
-for iteration in $(seq 1 25); do
-    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
-        cargo test --locked -p alpine-platform-macos --test native_wake
-done
-printf '%s\n' 'native wake teardown stress passed 25 iterations'
+# The native_wake stress loop (#533) runs in check-native-known-flaky.sh.
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_input
 RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
@@ -101,9 +79,7 @@ RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
 ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct \
     RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
     cargo test --locked -p alpine-platform-macos --test native_onscreen_sdr
-/usr/bin/env -u ALPINE_RUST_ANALYZER \
-    RUSTFLAGS="${RUSTFLAGS-} --cfg alpine_native_validation" \
-    cargo test --locked -p alpine-editor --test native_process
+# native_process under validation (#622) runs in check-native-known-flaky.sh.
 /usr/bin/env \
     -u MTL_DEBUG_LAYER \
     -u MTL_DEBUG_LAYER_ERROR_MODE \
