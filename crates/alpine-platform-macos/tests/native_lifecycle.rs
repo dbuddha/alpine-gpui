@@ -14,6 +14,7 @@ mod validation {
         io::Write,
         path::Path,
         process::{self, Command, ExitStatus},
+        rc::Rc,
         thread,
         time::{Duration, Instant},
     };
@@ -75,6 +76,7 @@ mod validation {
     const CHILD_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
     const MISSING_CLOSE_SCENARIO: &str = "missing-close-control";
     const POST_COMMIT_CLOSE_SCENARIO: &str = "post-commit-close";
+    const SILENT_CLOSE_SCENARIO: &str = "silent-close";
     const RESIDENT_POLICY_SCENARIO: &str = "resident-policy-controls";
 
     pub(super) fn run() -> TestResult {
@@ -88,6 +90,7 @@ mod validation {
         validate_resident_policy_controls()?;
         validate_bounded_child(MISSING_CLOSE_SCENARIO, Duration::from_secs(2))?;
         validate_bounded_child(POST_COMMIT_CLOSE_SCENARIO, Duration::from_secs(8))?;
+        validate_bounded_child(SILENT_CLOSE_SCENARIO, Duration::from_secs(8))?;
 
         let hosted_direct = hosted_direct()?;
         let (scene, clear) = validation_scene()?;
@@ -140,6 +143,10 @@ mod validation {
         if scenario == OsStr::new(POST_COMMIT_CLOSE_SCENARIO) {
             let (scene, clear) = validation_scene()?;
             return validate_post_commit_close(scene, clear, hosted_direct()?);
+        }
+        if scenario == OsStr::new(SILENT_CLOSE_SCENARIO) {
+            let (scene, clear) = validation_scene()?;
+            return validate_silent_close(scene, clear, hosted_direct()?);
         }
         if scenario == OsStr::new(RESIDENT_POLICY_SCENARIO) {
             return validate_resident_policy_controls();
@@ -266,6 +273,11 @@ mod validation {
         assert_eq!(after.current_retained_bytes(), 0);
         validate_bounded_accounting(after);
         assert!(after.display_link_paused());
+        // The frame-progress timer exists only while a frame is in flight.
+        assert_eq!(
+            native_validation::frame_progress_evidence(&surface),
+            native_validation::FrameProgressEvidence::default()
+        );
 
         assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
         Ok(())
@@ -374,6 +386,71 @@ mod validation {
         assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
         assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         assert_eq!(observer.callback_count(), admitted);
+        Ok(())
+    }
+
+    fn validate_silent_close(scene: Scene, clear: LinearRgba, hosted_direct: bool) -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine silent close", 96.0, 64.0, 1.0)?;
+        let surface = Rc::new(native_validation::new_surface(&descriptor)?);
+        let observer = surface.observer();
+        surface.show()?;
+        if hosted_direct || !surface.snapshot().is_presentation_visible() {
+            native_validation::inject_surface_configuration(&surface, 96.0, 64.0, 1.0, 0, true)?;
+        }
+        native_validation::inject_display_link_silence(&surface, true);
+        // Close from the callback that commits the frame: the close starts with
+        // the command in flight, and no later display-link update is delivered.
+        let closing = Rc::downgrade(&surface);
+        native_validation::set_active_frame_observer(
+            &surface,
+            Some(Box::new(move || {
+                if let Some(surface) = closing.upgrade() {
+                    native_validation::close_window(&surface);
+                }
+            })),
+        )?;
+        assert_eq!(surface.request_frame(scene, clear)?.get(), 1);
+        signal_child_ready()?;
+        let timeout = native_validation::arm_run_timeout(&surface, Duration::from_secs(5));
+        surface.run()?;
+        let progress = native_validation::frame_progress_evidence(&surface);
+        let owners =
+            native_validation::owner_evidence(&surface).ok_or("silent-close owner evidence")?;
+        assert!(
+            !timeout.expired(),
+            "a close with a frame in flight did not finish under display-link silence: progress={progress:?}, owners={owners:?}, completion={}, snapshot={:?}",
+            native_validation::completion_diagnostic(&surface),
+            surface.snapshot()
+        );
+        timeout.cancel();
+
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closing);
+        assert_eq!(owners.link_invalidations(), 1, "{owners:?}");
+        assert_eq!(owners.window_closes(), 1, "{owners:?}");
+        assert_eq!(progress.timer_close_drains(), 1, "{progress:?}");
+        assert!(!progress.timer_armed(), "{progress:?}");
+        assert_eq!(surface.take_error()?, None);
+        let snapshot = surface.snapshot();
+        let terminal = snapshot
+            .last_cancelled()
+            .ok_or("silent-close cancelled terminal evidence")?;
+        assert_eq!(terminal.attempt(), 1);
+        assert_eq!(terminal.requested_revision().get(), 1);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert_eq!(terminal.retained_bytes(), 0);
+        assert_eq!(snapshot.submission_count(), 1);
+        assert_eq!(snapshot.cancelled_count(), 1);
+        assert_eq!(snapshot.occupied_frame_slots(), 0);
+        assert_eq!(snapshot.submitted_frame_slots(), 0);
+        assert_eq!(snapshot.current_retained_bytes(), 0);
+        validate_bounded_accounting(snapshot);
+        assert!(snapshot.display_link_paused());
+
+        let surface = Rc::try_unwrap(surface).map_err(|_| "the close observer kept the surface")?;
+        assert_exact_teardown(native_validation::close_with_owner_evidence(surface)?);
+        assert_eq!(observer.lifecycle(), SurfaceLifecycle::Closed);
         Ok(())
     }
 
