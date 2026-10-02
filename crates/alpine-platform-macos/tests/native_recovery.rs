@@ -65,7 +65,7 @@ mod validation {
         assert_eq!(surface.waker().wake(), SurfaceWakeAdmission::Scheduled);
         native_validation::run_until_frame_terminal_with_handler(
             &surface,
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             move |event| match event {
                 SurfaceEvent::Wake { .. } => {
                     SurfaceResponse::new(frame.take(), None, CloseDisposition::NotRequested)

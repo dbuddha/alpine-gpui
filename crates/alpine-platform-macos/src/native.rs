@@ -2913,6 +2913,7 @@ struct DisplayLinkDelegateIvars {
     #[cfg(alpine_native_validation)]
     validation_probe: Option<InitializationProbe>,
     display_link_updates: Cell<u64>,
+    last_display_link_update: Cell<Option<Instant>>,
     frame_progress_seen_updates: Cell<u64>,
     frame_progress_timer: Cell<Option<FrameProgressTimer>>,
     display_link_invalidated: Cell<bool>,
@@ -2923,11 +2924,15 @@ struct DisplayLinkDelegateIvars {
     frame_progress: FrameProgressCounters,
 }
 
-// One display turn of a 30 Hz link is 33.3 ms. A live link therefore updates
-// between two ticks, and only a silent one lets the timer count presentation
-// polls. A silent frame still reaches a terminal state within three ticks.
+// A live 30 Hz link updates every 33.3 ms. A delayed tick pulls the next one
+// early, so silence needs no update since the last tick and none for a full
+// interval. A silent frame still ends within three ticks.
 const FRAME_PROGRESS_INTERVAL: Duration = Duration::from_millis(40);
 const FRAME_PROGRESS_TOLERANCE: Duration = Duration::from_millis(4);
+
+fn link_silent_for_tick(no_update_since_tick: bool, since_update: Option<Duration>) -> bool {
+    no_update_since_tick && since_update.is_none_or(|since| since >= FRAME_PROGRESS_INTERVAL)
+}
 
 // Owns the scheduled frame-progress timer; releasing it invalidates the timer.
 struct FrameProgressTimer(Retained<NSTimer>);
@@ -3808,10 +3813,10 @@ impl DisplayLinkDelegate {
     }
 
     fn finish_native_close(&self) {
+        self.cancel_frame_progress_timer();
         if self.ivars().native_close_finished.replace(true) {
             return;
         }
-        self.cancel_frame_progress_timer();
         self.invalidate_display_link();
         if let Some(display_link) = &self.ivars().display_link {
             display_link.setDelegate(None);
@@ -3876,6 +3881,9 @@ impl DisplayLinkDelegate {
     fn record_display_link_update(&self) {
         let updates = &self.ivars().display_link_updates;
         updates.set(updates.get().wrapping_add(1));
+        self.ivars()
+            .last_display_link_update
+            .set(Some(Instant::now()));
     }
 
     fn reconcile_frame_progress_timer(&self) {
@@ -3916,9 +3924,9 @@ impl DisplayLinkDelegate {
                     unsafe { timer.as_ref() }.invalidate();
                 }
             });
-        // SAFETY: The block captures only a weak main-thread delegate.
-        // Foundation copies it for the timer lifetime and passes a valid
-        // NSTimer on each call.
+        // SAFETY: objc2 asks for a sendable block and this one holds a non-Send
+        // Weak. That is sound because the timer is added only to the main run
+        // loop, so it fires and is invalidated on the main thread.
         let timer = unsafe {
             NSTimer::timerWithTimeInterval_repeats_block(
                 FRAME_PROGRESS_INTERVAL.as_secs_f64(),
@@ -3943,7 +3951,14 @@ impl DisplayLinkDelegate {
         #[cfg(alpine_native_validation)]
         increment_cell(&self.ivars().frame_progress.ticks);
         let updates = self.ivars().display_link_updates.get();
-        let link_silent = self.ivars().frame_progress_seen_updates.replace(updates) == updates;
+        let no_update_since_tick =
+            self.ivars().frame_progress_seen_updates.replace(updates) == updates;
+        let since_update = self
+            .ivars()
+            .last_display_link_update
+            .get()
+            .map(|at| at.elapsed());
+        let link_silent = link_silent_for_tick(no_update_since_tick, since_update);
         let Some(driver) = &self.ivars().driver else {
             self.cancel_frame_progress_timer();
             return;
@@ -4680,6 +4695,7 @@ impl NativeSurface {
                 #[cfg(alpine_native_validation)]
                 validation_probe: builder.validation_probe.clone(),
                 display_link_updates: Cell::new(0),
+                last_display_link_update: Cell::new(None),
                 frame_progress_seen_updates: Cell::new(0),
                 frame_progress_timer: Cell::new(None),
                 display_link_invalidated: Cell::new(false),
@@ -6703,6 +6719,16 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn frame_progress_counts_silence_only_after_a_quiet_interval() {
+        assert!(!link_silent_for_tick(false, None));
+        assert!(!link_silent_for_tick(false, Some(FRAME_PROGRESS_INTERVAL)));
+        // A tick pulled early by a delayed one, 9 ms after a live update.
+        assert!(!link_silent_for_tick(true, Some(Duration::from_millis(9))));
+        assert!(link_silent_for_tick(true, Some(FRAME_PROGRESS_INTERVAL)));
+        assert!(link_silent_for_tick(true, None));
     }
 
     #[test]

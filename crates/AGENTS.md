@@ -34,6 +34,10 @@ budgets; this file owns how the framework keeps them.
   `waitUntilCompleted` outside offscreen readback, no `presentAtTime` with
   CAMetalDisplayLink, no fourth command buffer when the three slots are busy.
 - Presentation telemetry never owns slot release.
+- In-flight frames and closes finish without display-link updates: a 40 ms
+  frame-progress timer, alive only while a frame is in flight, polls
+  completion, falls back once the link is silent and drains a close.
+  Drawables are released at GPU completion.
 - Each surface owns its revisions, epochs, display link and slots. One blocked
   or occluded surface must not stall another (panes, windows, later the
   terminal).
