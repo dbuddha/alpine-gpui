@@ -1,0 +1,29 @@
+[package]
+name = "alpine-bench"
+description = "Local black-box benchmark for Alpine Editor, Zed and an AppKit reference; never shipped"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.93.0"
+publish = false
+license-file = "../LICENSE.md"
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+# Its own workspace: the root workspace excludes bench/, and CI never builds
+# it because it needs a GUI session and two privacy permissions.
+[workspace]
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unwrap_used = "deny"
