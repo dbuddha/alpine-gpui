@@ -166,6 +166,30 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # Not required: ci-pass does not need this job. It runs the two known
+  # intermittent native failures (#533, #622) until they are fixed.
+  known-flaky-native:
+    name: known-flaky-native
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      ALPINE_VALIDATION_DEPLOYMENT_TARGET: "26.0"
+      ALPINE_PRESENTATION_EVIDENCE_MODE: hosted-direct
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Cargo downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Run the known intermittent native checks
+        run: scripts/check-native-known-flaky.sh
+
   ci-pass:
     name: ci-pass
     if: ${{ always() }}
