@@ -75,6 +75,9 @@ mod validation {
     const CHILD_READY_ENV: &str = "ALPINE_NATIVE_LIFECYCLE_READY";
     const CHILD_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
     const MISSING_CLOSE_SCENARIO: &str = "missing-close-control";
+    // The missing-close child runs under a 2 s bound; a 1 s drain cap lets a
+    // miss print its report before the parent kills the child.
+    const MISSING_CLOSE_DRAIN_CAP: Duration = Duration::from_secs(1);
     const POST_COMMIT_CLOSE_SCENARIO: &str = "post-commit-close";
     const SILENT_CLOSE_SCENARIO: &str = "silent-close";
     const RESIDENT_POLICY_SCENARIO: &str = "resident-policy-controls";
@@ -244,7 +247,11 @@ mod validation {
         native_validation::close_window(&surface);
         let drain = native_validation::arm_run_loop_drain_marker(&surface);
         assert!(!drain.executed());
-        let report = drain_run_loop_until(&drain);
+        let report = native_validation::drain_run_loop(
+            || drain.executed(),
+            native_validation::RUN_LOOP_DRAIN_PUMPS,
+            MISSING_CLOSE_DRAIN_CAP,
+        );
         assert!(
             drain.executed(),
             "missing-close drain marker did not run: {report:?}"

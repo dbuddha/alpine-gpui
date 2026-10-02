@@ -741,7 +741,7 @@ pub mod native_validation {
     /// Pumps one run-loop drain may take before it reports a miss.
     pub const RUN_LOOP_DRAIN_PUMPS: u32 = 200;
 
-    /// Wall-clock cap that ends a drain whose pumps hang.
+    /// Wall-clock cap, checked between pumps, for a drain whose pumps run long.
     pub const RUN_LOOP_DRAIN_HANG_CAP: Duration = Duration::from_secs(2);
 
     /// Evidence that bounds a production event-loop validation run.
@@ -1860,14 +1860,18 @@ pub mod native_validation {
         RunLoopDrainEvidence { executed }
     }
 
-    /// Pumps the main run loop until `drained` holds, checking after each
-    /// pump, for at most `max_pumps` pumps or until `hang_cap` has elapsed.
-    /// The report says how the drain ended.
+    /// Pumps the main run loop (main thread only) until `drained` holds,
+    /// checking after each pump, for at most `max_pumps` pumps or until
+    /// `hang_cap` has elapsed. The report says how the drain ended.
     pub fn drain_run_loop(
         mut drained: impl FnMut() -> bool,
         max_pumps: u32,
         hang_cap: Duration,
     ) -> DrainReport {
+        assert!(
+            objc2::MainThreadMarker::new().is_some(),
+            "drain_run_loop pumps the main run loop and must run on the main thread"
+        );
         let started = Instant::now();
         let mut report = DrainReport::default();
         while report.pumps < max_pumps {

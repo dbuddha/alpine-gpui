@@ -6002,6 +6002,10 @@ fn stop_validation_event_loop(application: &NSApplication) {
 
 #[cfg(alpine_native_validation)]
 fn schedule_run_loop_drain_marker(executed: Arc<AtomicBool>) {
+    assert!(
+        MainThreadMarker::new().is_some(),
+        "drain markers schedule on the main run loop"
+    );
     let marker_block: RcBlock<dyn Fn(NonNull<NSTimer>)> =
         RcBlock::new(move |timer: NonNull<NSTimer>| {
             // SAFETY: Foundation supplies a valid borrowed timer for the
@@ -6009,9 +6013,9 @@ fn schedule_run_loop_drain_marker(executed: Arc<AtomicBool>) {
             unsafe { timer.as_ref() }.invalidate();
             executed.store(true, Ordering::Release);
         });
-    // SAFETY: The block is scheduled on the process main run loop,
-    // Foundation copies it for the timer lifetime, and the callback
-    // receives a valid NSTimer. The scheduled timer retains itself.
+    // SAFETY: Asserted on the main thread, so this schedules on the main run
+    // loop. Foundation copies the block for the timer lifetime and passes a
+    // valid NSTimer; the scheduled timer retains itself.
     let _timer =
         unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &marker_block) };
 }
