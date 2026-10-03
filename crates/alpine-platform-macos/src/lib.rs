@@ -24,7 +24,7 @@ pub use accessibility::*;
 mod recorder;
 #[cfg(any(test, feature = "test-support"))]
 pub use recorder::start_recorder_for_test;
-pub use recorder::{RecorderSnapshot, sample_processes};
+pub use recorder::{RecorderSnapshot, SampledChildren, sample_processes};
 mod signpost;
 pub use signpost::*;
 

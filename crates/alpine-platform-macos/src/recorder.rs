@@ -15,6 +15,9 @@ use crate::{EditorSignpost, EditorSignpostStage};
 const FRAME_CAPACITY: usize = 4_096;
 const SAMPLE_CAPACITY: usize = 3_600;
 const MAX_CHILDREN: usize = 6;
+const MAX_SERVERS: usize = 16;
+const SERVER_NAME_BYTES: usize = 64;
+const NO_SERVER: u8 = u8::MAX;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const ABSENT: u32 = u32::MAX;
 
@@ -28,7 +31,7 @@ const FRAME_HEADER: &str = concat!(
     "\ttarget_present_ns\tpresented_ns\trecorded_ns\n",
 );
 const SAMPLE_HEADER: &str = concat!(
-    "time_ns\trole\tpid\tphys_footprint\tcpu_ns",
+    "time_ns\trole\tpid\tserver\tphys_footprint\tcpu_ns",
     "\tinterrupt_wakeups\tidle_wakeups\tsubmissions\n",
 );
 const STAGE_COUNT: usize = 16;
@@ -126,7 +129,8 @@ pub(crate) struct TaskUsage {
     pub(crate) idle_wakeups: u64,
 }
 
-// Footprints are phys_footprint bytes; zero means the read failed.
+// Footprints are phys_footprint bytes; zero means the read failed. Servers
+// index the recorder's server names.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ProcessSample {
     time_ns: u64,
@@ -134,13 +138,67 @@ struct ProcessSample {
     usage: Option<TaskUsage>,
     submissions: u64,
     child_pids: [u32; MAX_CHILDREN],
+    child_servers: [u8; MAX_CHILDREN],
     child_footprints: [u64; MAX_CHILDREN],
 }
 
 // The whole reservation stays under the recorder's 1 MiB ceiling.
-const RESERVED_BYTES: usize =
-    FRAME_CAPACITY * size_of::<FrameRecord>() + SAMPLE_CAPACITY * size_of::<ProcessSample>();
+const RESERVED_BYTES: usize = FRAME_CAPACITY * size_of::<FrameRecord>()
+    + SAMPLE_CAPACITY * size_of::<ProcessSample>()
+    + MAX_SERVERS * (size_of::<Box<str>>() + SERVER_NAME_BYTES);
 const _: () = assert!(RESERVED_BYTES <= 1 << 20);
+const _: () = assert!(MAX_SERVERS < NO_SERVER as usize);
+
+// Each server name once, never evicted. An empty name, one with a control
+// character, or one arriving after the table fills is recorded as unknown.
+#[derive(Debug)]
+struct ServerNames(Vec<Box<str>>);
+
+impl ServerNames {
+    fn new() -> Self {
+        Self(Vec::with_capacity(MAX_SERVERS))
+    }
+
+    fn index(&mut self, name: &str) -> u8 {
+        let name = &name[..name.floor_char_boundary(SERVER_NAME_BYTES)];
+        if name.is_empty() || name.contains(char::is_control) {
+            return NO_SERVER;
+        }
+        let index = match self.0.iter().position(|known| **known == *name) {
+            Some(index) => index,
+            None if self.0.len() < MAX_SERVERS => {
+                self.0.push(Box::from(name));
+                self.0.len() - 1
+            }
+            None => return NO_SERVER,
+        };
+        u8::try_from(index).unwrap_or(NO_SERVER)
+    }
+}
+
+/// The language servers one process sample reads, beyond the editor.
+pub struct SampledChildren<'a> {
+    names: &'a mut ServerNames,
+    pids: [u32; MAX_CHILDREN],
+    servers: [u8; MAX_CHILDREN],
+    len: usize,
+}
+
+impl SampledChildren<'_> {
+    /// Adds a running child and its server's name, such as `rust-analyzer`.
+    /// A zero PID is ignored, and children past the sixth are not read.
+    pub fn push(&mut self, pid: u32, server: &str) {
+        if pid == 0 {
+            return;
+        }
+        let slots = (self.pids.get_mut(self.len), self.servers.get_mut(self.len));
+        if let (Some(slot), Some(name)) = slots {
+            *slot = pid;
+            *name = self.names.index(server);
+            self.len += 1;
+        }
+    }
+}
 
 /// Capacity reserved once; pushing past it overwrites the oldest item.
 #[derive(Debug)]
@@ -186,6 +244,7 @@ struct Recorder {
     pending: Option<Pending>,
     frames: Ring<FrameRecord>,
     samples: Ring<ProcessSample>,
+    servers: ServerNames,
     last_sample: Option<Instant>,
     submissions: u64,
     work: u64,
@@ -199,6 +258,7 @@ impl Recorder {
             pending: None,
             frames: Ring::new(FRAME_CAPACITY),
             samples: Ring::new(SAMPLE_CAPACITY),
+            servers: ServerNames::new(),
             last_sample: None,
             submissions: 0,
             work: 0,
@@ -246,24 +306,30 @@ impl Recorder {
     fn sample(
         &mut self,
         now: Instant,
-        children: &[u32],
+        children: impl FnOnce(&mut SampledChildren<'_>),
         footprint: impl Fn(u32) -> Option<u64>,
         usage: Option<TaskUsage>,
     ) {
+        let mut sampled = SampledChildren {
+            names: &mut self.servers,
+            pids: [0; MAX_CHILDREN],
+            servers: [NO_SERVER; MAX_CHILDREN],
+            len: 0,
+        };
+        children(&mut sampled);
+        let SampledChildren { pids, servers, .. } = sampled;
         let mut sample = ProcessSample {
             time_ns: self.clock_ns(now),
             footprint: footprint(std::process::id()).unwrap_or(0),
             usage,
             submissions: self.submissions,
-            ..ProcessSample::default()
+            child_pids: pids,
+            child_servers: servers,
+            child_footprints: [0; MAX_CHILDREN],
         };
-        let slots = sample
-            .child_pids
-            .iter_mut()
-            .zip(&mut sample.child_footprints);
-        for ((pid, bytes), &child) in slots.zip(children) {
-            *pid = child;
-            *bytes = footprint(child).unwrap_or(0);
+        let reads = sample.child_footprints.iter_mut().zip(pids);
+        for (bytes, pid) in reads.filter(|(_, pid)| *pid != 0) {
+            *bytes = footprint(pid).unwrap_or(0);
         }
         self.samples.push(sample);
         self.last_sample = Some(now);
@@ -324,19 +390,17 @@ pub(crate) fn record_frame(frame: FrameRecord, base: Instant, submissions: u8) {
 }
 
 /// Samples this process and up to six children, at most once a second.
-/// `children` fills child PIDs and returns the count; it runs only when a
+/// `children` adds each running language server; it runs only when a
 /// sample is due. Call it from event handling, so idle takes no samples.
-pub fn sample_processes(children: impl FnOnce(&mut [u32]) -> usize) {
+pub fn sample_processes(children: impl FnOnce(&mut SampledChildren<'_>)) {
     let _ = with_recorder(|recorder| {
         let now = Instant::now();
         if !recorder.sample_due(now) {
             return;
         }
-        let mut pids = [0; MAX_CHILDREN];
-        let count = children(&mut pids).min(MAX_CHILDREN);
         let usage = crate::implementation::task_usage();
         let footprint = crate::implementation::phys_footprint;
-        recorder.sample(now, &pids[..count], footprint, usage);
+        recorder.sample(now, children, footprint, usage);
     });
 }
 
@@ -354,6 +418,7 @@ pub fn start_recorder_for_test() {
 pub struct RecorderSnapshot {
     frames: Vec<FrameRecord>,
     samples: Vec<ProcessSample>,
+    servers: Vec<Box<str>>,
     work: u64,
 }
 
@@ -369,8 +434,13 @@ impl RecorderSnapshot {
         Self {
             frames: recorder.frames.to_vec(),
             samples: recorder.samples.to_vec(),
+            servers: recorder.servers.0.clone(),
             work: recorder.work,
         }
+    }
+
+    fn server(&self, index: u8) -> &str {
+        self.servers.get(usize::from(index)).map_or("", |name| name)
     }
 
     /// Returns the number of retained frame records.
@@ -414,22 +484,25 @@ impl RecorderSnapshot {
         Ok(())
     }
 
-    /// Writes a header and one TSV row per process per sample.
+    /// Writes a header and one TSV row per process per sample. A child row
+    /// names its server, or leaves `server` empty when the name is unknown.
     /// # Errors
     /// Returns the first error from `out`.
     pub fn write_samples_tsv(&self, out: &mut impl Write) -> io::Result<()> {
         out.write_all(SAMPLE_HEADER.as_bytes())?;
         let editor = std::process::id();
         for sample in &self.samples {
-            write!(out, "{}\teditor\t{editor}", sample.time_ns)?;
+            write!(out, "{}\teditor\t{editor}\t", sample.time_ns)?;
             field(out, (sample.footprint != 0).then_some(sample.footprint))?;
             field(out, sample.usage.map(|usage| usage.cpu_ns))?;
             field(out, sample.usage.map(|usage| usage.interrupt_wakeups))?;
             field(out, sample.usage.map(|usage| usage.idle_wakeups))?;
             writeln!(out, "\t{}", sample.submissions)?;
-            let children = sample.child_pids.iter().zip(sample.child_footprints);
-            for (pid, bytes) in children.filter(|(pid, _)| **pid != 0) {
-                write!(out, "{}\tlanguage-server\t{pid}", sample.time_ns)?;
+            let children = sample.child_pids.iter().zip(sample.child_servers);
+            let children = children.zip(sample.child_footprints);
+            for ((pid, server), bytes) in children.filter(|((pid, _), _)| **pid != 0) {
+                let server = self.server(server);
+                write!(out, "{}\tlanguage-server\t{pid}\t{server}", sample.time_ns)?;
                 field(out, (bytes != 0).then_some(bytes))?;
                 out.write_all(b"\t\t\t\t\n")?;
             }
@@ -517,7 +590,7 @@ mod tests {
         }
         let mut now = origin;
         for _ in 0..SAMPLE_CAPACITY + 7 {
-            recorder.sample(now, &[], |_| Some(1), None);
+            recorder.sample(now, |_| {}, |_| Some(1), None);
             now += SAMPLE_INTERVAL;
         }
         let after = [
@@ -592,8 +665,12 @@ mod tests {
             idle_wakeups: 13,
         };
         let footprint = |pid: u32| (pid != 42).then_some(4_096);
-        recorder.sample(nanos_after(origin, 5), &[41, 42], footprint, Some(usage));
-        recorder.sample(nanos_after(origin, 6), &[], |_| None, None);
+        let children = |children: &mut SampledChildren<'_>| {
+            children.push(41, "rust-analyzer");
+            children.push(42, "");
+        };
+        recorder.sample(nanos_after(origin, 5), children, footprint, Some(usage));
+        recorder.sample(nanos_after(origin, 6), |_| {}, |_| None, None);
         let snapshot = RecorderSnapshot::of(&recorder);
         let frames = tsv(|out| snapshot.write_frames_tsv(out))?;
         let mut lines = frames.lines();
@@ -617,12 +694,37 @@ mod tests {
         let samples = tsv(|out| snapshot.write_samples_tsv(out))?;
         let expected = [
             SAMPLE_HEADER.trim_end().to_owned(),
-            format!("5\teditor\t{editor}\t4096\t11\t12\t13\t0"),
-            "5\tlanguage-server\t41\t4096\t\t\t\t".to_owned(),
-            "5\tlanguage-server\t42\t\t\t\t\t".to_owned(),
-            format!("6\teditor\t{editor}\t\t\t\t\t0"),
+            format!("5\teditor\t{editor}\t\t4096\t11\t12\t13\t0"),
+            "5\tlanguage-server\t41\trust-analyzer\t4096\t\t\t\t".to_owned(),
+            "5\tlanguage-server\t42\t\t\t\t\t\t".to_owned(),
+            format!("6\teditor\t{editor}\t\t\t\t\t\t0"),
         ];
         assert_eq!(samples.lines().collect::<Vec<_>>(), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn server_names_are_kept_once_in_a_bounded_tsv_safe_table() -> Result<(), Box<dyn Error>> {
+        let mut names = ServerNames::new();
+        let reserved = (names.0.capacity(), names.0.as_ptr().addr());
+        assert_eq!(names.index("rust-analyzer"), 0);
+        assert_eq!(names.index("clangd"), 1);
+        assert_eq!(names.index("rust-analyzer"), 0);
+        for unknown in ["", "two\twords", "line\nbreak"] {
+            assert_eq!(names.index(unknown), NO_SERVER);
+        }
+        // Truncation keeps whole characters: 21 three-byte euros fit in 64.
+        assert_eq!(names.index(&"\u{20ac}".repeat(SERVER_NAME_BYTES)), 2);
+        assert_eq!(names.0.get(2).map(|name| name.len()), Some(63));
+        for index in 3..MAX_SERVERS {
+            assert_eq!(
+                names.index(&format!("server-{index}")),
+                u8::try_from(index)?
+            );
+        }
+        assert_eq!(names.index("one-too-many"), NO_SERVER);
+        assert_eq!(names.index("clangd"), 1);
+        assert_eq!((names.0.capacity(), names.0.as_ptr().addr()), reserved);
         Ok(())
     }
 
@@ -660,12 +762,9 @@ mod tests {
     #[test]
     fn events_sample_at_most_once_a_second_and_idle_samples_nothing() {
         let calls = Cell::new(0_u32);
-        let children = |out: &mut [u32]| {
+        let children = |children: &mut SampledChildren<'_>| {
             calls.set(calls.get() + 1);
-            if let Some(slot) = out.first_mut() {
-                *slot = std::process::id();
-            }
-            1
+            children.push(std::process::id(), "self");
         };
         sample_processes(children);
         assert_eq!((RecorderSnapshot::capture().work(), calls.get()), (0, 0));
@@ -681,7 +780,7 @@ mod tests {
         let origin = Instant::now();
         let mut recorder = Recorder::new(origin, 0.0);
         assert!(recorder.sample_due(origin));
-        recorder.sample(origin, &[], |_| None, None);
+        recorder.sample(origin, |_| {}, |_| None, None);
         assert!(!recorder.sample_due(nanos_after(origin, 999_999_999)));
         assert!(recorder.sample_due(origin + SAMPLE_INTERVAL));
     }

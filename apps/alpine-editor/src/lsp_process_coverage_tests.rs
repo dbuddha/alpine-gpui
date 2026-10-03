@@ -1289,12 +1289,7 @@ fn recorder_samples_the_running_child_and_forgets_it_once_stopped() -> Result<()
     };
     assert_eq!(process.process_id(), Some(process_id));
     alpine_platform_macos::start_recorder_for_test();
-    alpine_platform_macos::sample_processes(|children| {
-        children.first_mut().map_or(0, |slot| {
-            *slot = process_id;
-            1
-        })
-    });
+    alpine_platform_macos::sample_processes(|children| children.push(process_id, "cat"));
     let mut tsv = Vec::new();
     alpine_platform_macos::RecorderSnapshot::capture().write_samples_tsv(&mut tsv)?;
     let tsv = String::from_utf8(tsv)?;
@@ -1304,10 +1299,11 @@ fn recorder_samples_the_running_child_and_forgets_it_once_stopped() -> Result<()
         .ok_or("child row")?;
     let fields: Vec<&str> = row.split('\t').collect();
     assert_eq!(fields.get(2), Some(&process_id.to_string().as_str()));
+    assert_eq!(fields.get(3), Some(&"cat"));
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     assert!(
         fields
-            .get(3)
+            .get(4)
             .is_some_and(|bytes| bytes.parse::<u64>().is_ok_and(|bytes| bytes > 0))
     );
     let _ = process.shutdown();

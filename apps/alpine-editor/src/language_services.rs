@@ -136,18 +136,12 @@ impl LanguageServices {
         self.slots.len()
     }
 
-    /// Writes running servers' process IDs into `out` and returns the count.
-    pub(crate) fn server_process_ids(&self, out: &mut [u32]) -> usize {
+    /// Running servers' process IDs, each with its executable's file name.
+    pub(crate) fn server_processes(&self) -> impl Iterator<Item = (u32, &str)> {
         let models = self.slots.iter().map(|slot| &slot.model);
-        let running = models
+        models
             .chain([&self.fallback])
-            .filter_map(RustDiagnostics::server_process_id);
-        let mut count = 0;
-        for (slot, process_id) in out.iter_mut().zip(running) {
-            *slot = process_id;
-            count += 1;
-        }
-        count
+            .filter_map(|model| Some((model.server_process_id()?, model.server_name())))
     }
 
     #[cfg(test)]

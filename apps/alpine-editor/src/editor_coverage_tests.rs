@@ -8544,6 +8544,54 @@ fn idle_editor_records_nothing_and_events_sample_at_most_once_a_second()
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn performance_samples_name_the_server_on_each_child_row() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    let server = rust_diagnostics::tests::mock_executable();
+    app.rust_diagnostics = LanguageServices::from(RustDiagnostics::with_server(server));
+    let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(1),
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let process_id = loop {
+        if let Some(process_id) = runtime.delegate().rust_diagnostics.server_process_id() {
+            break process_id;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("the mock server never published its PID".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    // Recording starts now, so the next event's sample sees the server.
+    alpine_platform_macos::start_recorder_for_test();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(2),
+    });
+    let mut tsv = Vec::new();
+    RecorderSnapshot::capture().write_samples_tsv(&mut tsv)?;
+    let tsv = String::from_utf8(tsv)?;
+    let header: Vec<&str> = tsv.lines().next().ok_or("header")?.split('\t').collect();
+    let column = header
+        .iter()
+        .position(|name| *name == "server")
+        .ok_or("server column")?;
+    let row = tsv
+        .lines()
+        .find(|line| line.contains("\tlanguage-server\t"))
+        .ok_or("child row")?;
+    let fields: Vec<&str> = row.split('\t').collect();
+    assert_eq!(fields.get(2), Some(&process_id.to_string().as_str()));
+    let name = server.file_name().and_then(std::ffi::OsStr::to_str);
+    assert_eq!(fields.get(column).copied(), name);
+    Ok(())
+}
+
+#[test]
 fn performance_log_writes_both_tables_under_library_logs() -> Result<(), Box<dyn Error>> {
     let home = TestWorkspace::new()?;
     let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_759_400_000);
@@ -8553,7 +8601,7 @@ fn performance_log_writes_both_tables_under_library_logs() -> Result<(), Box<dyn
     assert_eq!(frames, logs.join("perf-1759400000-frames.tsv"));
     assert!(fs::read_to_string(&frames)?.starts_with("event\trevision\toutcome\tevent_ns\t"));
     let samples = fs::read_to_string(logs.join("perf-1759400000-samples.tsv"))?;
-    assert!(samples.starts_with("time_ns\trole\tpid\tphys_footprint\t"));
+    assert!(samples.starts_with("time_ns\trole\tpid\tserver\tphys_footprint\t"));
     for missing in [None, Some(std::ffi::OsString::new())] {
         assert!(super::profiling::write_performance_log(missing, at, &snapshot).is_err());
     }

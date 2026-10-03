@@ -8185,7 +8185,9 @@ impl AppDelegate for EditorApp {
             [surface_event_kind(event), self.selection_revision, 0],
         );
         alpine_platform_macos::sample_processes(|children| {
-            self.rust_diagnostics.server_process_ids(children)
+            for (process_id, server) in self.rust_diagnostics.server_processes() {
+                children.push(process_id, server);
+            }
         });
         if let SurfaceEvent::Accessibility { request, .. } = event {
             let (queries, actions) = dogfood_accessibility_delta(request.kind());
