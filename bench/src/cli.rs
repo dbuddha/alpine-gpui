@@ -278,10 +278,12 @@ fn zed_isolation(
         println!("{line}");
     }
     if probe.clean {
-        println!("verdict: isolated");
+        println!(
+            "verdict: no change under the checked real Zed paths; recent documents need Full Disk Access and are not checked"
+        );
         Ok(())
     } else {
-        Err("verdict: not proven isolated; see the changes above".to_owned())
+        Err("verdict: real Zed state changed or Zed was updated; see above".to_owned())
     }
 }
 

@@ -1,6 +1,6 @@
-//! `bench zed-isolation`: launches Zed exactly as a trial does (disposable
-//! HOME, `--user-data-dir`, seeded settings) and checks that nothing under
-//! the owner's real Zed paths or the installed app changed.
+//! `bench zed-isolation`: launches Zed exactly as a trial does and checks
+//! that nothing under the owner's real Zed state changed. Trials use the
+//! same snapshot and diff on every app's real state.
 
 use crate::apps::{self, App, LaunchInputs};
 use crate::fixtures;
@@ -29,25 +29,6 @@ pub enum Change {
     Added(PathBuf),
     Removed(PathBuf),
     Modified(PathBuf),
-}
-
-/// Zed state that HOME and `--user-data-dir` must keep untouched, plus the
-/// app bundle itself so a self-update would show up.
-pub fn real_zed_paths(real_home: &Path, zed_app: &Path) -> Vec<PathBuf> {
-    [
-        "Library/Application Support/Zed",
-        ".config/zed",
-        "Library/Logs/Zed",
-        "Library/Caches/Zed",
-        "Library/Preferences/dev.zed.Zed.plist",
-        "Library/Saved Application State/dev.zed.Zed.savedState",
-        "Library/HTTPStorages/dev.zed.Zed",
-        "Library/WebKit/dev.zed.Zed",
-    ]
-    .iter()
-    .map(|relative| real_home.join(relative))
-    .chain(std::iter::once(zed_app.to_path_buf()))
-    .collect()
 }
 
 fn entry(path: &Path) -> Option<Entry> {
@@ -117,7 +98,7 @@ pub fn open_under(lsof: &str, roots: &[PathBuf]) -> Vec<String> {
         .collect()
 }
 
-fn describe(change: &Change) -> String {
+pub fn describe(change: &Change) -> String {
     match change {
         Change::Added(path) => format!("added {}", path.display()),
         Change::Removed(path) => format!("removed {}", path.display()),
@@ -232,6 +213,35 @@ fn home_summary(home: &Path) -> String {
     )
 }
 
+/// A windowless probe needs another Zed holding the single-instance port; a
+/// windowed one needs no other Zed, whose own writes would mix into the diff.
+pub fn probe_precondition(
+    other_zed: bool,
+    allow_window: bool,
+    open_fixture: bool,
+) -> Result<(), String> {
+    if open_fixture && !allow_window {
+        return Err(
+            "--open-fixture needs --allow-window: without a window Zed exits before opening it"
+                .to_owned(),
+        );
+    }
+    match (allow_window, other_zed) {
+        (false, false) => Err(
+            "no other Zed is running, so this probe would open a Zed window; rerun with \
+             --allow-window while the owner is present"
+                .to_owned(),
+        ),
+        (true, true) => Err(
+            "another Zed is running: a windowed probe needs the owner's Zed quit, or its \
+             writes would mix into the comparison and the probe would stop at Zed's \
+             single-instance check"
+                .to_owned(),
+        ),
+        _ => Ok(()),
+    }
+}
+
 pub fn run(
     paths: &BenchPaths,
     seconds: u64,
@@ -242,14 +252,8 @@ pub fn run(
     let zed_text = zed_binary.to_string_lossy().into_owned();
     let home_root_text = paths.home_root.to_string_lossy().into_owned();
     let foreign = procs::foreign_zed(&procs::ps()?, &zed_text, &home_root_text);
-    if foreign.is_empty() && !allow_window {
-        return Err(
-            "no other Zed is running, so this probe would open a Zed window; rerun with \
-             --allow-window while the owner is present"
-                .to_owned(),
-        );
-    }
-    let roots = real_zed_paths(&paths.real_home, &paths.zed_app);
+    probe_precondition(!foreign.is_empty(), allow_window, open_fixture)?;
+    let roots = apps::real_state_paths(App::Zed, &paths.real_home, &paths.zed_app);
     let before = snapshot(&roots);
     let version_before = stamp::zed_version(&paths.zed_app);
     let (_, tag) = stamp::utc(stamp::now_seconds());
@@ -316,7 +320,7 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, Entry, Snapshot, diff, open_under, real_zed_paths, snapshot};
+    use super::{Change, Entry, Snapshot, diff, open_under, probe_precondition, snapshot};
     use std::path::{Path, PathBuf};
 
     fn file(size: u64, modified_ns: u128) -> Entry {
@@ -389,17 +393,17 @@ mod tests {
     }
 
     #[test]
-    fn real_paths_cover_config_data_logs_caches_and_the_bundle() {
-        let paths = real_zed_paths(Path::new("/Users/me"), Path::new("/Applications/Zed.app"));
-        for expected in [
-            "/Users/me/Library/Application Support/Zed",
-            "/Users/me/.config/zed",
-            "/Users/me/Library/Logs/Zed",
-            "/Users/me/Library/Caches/Zed",
-            "/Users/me/Library/Preferences/dev.zed.Zed.plist",
-            "/Applications/Zed.app",
-        ] {
-            assert!(paths.contains(&PathBuf::from(expected)), "{expected}");
-        }
+    fn probes_need_the_right_zed_state_and_flags() {
+        // Windowless: another Zed must hold the single-instance port.
+        assert!(probe_precondition(true, false, false).is_ok());
+        assert!(probe_precondition(false, false, false).is_err());
+        // Windowed: no other Zed may run, with or without a document.
+        assert!(probe_precondition(false, true, false).is_ok());
+        assert!(probe_precondition(false, true, true).is_ok());
+        assert!(probe_precondition(true, true, false).is_err());
+        assert!(probe_precondition(true, true, true).is_err());
+        // A document only makes sense with a window.
+        assert!(probe_precondition(true, false, true).is_err());
+        assert!(probe_precondition(false, false, true).is_err());
     }
 }

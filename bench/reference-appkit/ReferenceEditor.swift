@@ -29,9 +29,18 @@ struct Launch {
                 }
                 if argument == "--width" { width = value } else { height = value }
                 index += 2
+            case let flag where flag.hasPrefix("-") && !flag.hasPrefix("--"):
+                // `-Key value` pairs belong to NSUserDefaults' argument domain,
+                // such as -ApplePersistenceIgnoreState YES; AppKit reads them.
+                guard index + 1 < arguments.count else {
+                    throw ReferenceFailure("\(flag) needs a value")
+                }
+                index += 2
             default:
-                guard path == nil, !argument.hasPrefix("--") else {
-                    throw ReferenceFailure("usage: bench-reference-appkit [--width W] [--height H] [FILE]")
+                guard path == nil, !argument.hasPrefix("-") else {
+                    throw ReferenceFailure(
+                        "usage: bench-reference-appkit [-Key value] [--width W] [--height H] [FILE]"
+                    )
                 }
                 path = argument
                 index += 1
@@ -160,6 +169,15 @@ func selfTest() throws {
     let font = view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
     guard font?.pointSize == fontSize else {
         throw ReferenceFailure("self-test failed: font size")
+    }
+    let launch = try Launch([
+        "-ApplePersistenceIgnoreState", "YES", "--width", "960", "--height", "540", "/f.txt",
+    ])
+    guard launch.path == "/f.txt", launch.width == 960, launch.height == 540 else {
+        throw ReferenceFailure("self-test failed: AppKit argument pairs")
+    }
+    guard (try? Launch(["/a.txt", "/b.txt"])) == nil, (try? Launch(["-Dangling"])) == nil else {
+        throw ReferenceFailure("self-test failed: bad arguments accepted")
     }
     print("self-test\tok")
 }

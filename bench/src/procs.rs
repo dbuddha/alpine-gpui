@@ -75,14 +75,29 @@ pub fn descendants(rows: &[PsRow], root: i32) -> Vec<i32> {
     found
 }
 
-/// Processes whose command line contains `marker` (a disposable home path).
-pub fn matching(rows: &[PsRow], marker: &str) -> Vec<i32> {
+/// Orphans (reparented to launchd) whose command line names `marker`, a
+/// trial's disposable home: a helper the app started that outlived it.
+pub fn marked_orphans(rows: &[PsRow], marker: &str) -> Vec<i32> {
     if marker.is_empty() {
         return Vec::new();
     }
     rows.iter()
-        .filter(|row| row.command.contains(marker))
+        .filter(|row| row.ppid == 1 && row.command.contains(marker))
         .map(|row| row.pid)
+        .collect()
+}
+
+/// Processes running `binary`, the exact path or the path then arguments.
+pub fn running(rows: &[PsRow], binary: &str) -> Vec<PsRow> {
+    rows.iter()
+        .filter(|row| {
+            row.command == binary
+                || row
+                    .command
+                    .strip_prefix(binary)
+                    .is_some_and(|rest| rest.starts_with(' '))
+        })
+        .cloned()
         .collect()
 }
 
@@ -165,14 +180,14 @@ impl LaunchedApp {
         !matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// TERM to the app, its descendants and marked processes, then KILL
-    /// after `grace`. A pid is signalled only while its command line is
-    /// unchanged, so a recycled pid is never hit.
+    /// TERM to the app, its descendants and marked orphans, then KILL after
+    /// `grace`. A pid is signalled only while its command line is unchanged,
+    /// so a recycled pid is never hit.
     pub fn stop(&mut self, known: &[i32], grace: Duration) -> StopReport {
         let rows = ps().unwrap_or_default();
         let mut targets: BTreeSet<i32> = known.iter().copied().collect();
         targets.extend(descendants(&rows, self.pid));
-        targets.extend(matching(&rows, &self.marker));
+        targets.extend(marked_orphans(&rows, &self.marker));
         targets.remove(&self.pid);
         let commands: BTreeMap<i32, String> = rows
             .into_iter()
@@ -244,7 +259,9 @@ pub fn footprint_bytes(pid: i32) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{descendants, foreign_zed, matching, parse_footprint, parse_ps};
+    use super::{
+        PsRow, descendants, foreign_zed, marked_orphans, parse_footprint, parse_ps, running,
+    };
 
     #[test]
     fn footprint_output_yields_phys_footprint() {
@@ -282,10 +299,35 @@ mod tests {
     }
 
     #[test]
-    fn matching_needs_a_non_empty_marker() {
+    fn only_orphans_carrying_the_marker_are_targets() {
+        let mut rows = parse_ps(SNAPSHOT);
+        assert_eq!(
+            marked_orphans(&rows, "/tmp/alpine-bench/r1-01/home"),
+            vec![700]
+        );
+        assert!(marked_orphans(&rows, "").is_empty());
+        // A process that merely mentions the home but has a live parent,
+        // such as the owner's shell running `ls` on it, is never a target.
+        rows.push(PsRow {
+            pid: 800,
+            ppid: 501,
+            command: "ls /tmp/alpine-bench/r1-01/home".to_owned(),
+        });
+        assert_eq!(
+            marked_orphans(&rows, "/tmp/alpine-bench/r1-01/home"),
+            vec![700]
+        );
+    }
+
+    #[test]
+    fn running_matches_the_binary_path_exactly() {
         let rows = parse_ps(SNAPSHOT);
-        assert_eq!(matching(&rows, "/tmp/alpine-bench/r1-01/home"), vec![700]);
-        assert!(matching(&rows, "").is_empty());
+        let alpine = "/Users/me/Applications/Alpine Editor.app/Contents/MacOS/alpine-editor";
+        let found: Vec<i32> = running(&rows, alpine).iter().map(|row| row.pid).collect();
+        assert_eq!(found, vec![600]);
+        let zed = "/Applications/Zed.app/Contents/MacOS/zed";
+        assert_eq!(running(&rows, zed).len(), 3);
+        assert!(running(&rows, "/Applications/Zed.app/Contents/MacOS/ze").is_empty());
     }
 
     #[test]

@@ -35,6 +35,56 @@ impl App {
             Self::AppKit => "appkit",
         }
     }
+
+    /// The name macOS keys this app's per-app state by: the bundle id, or
+    /// the process name for the unbundled reference editor.
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::Alpine => "com.dbuddha.alpine-editor",
+            Self::Zed => "dev.zed.Zed",
+            Self::AppKit => "bench-reference-appkit",
+        }
+    }
+}
+
+/// Per-app `AppKit` and networking state under the real home. Preferences go
+/// through cfprefsd, which ignores both HOME and `CFFIXED_USER_HOME`.
+pub fn appkit_state_paths(real_home: &Path, identifier: &str) -> Vec<PathBuf> {
+    let library = real_home.join("Library");
+    vec![
+        library.join(format!("Preferences/{identifier}.plist")),
+        library.join(format!("Saved Application State/{identifier}.savedState")),
+        library.join(format!("HTTPStorages/{identifier}")),
+        library.join(format!("HTTPStorages/{identifier}.binarycookies")),
+        library.join(format!("Caches/{identifier}")),
+        library.join(format!("WebKit/{identifier}")),
+    ]
+}
+
+/// The owner's state a trial of `app` must leave untouched: per-app `AppKit`
+/// state, the app's own data, and for Zed the installed bundle (an update).
+pub fn real_state_paths(app: App, real_home: &Path, zed_app: &Path) -> Vec<PathBuf> {
+    let mut paths = appkit_state_paths(real_home, app.identifier());
+    let data: &[&str] = match app {
+        App::Alpine => &[
+            "Library/Application Support/Alpine Editor",
+            "Library/Application Support/Alpine Studio",
+            "Library/Caches/Alpine Editor",
+            "Library/Logs/Alpine Editor",
+        ],
+        App::Zed => &[
+            "Library/Application Support/Zed",
+            ".config/zed",
+            "Library/Logs/Zed",
+            "Library/Caches/Zed",
+        ],
+        App::AppKit => &[],
+    };
+    paths.extend(data.iter().map(|relative| real_home.join(relative)));
+    if app == App::Zed {
+        paths.push(zed_app.to_path_buf());
+    }
+    paths
 }
 
 /// The PATH a Dock launch gets from launchd.
@@ -88,9 +138,12 @@ pub struct LaunchSpec {
     pub seed_files: Vec<(PathBuf, String)>,
 }
 
+/// `CFFIXED_USER_HOME` moves `NSHomeDirectory` and the user Library, so
+/// saved window state and caches land in the disposable home too.
 pub fn dock_env(home: &Path, tmpdir: &Path, identity: &Identity) -> Vec<(String, OsString)> {
     let mut env = vec![
         ("HOME".to_owned(), home.as_os_str().to_owned()),
+        ("CFFIXED_USER_HOME".to_owned(), home.as_os_str().to_owned()),
         ("TMPDIR".to_owned(), tmpdir.as_os_str().to_owned()),
         ("PATH".to_owned(), OsString::from(DOCK_PATH)),
         ("USER".to_owned(), OsString::from(&identity.user)),
@@ -173,8 +226,8 @@ fn rust_analyzer_env(env: &mut Vec<(String, OsString)>, rust_analyzer: &RustAnal
     ));
 }
 
-/// Workloads always pass documents; the Zed isolation probe passes none so
-/// a probe can never add a recent document.
+/// Workloads always pass documents; the Zed isolation probe passes none
+/// unless `--open-fixture` asks it to open one.
 pub fn launch_spec(inputs: &LaunchInputs<'_>) -> Result<LaunchSpec, String> {
     let mut env = dock_env(inputs.home, inputs.tmpdir, inputs.identity);
     let mut args: Vec<OsString> = Vec::new();
@@ -230,6 +283,11 @@ pub fn launch_spec(inputs: &LaunchInputs<'_>) -> Result<LaunchSpec, String> {
             inputs.zed_app.join("Contents/MacOS/zed")
         }
         App::AppKit => {
+            // NSUserDefaults reads `-Key value` pairs from argv. Alpine exits
+            // on extra arguments and Zed's clap parser is untested with them,
+            // so only the reference editor gets them.
+            args.push(OsString::from("-ApplePersistenceIgnoreState"));
+            args.push(OsString::from("YES"));
             args.push(OsString::from("--width"));
             args.push(OsString::from(WINDOW_WIDTH.to_string()));
             args.push(OsString::from("--height"));
@@ -254,8 +312,8 @@ pub fn launch_spec(inputs: &LaunchInputs<'_>) -> Result<LaunchSpec, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, DOCK_PATH, Identity, LaunchInputs, LaunchSpec, RustAnalyzer, check_zed_home,
-        launch_spec, zed_settings,
+        App, DOCK_PATH, Identity, LaunchInputs, LaunchSpec, RustAnalyzer, appkit_state_paths,
+        check_zed_home, launch_spec, real_state_paths, zed_settings,
     };
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
@@ -302,6 +360,12 @@ mod tests {
             assert_eq!(
                 env_value(&spec, "HOME"),
                 Some(&OsString::from("/tmp/alpine-bench/r1-01/home"))
+            );
+            assert_eq!(
+                env_value(&spec, "CFFIXED_USER_HOME"),
+                env_value(&spec, "HOME"),
+                "{}",
+                app.name()
             );
             assert_eq!(env_value(&spec, "PATH"), Some(&OsString::from(DOCK_PATH)));
             assert_eq!(
@@ -379,15 +443,57 @@ mod tests {
     }
 
     #[test]
-    fn appkit_gets_alpines_window_size() -> Result<(), String> {
+    fn appkit_gets_alpines_window_size_and_no_state_restoration() -> Result<(), String> {
         let spec = spec(App::AppKit, &[PathBuf::from("/f.txt")], None)?;
         let args: Vec<String> = spec
             .args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, ["--width", "960", "--height", "540", "/f.txt"]);
+        assert_eq!(
+            args,
+            [
+                "-ApplePersistenceIgnoreState",
+                "YES",
+                "--width",
+                "960",
+                "--height",
+                "540",
+                "/f.txt"
+            ]
+        );
         Ok(())
+    }
+
+    #[test]
+    fn real_state_paths_cover_appkit_state_and_each_apps_data() {
+        let home = Path::new("/Users/me");
+        let zed = real_state_paths(App::Zed, home, Path::new("/Applications/Zed.app"));
+        for expected in [
+            "/Users/me/Library/Preferences/dev.zed.Zed.plist",
+            "/Users/me/Library/Saved Application State/dev.zed.Zed.savedState",
+            "/Users/me/Library/HTTPStorages/dev.zed.Zed",
+            "/Users/me/Library/Caches/dev.zed.Zed",
+            "/Users/me/Library/Application Support/Zed",
+            "/Users/me/.config/zed",
+            "/Users/me/Library/Logs/Zed",
+            "/Applications/Zed.app",
+        ] {
+            assert!(zed.contains(&PathBuf::from(expected)), "{expected}");
+        }
+        let alpine = real_state_paths(App::Alpine, home, Path::new("/Applications/Zed.app"));
+        assert!(alpine.contains(&PathBuf::from(
+            "/Users/me/Library/Preferences/com.dbuddha.alpine-editor.plist"
+        )));
+        assert!(alpine.contains(&PathBuf::from(
+            "/Users/me/Library/Application Support/Alpine Editor"
+        )));
+        assert!(!alpine.iter().any(|path| path.ends_with("Zed.app")));
+        let reference = real_state_paths(App::AppKit, home, Path::new("/Applications/Zed.app"));
+        assert_eq!(
+            reference,
+            appkit_state_paths(home, "bench-reference-appkit")
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::helpers::{
     self, Appeared, Frame, Helpers, InputEvent, ProcRow, SampleSet, Sampler, SamplerData, SetKind,
     WindowInfo,
 };
+use crate::isolation::{self, Snapshot};
 use crate::paths::{self, BenchPaths};
 use crate::procs::{self, LaunchedApp};
 use crate::stamp::{self, Stamp, StampInputs};
@@ -34,6 +35,9 @@ const WINDOW_TIMEOUT_MS: u64 = 30_000;
 const ACTIVATION_ATTEMPTS: u64 = 5;
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const COOLDOWN: Duration = Duration::from_secs(3);
+/// cfprefsd writes preferences after a short delay, so the real-state check
+/// waits before comparing.
+const STATE_SETTLE: Duration = Duration::from_secs(2);
 const HOME_MARKER: &str = ".alpine-bench-home";
 
 pub const TRIALS_HEADER: &[&str] = &[
@@ -117,6 +121,8 @@ struct Context<'a> {
     identity: Identity,
     rust_analyzer: Option<RustAnalyzer>,
     refresh_hz: u32,
+    /// The owner's real state for this app, compared around every trial.
+    state_roots: Vec<PathBuf>,
 }
 
 struct Driven {
@@ -176,10 +182,33 @@ pub fn run(paths: &BenchPaths, request: &RunRequest) -> Result<PathBuf, String> 
         identity: paths::identity(),
         rust_analyzer,
         refresh_hz,
+        state_roots: apps::real_state_paths(request.app, &paths.real_home, &paths.zed_app),
     };
     write_run_table(&context, &stamp, fixture.as_ref())?;
+    let before_run = isolation::snapshot(&context.state_roots);
     run_trials(&context)?;
+    // A late cfprefsd write after the last trial still fails the run.
+    thread::sleep(COOLDOWN);
+    real_state_unchanged(&context, &before_run, "the run")?;
     Ok(context.run_dir)
+}
+
+/// Fails loudly if the owner's real state for the app changed.
+fn real_state_unchanged(
+    context: &Context<'_>,
+    before: &Snapshot,
+    during: &str,
+) -> Result<(), String> {
+    let changes = isolation::diff(before, &isolation::snapshot(&context.state_roots));
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let listed: Vec<String> = changes.iter().map(isolation::describe).collect();
+    Err(format!(
+        "REAL {} STATE CHANGED during {during}; stop and inspect:\n  {}",
+        context.request.app.name(),
+        listed.join("\n  ")
+    ))
 }
 
 fn run_trials(context: &Context<'_>) -> Result<(), String> {
@@ -233,18 +262,16 @@ fn preflight(paths: &BenchPaths, helpers: &Helpers, request: &RunRequest) -> Res
     if !binary.is_file() {
         return Err(format!("{} is missing", binary.display()));
     }
-    if request.app == App::Zed {
-        let zed = binary.to_string_lossy();
-        let home_root = paths.home_root.to_string_lossy();
-        let foreign = procs::foreign_zed(&procs::ps()?, &zed, &home_root);
-        if !foreign.is_empty() {
-            let pids: Vec<String> = foreign.iter().map(|row| row.pid.to_string()).collect();
-            return Err(format!(
-                "Zed is already running (pid {}); quit it first: an isolated Zed exits at \
-                 its single-instance check, and a Dock click would reach the bench copy",
-                pids.join(", ")
-            ));
-        }
+    // A running copy would write the real state the trials compare, and a
+    // second Zed exits at its single-instance check.
+    let running = procs::running(&procs::ps()?, &binary.to_string_lossy());
+    if !running.is_empty() {
+        let pids: Vec<String> = running.iter().map(|row| row.pid.to_string()).collect();
+        return Err(format!(
+            "{} is already running (pid {}); quit it first",
+            binary.display(),
+            pids.join(", ")
+        ));
     }
     if request.workload.needs_input() || request.workload.needs_capture() {
         let permissions = helpers.permissions()?;
@@ -398,6 +425,7 @@ fn run_trial(context: &Context<'_>, number: u32, warmup: bool) -> Result<TrialOu
     let log =
         |name: &str| File::create(trial_dir.join(name)).map_err(|error| format!("{name}: {error}"));
     let logs = (log("app.stdout.log")?, log("app.stderr.log")?);
+    let before = isolation::snapshot(&context.state_roots);
     let mut app = LaunchedApp::spawn(&spec, &home.home, logs, &home.root.to_string_lossy())?;
     let pid = app.pid();
     let mut sampler = context
@@ -425,6 +453,8 @@ fn run_trial(context: &Context<'_>, number: u32, warmup: bool) -> Result<TrialOu
             stopped.killed
         );
     }
+    thread::sleep(STATE_SETTLE);
+    real_state_unchanged(context, &before, &format!("trial {number}"))?;
     let driven =
         driven.map_err(|error| format!("{error} (home kept at {})", home.root.display()))?;
     let metrics = trial_metrics(context, &data, &driven)?;
