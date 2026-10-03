@@ -942,19 +942,32 @@ fn blocked_input_is_nonblocking_and_shutdown_releases_payloads() -> Result<(), B
     let _ = wait_for(&mut process, |event| {
         matches!(event, ProcessEvent::Started { .. })
     })?;
-    let payload = vec![b'x'; MAX_MESSAGE_BYTES / 2];
-    let start = Instant::now();
-    let mut admitted = 0;
-    let mut rejected = 0;
-    for _ in 0..16 {
-        match process.send(&payload) {
-            Ok(_) => admitted += 1,
-            Err(SubmitError::RetainedBudget | SubmitError::Saturated) => rejected += 1,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    assert!(start.elapsed() < Duration::from_secs(1));
-    assert!(admitted > 0 && rejected > 0);
+    // The child never reads stdin, so a send that waits stays blocked past
+    // this receive timeout, well inside the child's 30 s lifetime.
+    let (sender, receiver) = sync_channel(1);
+    thread::spawn(move || {
+        let payload = vec![b'x'; MAX_MESSAGE_BYTES / 2];
+        let outcomes: Vec<_> = (0..16).map(|_| process.send(&payload)).collect();
+        let _ = sender.send((process, outcomes));
+    });
+    let (mut process, outcomes) = receiver
+        .recv_timeout(Duration::from_secs(20))
+        .map_err(|_| "a send blocked on a child that never reads")?;
+    let admitted = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+    let rejected = outcomes
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome,
+                Err(SubmitError::RetainedBudget | SubmitError::Saturated)
+            )
+        })
+        .count();
+    assert_eq!(
+        admitted,
+        MAX_RETAINED_PAYLOAD_BYTES / (MAX_MESSAGE_BYTES / 2)
+    );
+    assert_eq!(rejected, outcomes.len() - admitted);
     let snapshot = process.shutdown();
     assert!(snapshot.peak_retained_bytes <= MAX_RETAINED_PAYLOAD_BYTES);
     assert_eq!(snapshot.retained_bytes, 0);
