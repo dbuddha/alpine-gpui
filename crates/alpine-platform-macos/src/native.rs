@@ -502,6 +502,14 @@ struct EventFrameTiming {
     stages: recorder::EditorStages,
 }
 
+impl EventFrameTiming {
+    // The startup build (event 0) had no input event: its frame keeps its
+    // recorder stages but gives no latency evidence or latency signposts.
+    fn input(self) -> Option<Self> {
+        (self.timestamp != STARTUP_EVENT).then_some(self)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct EventReceipt {
     instant: Instant,
@@ -566,7 +574,7 @@ impl AttemptTiming {
     }
 
     fn latency_evidence(self, terminal_at: Instant) -> Option<FrameLatencyEvidence> {
-        let event = self.event?;
+        let event = self.event.and_then(EventFrameTiming::input)?;
         Some(FrameLatencyEvidence::new(
             event.timestamp,
             elapsed_ns(event.received_at, event.handler_finished_at),
@@ -863,6 +871,29 @@ mod recorder_tests {
         assert!(end_ns >= begin_ns, "{text}");
         assert_eq!(recorder::take_stages(0), recorder::NO_STAGES);
         Ok(())
+    }
+
+    // The same timing is latency evidence for an input event's frame, but not
+    // for the startup build, which no input produced.
+    #[test]
+    fn the_startup_build_gives_no_latency_evidence() {
+        let ((), startup) = startup_frame_timing(EventReceipt::now(), || ());
+        let input = EventFrameTiming {
+            timestamp: EventTimestamp::new(11),
+            ..startup
+        };
+        let attempt = |event| AttemptTiming {
+            event: Some(event),
+            ..AttemptTiming::default()
+        };
+        let now = Instant::now();
+        assert!(startup.input().is_none());
+        assert!(attempt(startup).latency_evidence(now).is_none());
+        let evidence = attempt(input).latency_evidence(now);
+        assert_eq!(
+            evidence.map(crate::FrameLatencyEvidence::event_timestamp),
+            Some(EventTimestamp::new(11))
+        );
     }
 
     #[test]
@@ -1567,7 +1598,7 @@ impl PresentationDriver {
         let drawable_protocol = ProtocolObject::from_ref(&*drawable);
         let presentation = self.observe_presentation(
             drawable_protocol,
-            frame.event_timing,
+            frame.event_timing.and_then(EventFrameTiming::input),
             update.targetTimestamp(),
             update.targetPresentationTimestamp(),
             counters,
