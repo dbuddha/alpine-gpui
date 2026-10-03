@@ -91,11 +91,20 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Vec<Change> {
 
 /// Paths from `lsof -Fn` output that fall under any of the roots.
 pub fn open_under(lsof: &str, roots: &[PathBuf]) -> Vec<String> {
-    lsof.lines()
-        .filter_map(|line| line.strip_prefix('n'))
-        .filter(|path| roots.iter().any(|root| Path::new(path).starts_with(root)))
-        .map(ToOwned::to_owned)
-        .collect()
+    let mut descriptor = "";
+    let mut open = Vec::new();
+    for line in lsof.lines() {
+        if let Some(value) = line.strip_prefix('f') {
+            descriptor = value;
+        } else if let Some(path) = line.strip_prefix('n') {
+            // `txt` is mapped program code and libraries, read-only, so the
+            // probe's own executable under Zed.app is not a write to state.
+            if descriptor != "txt" && roots.iter().any(|root| Path::new(path).starts_with(root)) {
+                open.push(path.to_owned());
+            }
+        }
+    }
+    open
 }
 
 pub fn describe(change: &Change) -> String {
@@ -380,6 +389,16 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    #[test]
+    fn mapped_program_text_is_not_an_open_state_file() {
+        let roots = [PathBuf::from("/Applications/Zed.app")];
+        let lsof = "p9\nftxt\nn/Applications/Zed.app/Contents/MacOS/zed\nf12\nn/Applications/Zed.app/Contents/Resources/x\n";
+        assert_eq!(
+            open_under(lsof, &roots),
+            ["/Applications/Zed.app/Contents/Resources/x"]
+        );
     }
 
     #[test]
