@@ -5,15 +5,15 @@ updated: 2026-10-02
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
   - "bench-input and bench-capture have never run: they wait for the first permissioned trials"
-  - "unverified until then: the reference editor's 960x540 content fix (it measured 944x562 before), its caret blink suppression, and that PID-targeted scrolls (negative pixels) move each app down"
+  - "unverified until then: the reference editor's 960x540 content fix, its caret blink suppression, PID-targeted scrolls moving each app down, and CFFIXED_USER_HOME keeping saved state out of the real home"
 ---
 
 # Bench
 
 `bench/` measures Alpine Editor, Zed and an AppKit reference editor the same
-way, from outside the process, so every performance claim reproduces with one
-command on the dev Mac. It is its own Cargo workspace (std only, excluded from
-the root) plus Swift helpers built with `xcrun swiftc` from Command Line Tools.
+way, from outside the process, so performance claims reproduce with one
+command: a std-only Cargo workspace, excluded from the root, plus Swift
+helpers built with `xcrun swiftc` (Command Line Tools).
 
 ## Commands
 
@@ -26,91 +26,94 @@ target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
 
-Workloads live in `src/workload.rs`: `typing`, `caret`, `scroll`,
-`open-50mb`, `open-repo` and `idle`. Alpine is the installed
+Workloads live in `src/workload.rs`. Alpine is the installed
 `~/Applications/Alpine Editor.app`, built from a clean tree.
+
+## Owner-present session
+
+1. Quit Zed, then run `bench zed-isolation --allow-window --open-fixture`.
+   It refuses while another Zed runs, and must report no change.
+2. Grant Accessibility and Screen Recording to the terminal that runs
+   `bench`; `bench permissions` shows both, and helpers never prompt.
+3. Run each workload, hands-off from the `Hands off` line until the run
+   directory prints.
 
 ## Protocol
 
-- Quiet machine: close other apps, no builds, downloads, indexing or calls.
-  AC power with Low Power Mode off; `bench baseline` refuses anything else.
-- Ten trials, each a fresh process with a disposable HOME under
-  `/tmp/alpine-bench` (`BENCH_HOME_ROOT`; Zed's crash-handler socket caps its
-  length) and the Dock's PATH. Alpine and the reference editor run their
-  binaries directly; Zed runs `Contents/MacOS/zed`.
-- Hands-off window: from the `Hands off` line until the run directory prints,
-  touch nothing. Before measuring, the app must be frontmost with its window
-  uncovered, or the trial is refused. Each phase ends with the same check; a
-  failure marks the trial invalid and the summary drops it.
-- `open-repo` runs one untimed warm-up trial so rust-analyzer's build
-  scripts and proc macros are built; both editors get the same binary.
-- Quit Zed before Zed runs. Its single-instance check makes a second Zed
-  exit, and a Dock click during a run would reach the bench copy.
-- Report 95% Student t intervals of per-trial values; never compare a run
-  with fewer than ten valid trials.
+- Quiet machine, AC power, Low Power Mode off, clean trees. `bench baseline`
+  refuses anything else and needs ten valid measured trials; it skips rows
+  with fewer values, and a child absent from a trial counts as zero bytes.
+- Every workload runs one untimed warm-up, then fresh processes, each with a
+  disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
+  Dock's PATH. Quit the measured app first, or the bench refuses.
+- Before measuring and every second of every phase, the app must be
+  frontmost with no other app's visible window over it, at any layer. A
+  failure before measuring stops the run; later, it invalidates the trial.
+- Report 95% Student t intervals of per-trial values.
 
 ## Permissions
 
-Grant both to the terminal app that runs `bench`; macOS attributes the
-helpers to it. Helpers only preflight and never prompt; `bench permissions`
-prints the state.
-
 | Helper | Permission | Used for |
 | --- | --- | --- |
-| `bench-window` | none (PID, owner and bounds need none) | visibility, activation, displays |
+| `bench-window` | none | visibility, activation, displays |
 | `bench-sample` | none (same-user `proc_pid_rusage`) | footprint, CPU, wakeups |
 | `bench-input` | Accessibility (post events) | `typing`, `caret`, `scroll` |
 | `bench-capture` | Screen Recording | `typing`, `caret`, `scroll` |
 
 `bench-input` posts every event to the measured app's PID
-(`CGEventPostToPid`), never to the HID stream, so no other process can
-receive it; it refuses to run without a PID. It still aborts when the target
-loses the foreground, and occlusion still invalidates the trial.
+(`CGEventPostToPid`) from a private event source with no modifier flags,
+never to the HID stream, so no other process can receive it. It refuses to
+run without a PID.
 
 ## Metrics
 
-- Memory: phys_footprint of the app and of its process tree at 1 Hz, p50,
-  p95 and max per phase, plus the largest footprint per child name.
-  `footprint_tool_end` cross-checks Apple's `footprint` at trial end.
-- CPU, idle wakeups, interrupt wakeups and energy: exact deltas between the
-  phase's boundary samples. CPU and wakeups include reaped children; energy
-  counts processes alive at the phase end.
-- Keypress-to-screen: post time to the display time of the first captured
-  frame whose region hash changed. PID-targeted input skips HID routing,
-  the same for every app. A key sent before the previous key's response is
-  counted as overlapped, not timed.
+- Memory: phys_footprint of the app and its tree at 1 Hz, p50, p95 and max
+  per phase (below 20 samples, p95 is the max), and the largest per child
+  name. `footprint_tool_end` cross-checks Apple's `footprint`.
+- CPU, wakeups and energy: deltas between phase boundary samples; startup
+  counts from process start. CPU and wakeups include reaped children;
+  energy counts processes alive at the end.
+- Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`), after the
+  caret moves to line 11. A key is timed to the display time of the first
+  frame whose text band changed, if that comes before the next key and the
+  previous key's did too; otherwise it counts as late, or missed. The band
+  skips the top 30%, the bottom 40 pt and 32 pt of scroll bar.
 - Frame interval while scrolling: display-time gaps between changed frames;
   `frame_late_pct` counts gaps over 1.5 refresh periods.
-- Output: raw TSV in `results/<run>/` (gitignored). `bench baseline` appends
-  milestone rows to the tracked `baseline.tsv`, each with commit, tree state,
-  machine, macOS build, display mode, power state and Zed's version.
+- Output: raw TSV in `results/<run>/`; `bench baseline` appends stamped
+  milestone rows to the tracked `baseline.tsv`.
 
 ## Comparable and not
 
-Matched across apps: fixture bytes, the requested window frame (960x572 pt;
-trials record the actual one), Menlo 15 pt on 22 pt lines, a steady caret,
-environment, rust-analyzer binary and the capture path. Not matched, so
-never claim them:
+Matched: fixture bytes (outside any git checkout), the requested window frame
+(960x572 pt, recorded per trial), Menlo 15 pt on 22 pt lines, a steady caret,
+environment, the rust-analyzer binary and its `CARGO_TARGET_DIR` under
+`bench/target`, and the capture path. Not matched:
 
-- Zed runs non-default settings: no updates, telemetry, AI or sign-in
-  server, `cursor_blink` off, Menlo. Its default blinking caret would cost
-  idle frames this bench does not count.
-- Chrome differs: tab bars, status bars and title bars.
+- Zed runs non-default settings: no updates, telemetry, AI, sign-in server,
+  completion popups or git decorations; `cursor_blink` off; Menlo.
+- A fresh Zed profile runs its database migrations at every launch.
+- `launch_to_window` is the first window, loaded or not; the reference
+  editor reads its file only after showing it.
+- Chrome differs: tab, status and title bars.
 - `open-repo` gives Alpine and the reference editor the file; Zed gets the
   folder and the file.
-- Capture latency is included and equal for all apps; the numbers are
-  black-box latency, not presentation timestamps.
-- The reference editor has no language features; it is the native floor for
-  input, scrolling and memory only.
+- Latency ends at ScreenCaptureKit's display time, so capture delivery is
+  excluded (`frames.tsv` keeps arrival times), and PID-targeted input skips
+  HID routing. Both apply to every app.
+- The reference editor has no language features.
 
-## Zed isolation
+## Isolation
 
-A bench Zed gets a disposable HOME (logs, caches and config follow HOME),
+Trials set HOME and `CFFIXED_USER_HOME` to the disposable home; the latter
+moves `NSHomeDirectory` and the user Library folders. Zed also gets
 `--user-data-dir`, seeded settings, `ZED_UPDATE_EXPLANATION` and a dead
-`ZED_SERVER_URL`. `bench zed-isolation` launches it that way and compares
-about 56,000 real Zed paths and the app version before and after. On 2026-10-02,
-with the owner's Zed running, the probe migrated its databases in the
-disposable home, met the single-instance check after 409 ms and exited with
-no window; nothing real changed. macOS state outside HOME stays shared:
-Zed calls `noteNewRecentDocumentURL`, so fixture paths can join Zed's Dock
-recents, and that list needs Full Disk Access to inspect.
+`ZED_SERVER_URL`. Only the reference editor gets `-ApplePersistenceIgnoreState
+YES`: Alpine exits on extra arguments and Zed's parser is untested with them.
+Preferences still reach the real home through cfprefsd, so each trial
+compares the app's real preferences, saved state, HTTP storage, caches, data
+and Zed.app before and after, and the run stops loudly on any change. Zed's
+Dock recents (`noteNewRecentDocumentURL`) need Full Disk Access to inspect
+and go unchecked. On 2026-10-02 a windowless probe, with the owner's Zed
+running, migrated its databases in the disposable home, exited at the
+single-instance check after 409 ms and changed nothing real.
