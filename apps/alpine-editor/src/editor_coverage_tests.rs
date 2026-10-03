@@ -8601,15 +8601,38 @@ fn performance_log_writes_both_tables_under_library_logs() -> Result<(), Box<dyn
     let home = TestWorkspace::new()?;
     let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_759_400_000);
     let snapshot = RecorderSnapshot::default();
-    let frames = super::profiling::write_performance_log(Some(home.path().into()), at, &snapshot)?;
+    let save = |home: Option<std::ffi::OsString>, at| {
+        super::profiling::save_performance_log(home, at, &snapshot)
+    };
     let logs = home.path().join("Library/Logs/Alpine Editor");
-    assert_eq!(frames, logs.join("perf-1759400000-frames.tsv"));
-    assert!(fs::read_to_string(&frames)?.starts_with("event\trevision\toutcome\tevent_ns\t"));
+    assert_eq!(
+        save(Some(home.path().into()), at),
+        format!(
+            "Saved perf-1759400000-frames.tsv and perf-1759400000-samples.tsv in {}",
+            logs.display()
+        )
+    );
+    let frames = fs::read_to_string(logs.join("perf-1759400000-frames.tsv"))?;
+    assert!(frames.starts_with("event\trevision\toutcome\tevent_ns\t"));
     let samples = fs::read_to_string(logs.join("perf-1759400000-samples.tsv"))?;
     assert!(samples.starts_with("time_ns\trole\tpid\tserver\tphys_footprint\t"));
     for missing in [None, Some(std::ffi::OsString::new())] {
-        assert!(super::profiling::write_performance_log(missing, at, &snapshot).is_err());
+        assert_eq!(
+            save(missing, at),
+            "Could not save the performance log: HOME is not set"
+        );
     }
+
+    // A directory in the samples file's place fails it after frames saved.
+    let later = at + std::time::Duration::from_secs(1);
+    fs::create_dir(logs.join("perf-1759400001-samples.tsv"))?;
+    let partial = save(Some(home.path().into()), later);
+    let saved = format!(
+        "Saved perf-1759400001-frames.tsv in {}, but not perf-1759400001-samples.tsv: ",
+        logs.display()
+    );
+    assert!(partial.starts_with(&saved), "{partial}");
+    assert!(logs.join("perf-1759400001-frames.tsv").is_file());
 
     let mut app = test_app()?;
     assert!(
@@ -8617,7 +8640,7 @@ fn performance_log_writes_both_tables_under_library_logs() -> Result<(), Box<dyn
             .visual_changed
     );
     let saved = app.local_status.as_ref().map(LocalStatus::message);
-    assert!(saved.is_some_and(|message| message.starts_with("Saved performance log ")));
+    assert!(saved.is_some_and(|message| message.starts_with("Saved perf-")));
     assert!(app.save_performance_log(None).visual_changed);
     assert_eq!(
         app.local_status.as_ref().map(LocalStatus::message),

@@ -7332,10 +7332,7 @@ impl EditorApp {
     fn save_performance_log(&mut self, home: Option<std::ffi::OsString>) -> EventEffect {
         let snapshot = RecorderSnapshot::capture();
         let now = std::time::SystemTime::now();
-        let message = match profiling::write_performance_log(home, now, &snapshot) {
-            Ok(frames) => format!("Saved performance log {}", frames.display()),
-            Err(error) => format!("Could not save the performance log: {error}"),
-        };
+        let message = profiling::save_performance_log(home, now, &snapshot);
         self.set_local_status(LocalStatus::Command(Arc::from(message)))
     }
 

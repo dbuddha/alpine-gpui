@@ -4,7 +4,7 @@ use std::{
     ffi::OsString,
     fs::{self, File},
     io::{self, BufWriter, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -152,28 +152,48 @@ impl EditorProfiler {
     }
 }
 
-/// Writes `snapshot` as two TSV files under `~/Library/Logs/Alpine Editor/`,
-/// creating the folder, and returns the frames file's path.
-pub(super) fn write_performance_log(
+/// Writes `snapshot` as `perf-<unix s>-frames.tsv` and `-samples.tsv` under
+/// `~/Library/Logs/Alpine Editor/`, creating the folder, and returns a status
+/// line naming each file saved, even when the samples file then fails.
+pub(super) fn save_performance_log(
     home: Option<OsString>,
     now: SystemTime,
     snapshot: &RecorderSnapshot,
-) -> io::Result<PathBuf> {
+) -> String {
+    let directory = match log_directory(home) {
+        Ok(directory) => directory,
+        Err(error) => return format!("Could not save the performance log: {error}"),
+    };
+    let stamp = now
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let frames = format!("perf-{stamp}-frames.tsv");
+    let samples = format!("perf-{stamp}-samples.tsv");
+    let path = |name: &str| directory.join(name);
+    if let Err(error) = write_tsv(&path(&frames), |out| snapshot.write_frames_tsv(out)) {
+        return format!("Could not save the performance log: {error}");
+    }
+    let shown = directory.display();
+    match write_tsv(&path(&samples), |out| snapshot.write_samples_tsv(out)) {
+        Ok(()) => format!("Saved {frames} and {samples} in {shown}"),
+        Err(error) => format!("Saved {frames} in {shown}, but not {samples}: {error}"),
+    }
+}
+
+fn log_directory(home: Option<OsString>) -> io::Result<PathBuf> {
     let home = home
         .filter(|home| !home.is_empty())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
     let directory = PathBuf::from(home).join("Library/Logs/Alpine Editor");
     fs::create_dir_all(&directory)?;
-    let stamp = now
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let frames = directory.join(format!("perf-{stamp}-frames.tsv"));
-    let mut out = BufWriter::new(File::create(&frames)?);
-    snapshot.write_frames_tsv(&mut out)?;
-    out.flush()?;
-    let samples = directory.join(format!("perf-{stamp}-samples.tsv"));
-    let mut out = BufWriter::new(File::create(samples)?);
-    snapshot.write_samples_tsv(&mut out)?;
-    out.flush()?;
-    Ok(frames)
+    Ok(directory)
+}
+
+fn write_tsv(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut out = BufWriter::new(File::create(path)?);
+    write(&mut out)?;
+    out.flush()
 }
