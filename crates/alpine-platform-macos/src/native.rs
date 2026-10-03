@@ -558,8 +558,8 @@ impl AttemptTiming {
         ))
     }
 
-    // Offsets are from event receipt; a frame no event produced keeps only
-    // its record time, which then also anchors `event_ns`.
+    // Offsets are from event receipt. A frame no event produced anchors at its
+    // submit start (else its record time) and has no media columns.
     fn recorder_frame(
         self,
         revision: u64,
@@ -568,13 +568,18 @@ impl AttemptTiming {
         recorded_at: Instant,
     ) -> (recorder::FrameRecord, Instant) {
         use recorder::{
-            GPU_DONE, HANDLER_END, PRESENTED, RECORDED, SUBMIT_BEGIN, SUBMIT_END, TARGET,
+            GPU_OBSERVED, HANDLER_END, PRESENTED, RECORDED, SUBMIT_BEGIN, SUBMIT_END, TARGET,
             TARGET_PRESENT,
         };
         let mut frame = recorder::FrameRecord::new(revision, outcome);
         let Some(event) = self.event else {
-            frame.set(RECORDED, Some(0));
-            return (frame, recorded_at);
+            let anchor = self.submission_started_at.unwrap_or(recorded_at);
+            let since = |at: Instant| elapsed_ns(anchor, at);
+            frame.set(SUBMIT_BEGIN, self.submission_started_at.map(since));
+            frame.set(SUBMIT_END, self.submission_finished_at.map(since));
+            frame.set(GPU_OBSERVED, self.gpu_terminal_observed_at.map(since));
+            frame.set(RECORDED, Some(since(recorded_at)));
+            return (frame, anchor);
         };
         let since = |at: Instant| elapsed_ns(event.received_at, at);
         let media = |bits: u64| {
@@ -584,7 +589,7 @@ impl AttemptTiming {
         frame.set(HANDLER_END, Some(since(event.handler_finished_at)));
         frame.set(SUBMIT_BEGIN, self.submission_started_at.map(since));
         frame.set(SUBMIT_END, self.submission_finished_at.map(since));
-        frame.set(GPU_DONE, self.gpu_terminal_observed_at.map(since));
+        frame.set(GPU_OBSERVED, self.gpu_terminal_observed_at.map(since));
         frame.set(TARGET, media(self.target_timestamp_bits));
         frame.set(
             TARGET_PRESENT,
@@ -658,6 +663,15 @@ mod recorder_tests {
             AttemptTiming::default().recorder_frame(10, PresentationOutcome::Cancelled, 0, at(60));
         assert_eq!(base, at(60));
         recorder::record_frame(frame, base);
+        let submitted = AttemptTiming {
+            submission_started_at: Some(at(70)),
+            submission_finished_at: Some(at(78)),
+            gpu_terminal_observed_at: Some(at(90)),
+            ..AttemptTiming::default()
+        };
+        let (frame, base) = submitted.recorder_frame(11, PresentationOutcome::Failed, 0, at(95));
+        assert_eq!(base, at(70));
+        recorder::record_frame(frame, base);
 
         let mut tsv = Vec::new();
         RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
@@ -665,6 +679,7 @@ mod recorder_tests {
             "", "3", "", "", "", "", "", "", "13", "23", "31", "", "3906250", "7812500", "", "45",
         ];
         let eventless = format!("{}\t0", "\t".repeat(15));
+        let submitted = format!("{}\t0\t8\t20\t\t\t\t25", "\t".repeat(9));
         assert_eq!(
             std::str::from_utf8(&tsv)?
                 .lines()
@@ -672,7 +687,8 @@ mod recorder_tests {
                 .collect::<Vec<_>>(),
             [
                 format!("11\t9\tpresented\t100000000005\t{}", event.join("\t")),
-                format!("0\t10\tcancelled\t100000000060{eventless}"),
+                format!("\t10\tcancelled\t100000000060{eventless}"),
+                format!("\t11\tfailed\t100000000070{submitted}"),
             ]
         );
         Ok(())
