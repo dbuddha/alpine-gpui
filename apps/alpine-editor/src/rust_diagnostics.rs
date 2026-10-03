@@ -3427,7 +3427,7 @@ mod discovery_tests {
         let directory = std::env::temp_dir().join("alpine-discovery-hang");
         let _ = fs::create_dir_all(&directory);
         let binary = directory.join(SERVER_NAME);
-        let _ = fs::write(&binary, b"#!/bin/sh\nsleep 600\n");
+        let _ = fs::write(&binary, b"#!/bin/sh\nexec sleep 600\n");
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
         // Discovery runs on a helper thread; if it waits on the candidate,
         // this receive expires long before the candidate's 600 s sleep ends.
