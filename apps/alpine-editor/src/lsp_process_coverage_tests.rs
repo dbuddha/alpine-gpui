@@ -1250,3 +1250,55 @@ fn ordinary_events_reserve_exact_capacity_for_terminal_classification() {
         Some(StopReason::EventOverflow)
     );
 }
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn recorder_samples_the_running_child_and_forgets_it_once_stopped() -> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::start(
+        ProcessSpec::new("/bin/cat", std::iter::empty::<&str>(), None)?,
+        identity(1),
+    )?;
+    let started = wait_for(&mut process, |event| {
+        matches!(event, ProcessEvent::Started { .. })
+    })?;
+    let ProcessEvent::Started { process_id, .. } = started else {
+        return Err("expected the child to start".into());
+    };
+    assert_eq!(process.process_id(), Some(process_id));
+    alpine_platform_macos::start_recorder_for_test();
+    alpine_platform_macos::sample_processes(|children| {
+        children.first_mut().map_or(0, |slot| {
+            *slot = process_id;
+            1
+        })
+    });
+    let mut tsv = Vec::new();
+    alpine_platform_macos::RecorderSnapshot::capture().write_samples_tsv(&mut tsv)?;
+    let tsv = String::from_utf8(tsv)?;
+    let row = tsv
+        .lines()
+        .find(|line| line.contains("\tlanguage-server\t"))
+        .ok_or("child row")?;
+    let fields: Vec<&str> = row.split('\t').collect();
+    assert_eq!(fields.get(2), Some(&process_id.to_string().as_str()));
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    assert!(
+        fields
+            .get(3)
+            .is_some_and(|bytes| bytes.parse::<u64>().is_ok_and(|bytes| bytes > 0))
+    );
+    let _ = process.shutdown();
+    assert_eq!(process.process_id(), None);
+
+    let mut crashed = LanguageServerProcess::start(shell("exit 7")?, identity(1))?;
+    let _ = wait_for(&mut crashed, |event| {
+        matches!(event, ProcessEvent::Exited { .. })
+    })?;
+    let deadline = Instant::now() + TIMEOUT;
+    while crashed.process_id().is_some() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(crashed.process_id(), None);
+    Ok(())
+}

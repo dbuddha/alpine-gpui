@@ -1,6 +1,6 @@
-//! Always-on recorder: a ring of frame stages reserved once at start and
-//! filled only by events and frames the app already handles. It owns no
-//! timer or thread, so an idle app records nothing.
+//! Always-on recorder: rings of frame stages and process samples, reserved
+//! once at start and filled only by events and frames the app already
+//! handles. It owns no timer or thread, so an idle app records nothing.
 
 use std::{
     cell::RefCell,
@@ -13,6 +13,9 @@ use alpine_platform::PresentationOutcome;
 use crate::{EditorSignpost, EditorSignpostStage};
 
 const FRAME_CAPACITY: usize = 4_096;
+const SAMPLE_CAPACITY: usize = 3_600;
+const MAX_CHILDREN: usize = 6;
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const ABSENT: u32 = u32::MAX;
 
 // Columns after `event_ns` are nanoseconds after event receipt. The first
@@ -22,6 +25,10 @@ const FRAME_HEADER: &str = concat!(
     "\tlayout_begin_ns\tlayout_end_ns\tatlas_begin_ns\tatlas_end_ns\tbuild_end_ns",
     "\thandler_end_ns\tsubmit_begin_ns\tsubmit_end_ns\tgpu_done_ns\ttarget_ns",
     "\ttarget_present_ns\tpresented_ns\trecorded_ns\n",
+);
+const SAMPLE_HEADER: &str = concat!(
+    "time_ns\trole\tpid\tphys_footprint\tcpu_ns",
+    "\tinterrupt_wakeups\tidle_wakeups\tsubmissions\n",
 );
 const STAGE_COUNT: usize = 16;
 pub(crate) const EDITOR_STAGES: usize = 8;
@@ -110,8 +117,28 @@ fn nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// CPU time and wakeups of this process since it started.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TaskUsage {
+    pub(crate) cpu_ns: u64,
+    pub(crate) interrupt_wakeups: u64,
+    pub(crate) idle_wakeups: u64,
+}
+
+// Footprints are phys_footprint bytes; zero means the read failed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ProcessSample {
+    time_ns: u64,
+    footprint: u64,
+    usage: Option<TaskUsage>,
+    submissions: u64,
+    child_pids: [u32; MAX_CHILDREN],
+    child_footprints: [u64; MAX_CHILDREN],
+}
+
 // The whole reservation stays under the recorder's 1 MiB ceiling.
-const RESERVED_BYTES: usize = FRAME_CAPACITY * size_of::<FrameRecord>();
+const RESERVED_BYTES: usize =
+    FRAME_CAPACITY * size_of::<FrameRecord>() + SAMPLE_CAPACITY * size_of::<ProcessSample>();
 const _: () = assert!(RESERVED_BYTES <= 1 << 20);
 
 /// Capacity reserved once; pushing past it overwrites the oldest item.
@@ -157,6 +184,9 @@ struct Recorder {
     origin_ns: u64,
     pending: Option<Pending>,
     frames: Ring<FrameRecord>,
+    samples: Ring<ProcessSample>,
+    last_sample: Option<Instant>,
+    submissions: u64,
     work: u64,
 }
 
@@ -167,6 +197,9 @@ impl Recorder {
             origin_ns: Duration::try_from_secs_f64(origin_seconds).map_or(0, nanos),
             pending: None,
             frames: Ring::new(FRAME_CAPACITY),
+            samples: Ring::new(SAMPLE_CAPACITY),
+            last_sample: None,
+            submissions: 0,
             work: 0,
         }
     }
@@ -197,9 +230,42 @@ impl Recorder {
             .map_or(NO_STAGES, |pending| pending.stages)
     }
 
-    fn frame(&mut self, mut frame: FrameRecord, base: Instant) {
+    fn frame(&mut self, mut frame: FrameRecord, base: Instant, submissions: u8) {
         frame.event_ns = self.clock_ns(base);
+        self.submissions = self.submissions.saturating_add(u64::from(submissions));
         self.frames.push(frame);
+        self.work = self.work.saturating_add(1);
+    }
+
+    fn sample_due(&self, now: Instant) -> bool {
+        self.last_sample
+            .is_none_or(|last| now.saturating_duration_since(last) >= SAMPLE_INTERVAL)
+    }
+
+    fn sample(
+        &mut self,
+        now: Instant,
+        children: &[u32],
+        footprint: impl Fn(u32) -> Option<u64>,
+        usage: Option<TaskUsage>,
+    ) {
+        let mut sample = ProcessSample {
+            time_ns: self.clock_ns(now),
+            footprint: footprint(std::process::id()).unwrap_or(0),
+            usage,
+            submissions: self.submissions,
+            ..ProcessSample::default()
+        };
+        let slots = sample
+            .child_pids
+            .iter_mut()
+            .zip(&mut sample.child_footprints);
+        for ((pid, bytes), &child) in slots.zip(children) {
+            *pid = child;
+            *bytes = footprint(child).unwrap_or(0);
+        }
+        self.samples.push(sample);
+        self.last_sample = Some(now);
         self.work = self.work.saturating_add(1);
     }
 }
@@ -252,8 +318,25 @@ pub(crate) fn record_stage(point: EditorSignpost) {
     }
 }
 
-pub(crate) fn record_frame(frame: FrameRecord, base: Instant) {
-    let _ = with_recorder(|recorder| recorder.frame(frame, base));
+pub(crate) fn record_frame(frame: FrameRecord, base: Instant, submissions: u8) {
+    let _ = with_recorder(|recorder| recorder.frame(frame, base, submissions));
+}
+
+/// Samples this process and up to six children, at most once a second.
+/// `children` fills child PIDs and returns the count; it runs only when a
+/// sample is due. Call it from event handling, so idle takes no samples.
+pub fn sample_processes(children: impl FnOnce(&mut [u32]) -> usize) {
+    let _ = with_recorder(|recorder| {
+        let now = Instant::now();
+        if !recorder.sample_due(now) {
+            return;
+        }
+        let mut pids = [0; MAX_CHILDREN];
+        let count = children(&mut pids).min(MAX_CHILDREN);
+        let usage = crate::implementation::task_usage();
+        let footprint = crate::implementation::phys_footprint;
+        recorder.sample(now, &pids[..count], footprint, usage);
+    });
 }
 
 /// Starts the calling thread's recorder for downstream tests.
@@ -263,12 +346,13 @@ pub fn start_recorder_for_test() {
     start(Instant::now(), 0.0);
 }
 
-/// The newest 4,096 frame attempts, oldest first. Times after `event_ns`,
-/// on the uptime clock, are nanoseconds after it; an empty TSV field is
-/// absent evidence, never zero.
+/// The newest 4,096 frames and 3,600 process samples, oldest first. Frame
+/// times after `event_ns`, on the uptime clock, are nanoseconds after it;
+/// an empty TSV field is absent evidence, never zero.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecorderSnapshot {
     frames: Vec<FrameRecord>,
+    samples: Vec<ProcessSample>,
     work: u64,
 }
 
@@ -283,6 +367,7 @@ impl RecorderSnapshot {
     fn of(recorder: &Recorder) -> Self {
         Self {
             frames: recorder.frames.to_vec(),
+            samples: recorder.samples.to_vec(),
             work: recorder.work,
         }
     }
@@ -293,7 +378,13 @@ impl RecorderSnapshot {
         self.frames.len()
     }
 
-    /// Returns the stage points and frames recorded since start.
+    /// Returns the number of retained process samples.
+    #[must_use]
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Returns the stage points, frames and samples recorded since start.
     #[must_use]
     pub const fn work(&self) -> u64 {
         self.work
@@ -320,6 +411,29 @@ impl RecorderSnapshot {
         }
         Ok(())
     }
+
+    /// Writes a header and one TSV row per process per sample.
+    /// # Errors
+    /// Returns the first error from `out`.
+    pub fn write_samples_tsv(&self, out: &mut impl Write) -> io::Result<()> {
+        out.write_all(SAMPLE_HEADER.as_bytes())?;
+        let editor = std::process::id();
+        for sample in &self.samples {
+            write!(out, "{}\teditor\t{editor}", sample.time_ns)?;
+            field(out, (sample.footprint != 0).then_some(sample.footprint))?;
+            field(out, sample.usage.map(|usage| usage.cpu_ns))?;
+            field(out, sample.usage.map(|usage| usage.interrupt_wakeups))?;
+            field(out, sample.usage.map(|usage| usage.idle_wakeups))?;
+            writeln!(out, "\t{}", sample.submissions)?;
+            let children = sample.child_pids.iter().zip(sample.child_footprints);
+            for (pid, bytes) in children.filter(|(pid, _)| **pid != 0) {
+                write!(out, "{}\tlanguage-server\t{pid}", sample.time_ns)?;
+                field(out, (bytes != 0).then_some(bytes))?;
+                out.write_all(b"\t\t\t\t\n")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn field(out: &mut impl Write, value: Option<u64>) -> io::Result<()> {
@@ -341,7 +455,7 @@ const fn outcome_name(outcome: PresentationOutcome) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{cell::Cell, error::Error};
 
     use super::*;
 
@@ -371,23 +485,48 @@ mod tests {
     }
 
     #[test]
-    fn recorder_reserves_its_ring_once_under_one_mebibyte() {
+    fn recorder_reserves_its_rings_once_under_one_mebibyte() {
         let origin = Instant::now();
         let mut recorder = Recorder::new(origin, 0.0);
-        let frames = &recorder.frames.items;
-        let reserved = (frames.capacity(), frames.as_ptr());
-        assert!(reserved.0 >= FRAME_CAPACITY);
-        assert!(reserved.0 * size_of::<FrameRecord>() <= 1 << 20);
+        let reserved = [
+            (
+                recorder.frames.items.capacity(),
+                recorder.frames.items.as_ptr().addr(),
+            ),
+            (
+                recorder.samples.items.capacity(),
+                recorder.samples.items.as_ptr().addr(),
+            ),
+        ];
+        assert!(reserved[0].0 >= FRAME_CAPACITY && reserved[1].0 >= SAMPLE_CAPACITY);
+        let bytes =
+            reserved[0].0 * size_of::<FrameRecord>() + reserved[1].0 * size_of::<ProcessSample>();
+        assert!(bytes <= 1 << 20);
         let frame = FrameRecord::new(1, PresentationOutcome::Presented);
         for _ in 0..FRAME_CAPACITY + 7 {
-            recorder.frame(frame, origin);
+            recorder.frame(frame, origin, 1);
         }
-        let frames = &recorder.frames.items;
-        assert_eq!((frames.capacity(), frames.as_ptr()), reserved);
-        assert_eq!(
-            RecorderSnapshot::of(&recorder).frame_count(),
-            FRAME_CAPACITY
-        );
+        let mut now = origin;
+        for _ in 0..SAMPLE_CAPACITY + 7 {
+            recorder.sample(now, &[], |_| Some(1), None);
+            now += SAMPLE_INTERVAL;
+        }
+        let after = [
+            (
+                recorder.frames.items.capacity(),
+                recorder.frames.items.as_ptr().addr(),
+            ),
+            (
+                recorder.samples.items.capacity(),
+                recorder.samples.items.as_ptr().addr(),
+            ),
+        ];
+        assert_eq!(after, reserved);
+        let snapshot = RecorderSnapshot::of(&recorder);
+        assert_eq!(snapshot.frame_count(), FRAME_CAPACITY);
+        assert_eq!(snapshot.sample_count(), SAMPLE_CAPACITY);
+        let submitted = u64::try_from(FRAME_CAPACITY + 7).unwrap_or(0);
+        assert_eq!(recorder.submissions, submitted);
     }
 
     #[test]
@@ -418,7 +557,7 @@ mod tests {
         frame.set(PRESENTED, None);
         frame.set(RECORDED, Some(u64::MAX));
         frame.set(STAGE_COUNT, Some(1));
-        recorder.frame(frame, nanos_after(origin, 10));
+        recorder.frame(frame, nanos_after(origin, 10), 1);
         let mut offsets = [""; STAGE_COUNT];
         offsets[0] = "5";
         offsets[7] = "30";
@@ -437,8 +576,17 @@ mod tests {
         let origin = Instant::now();
         let mut recorder = Recorder::new(origin, 0.0);
         let frame = FrameRecord::new(9, PresentationOutcome::Cancelled);
-        recorder.frame(frame, origin);
-        let frames = tsv(|out| RecorderSnapshot::of(&recorder).write_frames_tsv(out))?;
+        recorder.frame(frame, origin, 0);
+        let usage = TaskUsage {
+            cpu_ns: 11,
+            interrupt_wakeups: 12,
+            idle_wakeups: 13,
+        };
+        let footprint = |pid: u32| (pid != 42).then_some(4_096);
+        recorder.sample(nanos_after(origin, 5), &[41, 42], footprint, Some(usage));
+        recorder.sample(nanos_after(origin, 6), &[], |_| None, None);
+        let snapshot = RecorderSnapshot::of(&recorder);
+        let frames = tsv(|out| snapshot.write_frames_tsv(out))?;
         let mut lines = frames.lines();
         let header = lines.next().ok_or("frame header")?;
         let columns: Vec<&str> = header.split('\t').collect();
@@ -454,6 +602,17 @@ mod tests {
         let row = format!("0\t9\tcancelled\t0{}", "\t".repeat(STAGE_COUNT));
         assert_eq!(lines.next(), Some(row.as_str()));
         assert_eq!(lines.next(), None);
+
+        let editor = std::process::id();
+        let samples = tsv(|out| snapshot.write_samples_tsv(out))?;
+        let expected = [
+            SAMPLE_HEADER.trim_end().to_owned(),
+            format!("5\teditor\t{editor}\t4096\t11\t12\t13\t0"),
+            "5\tlanguage-server\t41\t4096\t\t\t\t".to_owned(),
+            "5\tlanguage-server\t42\t\t\t\t\t".to_owned(),
+            format!("6\teditor\t{editor}\t\t\t\t\t0"),
+        ];
+        assert_eq!(samples.lines().collect::<Vec<_>>(), expected);
         Ok(())
     }
 
@@ -481,10 +640,40 @@ mod tests {
         record_frame(
             FrameRecord::new(1, PresentationOutcome::Presented),
             Instant::now(),
+            1,
         );
         let busy = RecorderSnapshot::capture();
         assert_eq!((busy.work(), busy.frame_count()), (2, 1));
         assert_eq!(RecorderSnapshot::capture(), busy);
+    }
+
+    #[test]
+    fn events_sample_at_most_once_a_second_and_idle_samples_nothing() {
+        let calls = Cell::new(0_u32);
+        let children = |out: &mut [u32]| {
+            calls.set(calls.get() + 1);
+            if let Some(slot) = out.first_mut() {
+                *slot = std::process::id();
+            }
+            1
+        };
+        sample_processes(children);
+        assert_eq!((RecorderSnapshot::capture().work(), calls.get()), (0, 0));
+        start_recorder_for_test();
+        for _ in 0..3 {
+            sample_processes(children);
+        }
+        let sampled = RecorderSnapshot::capture();
+        let observed = (sampled.sample_count(), sampled.work(), calls.get());
+        assert_eq!(observed, (1, 1, 1));
+        assert_eq!(RecorderSnapshot::capture(), sampled);
+
+        let origin = Instant::now();
+        let mut recorder = Recorder::new(origin, 0.0);
+        assert!(recorder.sample_due(origin));
+        recorder.sample(origin, &[], |_| None, None);
+        assert!(!recorder.sample_due(nanos_after(origin, 999_999_999)));
+        assert!(recorder.sample_due(origin + SAMPLE_INTERVAL));
     }
 
     #[test]
@@ -500,6 +689,12 @@ mod tests {
             let _ = signposts.emit(std::hint::black_box(point));
         }
         println!("stage point: {:?}", started.elapsed() / rounds);
+        let started = Instant::now();
+        for _ in 0..1_000 {
+            let _ = crate::implementation::phys_footprint(std::process::id());
+            let _ = crate::implementation::task_usage();
+        }
+        println!("editor usage read: {:?}", started.elapsed() / 1_000);
         println!("reserved ring bytes: {RESERVED_BYTES}");
     }
 }

@@ -152,8 +152,8 @@ impl EditorProfiler {
     }
 }
 
-/// Writes `snapshot` as TSV under `~/Library/Logs/Alpine Editor/`, creating
-/// the folder, and returns the frames file's path.
+/// Writes `snapshot` as two TSV files under `~/Library/Logs/Alpine Editor/`,
+/// creating the folder, and returns the frames file's path.
 pub(super) fn write_performance_log(
     home: Option<OsString>,
     now: SystemTime,
@@ -170,6 +170,10 @@ pub(super) fn write_performance_log(
     let frames = directory.join(format!("perf-{stamp}-frames.tsv"));
     let mut out = BufWriter::new(File::create(&frames)?);
     snapshot.write_frames_tsv(&mut out)?;
+    out.flush()?;
+    let samples = directory.join(format!("perf-{stamp}-samples.tsv"));
+    let mut out = BufWriter::new(File::create(samples)?);
+    snapshot.write_samples_tsv(&mut out)?;
     out.flush()?;
     Ok(frames)
 }

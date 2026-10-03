@@ -131,6 +131,14 @@ impl NativeSurface {
     }
 }
 
+pub(crate) const fn phys_footprint(_pid: u32) -> Option<u64> {
+    None
+}
+
+pub(crate) const fn task_usage() -> Option<crate::recorder::TaskUsage> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

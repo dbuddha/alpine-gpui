@@ -9,7 +9,7 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -332,6 +332,8 @@ struct Counters {
     restarts: AtomicU64,
     exits: AtomicU64,
     shutdown_timeouts: AtomicU64,
+    // The running child's PID, or 0 when none is running.
+    process_id: AtomicU32,
     wake: Option<ProcessWake>,
 }
 
@@ -765,6 +767,12 @@ impl LanguageServerProcess {
         }
     }
 
+    /// Returns the running child's process ID, for footprint sampling.
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        let process_id = self.counters.process_id.load(Ordering::Acquire);
+        (process_id != 0).then_some(process_id)
+    }
+
     pub(crate) fn snapshot(&self) -> ProcessSnapshot {
         ProcessSnapshot {
             configuration_bytes: self.configuration_bytes,
@@ -904,10 +912,13 @@ fn supervise(
             let _ = stop_for_reason(&mut running, reason, &events, &counters);
             continue_supervising = false;
         }
+        let process_id = running.as_ref().map_or(0, |process| process.child.id());
+        counters.process_id.store(process_id, Ordering::Release);
     }
     if let Some(mut process) = running {
         let _ = stop_running(&mut process, true);
     }
+    counters.process_id.store(0, Ordering::Release);
 }
 
 fn merge_stop_reason(
@@ -935,6 +946,9 @@ fn start_running(
     match spawn_process(spec, identity, epoch, counters) {
         Ok(process) => {
             counters.starts.fetch_add(1, Ordering::Relaxed);
+            counters
+                .process_id
+                .store(process.child.id(), Ordering::Release);
             if emit(
                 events,
                 ProcessEvent::Started {

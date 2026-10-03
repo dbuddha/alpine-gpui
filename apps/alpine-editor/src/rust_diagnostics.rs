@@ -2273,6 +2273,12 @@ impl RustDiagnostics {
         }
     }
 
+    pub(crate) fn server_process_id(&self) -> Option<u32> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.client.process_id())
+    }
+
     pub(crate) fn snapshot(&self) -> RustDiagnosticsSnapshot {
         let (
             generation,
