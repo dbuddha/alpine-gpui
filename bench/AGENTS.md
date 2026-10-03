@@ -1,11 +1,12 @@
 ---
 scope: bench/, the local black-box benchmark (never shipped, never in CI)
 parent: ../AGENTS.md
-updated: 2026-10-02
+updated: 2026-10-03
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
-  - "bench-input and bench-capture have never run: they wait for the first permissioned trials"
-  - "unverified until then: the reference editor's 960x540 content fix, its caret blink suppression, PID-targeted scrolls moving each app down, and CFFIXED_USER_HOME keeping saved state out of the real home"
+  - "PID-targeted scroll moved neither Alpine nor the reference editor on 2026-10-03"
+  - "Zed's and the reference editor's windows miss the requested 960x572 pt (1486x933, 944x562); Zed timed 0 to 3 of 100 keys"
+  - "unverified: the reference editor's caret blink suppression"
 ---
 
 # Bench
@@ -47,8 +48,9 @@ Workloads live in `src/workload.rs`. Alpine is the installed
   disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
   Dock's PATH. Quit the measured app first, or the bench refuses.
 - Before measuring and every second of every phase, the app must be
-  frontmost with no other app's visible window over it, at any layer. A
-  failure before measuring stops the run; later, it invalidates the trial.
+  frontmost with no other app's visible window over it, at any layer but
+  the pointer's. A failure before measuring stops the run; later, it
+  invalidates the trial.
 - Report 95% Student t intervals of per-trial values.
 
 ## Permissions

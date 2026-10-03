@@ -485,12 +485,16 @@ fn overlap_area(a: &WindowInfo, b: &WindowInfo) -> f64 {
     }
 }
 
-/// The target's frontmost normal window must exist, its app must be active,
-/// and no other app's visible window may overlap it from above.
 // macOS draws the pointer as a Window Server window at this fixed level; it
 // never hides content, so it must not count as covering the target.
 const CURSOR_WINDOW_LEVEL: i64 = 2_147_483_630;
 
+fn is_pointer(window: &WindowInfo) -> bool {
+    window.layer == CURSOR_WINDOW_LEVEL && window.owner == "Window Server"
+}
+
+/// The target's frontmost normal window must exist, its app must be active,
+/// and no other app's visible window may overlap it from above.
 pub fn visibility(list: &WindowList, pid: i32, min_side: f64) -> Visibility {
     let Some(target) = list.windows.iter().find(|window| {
         window.pid == pid
@@ -514,7 +518,7 @@ pub fn visibility(list: &WindowList, pid: i32, min_side: f64) -> Visibility {
             window.order < target.order
                 && window.pid != pid
                 && window.alpha > 0.0
-                && window.layer != CURSOR_WINDOW_LEVEL
+                && !is_pointer(window)
                 && overlap_area(window, target) > 0.0
         })
         .cloned()
@@ -1035,10 +1039,16 @@ mod tests {
             (756.0, 466.0, 28.0, 40.0),
         );
         cursor.owner = "Window Server".to_owned();
-        let pointed = list(7, vec![cursor, target]);
+        let pointed = list(7, vec![cursor.clone(), target.clone()]);
         assert!(matches!(
             visibility(&pointed, 7, 100.0),
             Visibility::Visible(_)
+        ));
+        cursor.owner = "app600".to_owned();
+        let covered = list(7, vec![cursor, target]);
+        assert!(matches!(
+            visibility(&covered, 7, 100.0),
+            Visibility::Occluded { .. }
         ));
     }
 
