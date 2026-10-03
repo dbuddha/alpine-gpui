@@ -21,6 +21,9 @@ use crate::{
 
 /// Hard concurrency cap: a sixth identity evicts rather than failing the open.
 pub(crate) const MAX_WARM_SERVERS: usize = 5;
+// Servers one process sample may see: every warm slot plus the fallback.
+const RUNNING_SERVERS: usize = MAX_WARM_SERVERS + 1;
+const _: () = assert!(RUNNING_SERVERS <= alpine_platform_macos::MAX_SAMPLED_CHILDREN);
 const MAX_OPEN_PATHS: usize = 32;
 const IDLE_TTL: Duration = Duration::from_mins(1);
 
