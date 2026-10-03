@@ -58,7 +58,7 @@ use block2::RcBlock;
 use dispatch2::DispatchQueue;
 
 use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
-use crate::recorder;
+use crate::recorder::{self, TaskUsage};
 use crate::{
     AccessibilityRequest, AccessibilityResponse, ClipboardError, ClipboardEvent,
     ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EditorSignposts,
@@ -624,14 +624,102 @@ fn profile_latency_for_terminal(
     }
 }
 
+// Layouts of rusage_info_v0 and task_power_info_v2 from <sys/resource.h>
+// and <mach/task_info.h>; underscored fields are read by no one.
+#[repr(C)]
+#[derive(Default)]
+struct RusageInfoV0 {
+    _uuid: [u8; 16],
+    _times_and_wakeups: [u64; 4],
+    _pageins_wired_resident: [u64; 3],
+    phys_footprint: u64,
+    _start_and_exit: [u64; 2],
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct TaskPowerInfoV2 {
+    total_user: u64,
+    total_system: u64,
+    task_interrupt_wakeups: u64,
+    task_platform_idle_wakeups: u64,
+    _timer_wakeups: [u64; 2],
+    _gpu_energy: [u64; 4],
+    _energy_ptime_switches: [u64; 3],
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct MachTimebaseInfo {
+    numer: u32,
+    denom: u32,
+}
+
+const RUSAGE_INFO_V0: i32 = 0;
+const TASK_POWER_INFO_V2: u32 = 26;
+const TASK_POWER_INFO_V2_COUNT: u32 = 26;
+const _: () = assert!(size_of::<RusageInfoV0>() == 96);
+const _: () = assert!(core::mem::offset_of!(RusageInfoV0, phys_footprint) == 72);
+const _: () = assert!(size_of::<TaskPowerInfoV2>() == 26 * size_of::<u32>());
+
+unsafe extern "C" {
+    fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut RusageInfoV0) -> i32;
+    fn task_info(task: u32, flavor: u32, info: *mut TaskPowerInfoV2, count: *mut u32) -> i32;
+    fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+    static mach_task_self_: u32;
+}
+
+/// Returns a process's `phys_footprint` in bytes, or `None` once it is gone.
+pub(crate) fn phys_footprint(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    let mut info = RusageInfoV0::default();
+    // SAFETY: `info` is a writable rusage_info_v0, the layout the V0 flavor
+    // fills, and the call keeps no pointer after it returns.
+    let status = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V0, &raw mut info) };
+    (status == 0).then_some(info.phys_footprint)
+}
+
+/// Returns this process's CPU time and wakeups from `TASK_POWER_INFO_V2`.
+pub(crate) fn task_usage() -> Option<TaskUsage> {
+    let mut info = TaskPowerInfoV2::default();
+    let mut count = TASK_POWER_INFO_V2_COUNT;
+    let mut timebase = MachTimebaseInfo::default();
+    // SAFETY: the task port is set before main and never written after.
+    // `count` caps the kernel's write at the size of `info`, and both calls
+    // write only to these locals, keeping no pointer.
+    let (status, timebase_status) = unsafe {
+        (
+            task_info(
+                mach_task_self_,
+                TASK_POWER_INFO_V2,
+                &raw mut info,
+                &raw mut count,
+            ),
+            mach_timebase_info(&raw mut timebase),
+        )
+    };
+    if status != 0 || timebase_status != 0 || timebase.denom == 0 {
+        return None;
+    }
+    // Task times are Mach ticks, 125/3 ns each on Apple silicon.
+    let ticks = u128::from(info.total_user) + u128::from(info.total_system);
+    let cpu_ns = ticks * u128::from(timebase.numer) / u128::from(timebase.denom);
+    Some(TaskUsage {
+        cpu_ns: u64::try_from(cpu_ns).unwrap_or(u64::MAX),
+        interrupt_wakeups: info.task_interrupt_wakeups,
+        idle_wakeups: info.task_platform_idle_wakeups,
+    })
+}
+
 #[cfg(test)]
 mod recorder_tests {
     use std::{
         error::Error,
+        process::Command,
         time::{Duration, Instant},
     };
 
-    use super::{AttemptTiming, EventFrameTiming, PresentationOutcome};
+    use super::{AttemptTiming, EventFrameTiming, PresentationOutcome, phys_footprint, task_usage};
     use crate::{EventTimestamp, RecorderSnapshot, recorder};
 
     #[test]
@@ -658,11 +746,11 @@ mod recorder_tests {
         };
         let (frame, base) = timing.recorder_frame(9, PresentationOutcome::Presented, 0, at(50));
         assert_eq!(base, at(5));
-        recorder::record_frame(frame, base);
+        recorder::record_frame(frame, base, 1);
         let (frame, base) =
             AttemptTiming::default().recorder_frame(10, PresentationOutcome::Cancelled, 0, at(60));
         assert_eq!(base, at(60));
-        recorder::record_frame(frame, base);
+        recorder::record_frame(frame, base, 0);
         let submitted = AttemptTiming {
             submission_started_at: Some(at(70)),
             submission_finished_at: Some(at(78)),
@@ -671,7 +759,7 @@ mod recorder_tests {
         };
         let (frame, base) = submitted.recorder_frame(11, PresentationOutcome::Failed, 0, at(95));
         assert_eq!(base, at(70));
-        recorder::record_frame(frame, base);
+        recorder::record_frame(frame, base, 1);
 
         let mut tsv = Vec::new();
         RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
@@ -691,6 +779,20 @@ mod recorder_tests {
                 format!("\t11\tfailed\t100000000070{submitted}"),
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn usage_reads_this_process_and_live_children_only() -> Result<(), Box<dyn Error>> {
+        assert!(phys_footprint(std::process::id()).is_some_and(|bytes| bytes > 0));
+        assert_eq!(phys_footprint(u32::MAX), None);
+        assert!(task_usage().ok_or("task power info")?.cpu_ns > 0);
+        let mut child = Command::new("/bin/sleep").arg("30").spawn()?;
+        let live = phys_footprint(child.id());
+        child.kill()?;
+        child.wait()?;
+        assert!(live.is_some_and(|bytes| bytes > 0));
+        assert_eq!(phys_footprint(child.id()), None);
         Ok(())
     }
 }
@@ -1501,7 +1603,7 @@ impl PresentationDriver {
             observed_presentation_time_bits,
             terminal_at,
         );
-        recorder::record_frame(frame, base);
+        recorder::record_frame(frame, base, attempt.submission_count());
         if let Some(latency) = profile_latency_for_terminal(evidence.latency(), recovery) {
             let _emitted = self.latency_signposts.emit_terminal_frame_latency(latency);
         }

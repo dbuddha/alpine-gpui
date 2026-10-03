@@ -7332,10 +7332,7 @@ impl EditorApp {
     fn save_performance_log(&mut self, home: Option<std::ffi::OsString>) -> EventEffect {
         let snapshot = RecorderSnapshot::capture();
         let now = std::time::SystemTime::now();
-        let message = match profiling::write_performance_log(home, now, &snapshot) {
-            Ok(frames) => format!("Saved performance log {}", frames.display()),
-            Err(error) => format!("Could not save the performance log: {error}"),
-        };
+        let message = profiling::save_performance_log(home, now, &snapshot);
         self.set_local_status(LocalStatus::Command(Arc::from(message)))
     }
 
@@ -8184,6 +8181,11 @@ impl AppDelegate for EditorApp {
             SceneRevision::new(0),
             [surface_event_kind(event), self.selection_revision, 0],
         );
+        alpine_platform_macos::sample_processes(|children| {
+            for (process_id, server) in self.rust_diagnostics.server_processes() {
+                children.push(process_id, server);
+            }
+        });
         if let SurfaceEvent::Accessibility { request, .. } = event {
             let (queries, actions) = dogfood_accessibility_delta(request.kind());
             self.dogfood_accessibility_queries =

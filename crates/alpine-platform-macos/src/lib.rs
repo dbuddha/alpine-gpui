@@ -22,9 +22,9 @@ use alpine_scene::Scene;
 mod accessibility;
 pub use accessibility::*;
 mod recorder;
-pub use recorder::RecorderSnapshot;
 #[cfg(any(test, feature = "test-support"))]
 pub use recorder::start_recorder_for_test;
+pub use recorder::{MAX_SAMPLED_CHILDREN, RecorderSnapshot, SampledChildren, sample_processes};
 mod signpost;
 pub use signpost::*;
 

@@ -8523,35 +8523,116 @@ fn switching_existing_tabs_does_not_report_missing_file_io() -> Result<(), Box<d
 }
 
 #[test]
-fn idle_editor_and_stage_points_outside_native_dispatch_record_nothing()
+fn idle_editor_records_nothing_and_events_sample_at_most_once_a_second()
 -> Result<(), Box<dyn Error>> {
     alpine_platform_macos::start_recorder_for_test();
     let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?;
     let mut runtime = Application::new(test_app()?, viewport()?, clear, WorkerConfig::default())?;
     assert!(runtime.frame_if_dirty().is_some());
     assert!(runtime.frame_if_dirty().is_none());
+    assert_eq!(RecorderSnapshot::capture().work(), 0);
+    let started = std::time::Instant::now();
     for timestamp in 1..=3 {
         let _ = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(timestamp),
         });
     }
+    // A stalled runner may sample again a second later, but never sooner.
+    let allowed = 1 + started.elapsed().as_secs();
+    let sampled = RecorderSnapshot::capture();
+    let count = u64::try_from(sampled.sample_count())?;
+    assert!((1..=allowed).contains(&count));
+    assert_eq!(sampled.work(), count);
     assert!(runtime.frame_if_dirty().is_none());
-    assert_eq!(RecorderSnapshot::capture().work(), 0);
+    assert_eq!(RecorderSnapshot::capture(), sampled);
     Ok(())
 }
 
 #[test]
-fn performance_log_writes_frames_under_library_logs() -> Result<(), Box<dyn Error>> {
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn performance_samples_name_the_server_on_each_child_row() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    let server = rust_diagnostics::tests::mock_executable();
+    app.rust_diagnostics = LanguageServices::from(RustDiagnostics::with_server(server));
+    let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(1),
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let process_id = loop {
+        if let Some(process_id) = runtime.delegate().rust_diagnostics.server_process_id() {
+            break process_id;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("the mock server never published its PID".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    // Recording starts now, so the next event's sample sees the server.
+    alpine_platform_macos::start_recorder_for_test();
+    let _ = runtime.dispatch(&SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(2),
+    });
+    let mut tsv = Vec::new();
+    RecorderSnapshot::capture().write_samples_tsv(&mut tsv)?;
+    let tsv = String::from_utf8(tsv)?;
+    let header: Vec<&str> = tsv.lines().next().ok_or("header")?.split('\t').collect();
+    let column = header
+        .iter()
+        .position(|name| *name == "server")
+        .ok_or("server column")?;
+    let row = tsv
+        .lines()
+        .find(|line| line.contains("\tlanguage-server\t"))
+        .ok_or("child row")?;
+    let fields: Vec<&str> = row.split('\t').collect();
+    assert_eq!(fields.get(2), Some(&process_id.to_string().as_str()));
+    let name = server.file_name().and_then(std::ffi::OsStr::to_str);
+    assert_eq!(fields.get(column).copied(), name);
+    Ok(())
+}
+
+#[test]
+fn performance_log_writes_both_tables_under_library_logs() -> Result<(), Box<dyn Error>> {
     let home = TestWorkspace::new()?;
     let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_759_400_000);
     let snapshot = RecorderSnapshot::default();
-    let frames = super::profiling::write_performance_log(Some(home.path().into()), at, &snapshot)?;
+    let save = |home: Option<std::ffi::OsString>, at| {
+        super::profiling::save_performance_log(home, at, &snapshot)
+    };
     let logs = home.path().join("Library/Logs/Alpine Editor");
-    assert_eq!(frames, logs.join("perf-1759400000-frames.tsv"));
-    assert!(fs::read_to_string(&frames)?.starts_with("event\trevision\toutcome\tevent_ns\t"));
+    assert_eq!(
+        save(Some(home.path().into()), at),
+        format!(
+            "Saved perf-1759400000-frames.tsv and perf-1759400000-samples.tsv in {}",
+            logs.display()
+        )
+    );
+    let frames = fs::read_to_string(logs.join("perf-1759400000-frames.tsv"))?;
+    assert!(frames.starts_with("event\trevision\toutcome\tevent_ns\t"));
+    let samples = fs::read_to_string(logs.join("perf-1759400000-samples.tsv"))?;
+    assert!(samples.starts_with("time_ns\trole\tpid\tserver\tphys_footprint\t"));
     for missing in [None, Some(std::ffi::OsString::new())] {
-        assert!(super::profiling::write_performance_log(missing, at, &snapshot).is_err());
+        assert_eq!(
+            save(missing, at),
+            "Could not save the performance log: HOME is not set"
+        );
     }
+
+    // A directory in the samples file's place fails it after frames saved.
+    let later = at + std::time::Duration::from_secs(1);
+    fs::create_dir(logs.join("perf-1759400001-samples.tsv"))?;
+    let partial = save(Some(home.path().into()), later);
+    let saved = format!(
+        "Saved perf-1759400001-frames.tsv in {}, but not perf-1759400001-samples.tsv: ",
+        logs.display()
+    );
+    assert!(partial.starts_with(&saved), "{partial}");
+    assert!(logs.join("perf-1759400001-frames.tsv").is_file());
 
     let mut app = test_app()?;
     assert!(
@@ -8559,7 +8640,7 @@ fn performance_log_writes_frames_under_library_logs() -> Result<(), Box<dyn Erro
             .visual_changed
     );
     let saved = app.local_status.as_ref().map(LocalStatus::message);
-    assert!(saved.is_some_and(|message| message.starts_with("Saved performance log ")));
+    assert!(saved.is_some_and(|message| message.starts_with("Saved perf-")));
     assert!(app.save_performance_log(None).visual_changed);
     assert_eq!(
         app.local_status.as_ref().map(LocalStatus::message),

@@ -268,6 +268,10 @@ impl LspClient {
         }
     }
 
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        self.process.process_id()
+    }
+
     pub(crate) fn snapshot(&self) -> LspClientSnapshot {
         LspClientSnapshot {
             started: self.started,

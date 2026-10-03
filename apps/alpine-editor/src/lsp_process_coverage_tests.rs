@@ -572,7 +572,7 @@ fn supervisor_and_helper_spawn_failures_are_injected_without_bypasses() -> Resul
     let working_spec = ProcessSpec::new("/bin/sleep", ["30"], Some(&env::temp_dir()))?;
     let counters = Arc::new(Counters::default());
     let mut process = spawn_process(&working_spec, identity(1), ProcessEpoch(1), &counters)?;
-    assert!(!stop_running(&mut process, true));
+    assert!(!stop_running(&mut process, true, &counters));
     Ok(())
 }
 
@@ -686,7 +686,7 @@ fn input_admission_distinguishes_identity_full_disconnected_and_missing_sender()
         .ok_or("disconnected input queue accepted a request")?;
     assert_eq!(closed.1.kind, FailureKind::Io(io::ErrorKind::BrokenPipe));
     let mut process = running.take().ok_or("running process disappeared")?;
-    assert!(!stop_running(&mut process, true));
+    assert!(!stop_running(&mut process, true, &counters));
     assert_eq!(counters.retained_bytes.load(Ordering::Relaxed), 0);
     Ok(())
 }
@@ -1271,4 +1271,167 @@ fn ordinary_events_reserve_exact_capacity_for_terminal_classification() {
         events[EVENT_CAPACITY - 1].stop_reason(),
         Some(StopReason::EventOverflow)
     );
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn recorder_samples_the_running_child_and_forgets_it_once_stopped() -> Result<(), Box<dyn Error>> {
+    let mut process = LanguageServerProcess::start(
+        ProcessSpec::new("/bin/cat", std::iter::empty::<&str>(), None)?,
+        identity(1),
+    )?;
+    let started = wait_for(&mut process, |event| {
+        matches!(event, ProcessEvent::Started { .. })
+    })?;
+    let ProcessEvent::Started { process_id, .. } = started else {
+        return Err("expected the child to start".into());
+    };
+    assert_eq!(process.process_id(), Some(process_id));
+    alpine_platform_macos::start_recorder_for_test();
+    alpine_platform_macos::sample_processes(|children| children.push(process_id, "cat"));
+    let mut tsv = Vec::new();
+    alpine_platform_macos::RecorderSnapshot::capture().write_samples_tsv(&mut tsv)?;
+    let tsv = String::from_utf8(tsv)?;
+    let row = tsv
+        .lines()
+        .find(|line| line.contains("\tlanguage-server\t"))
+        .ok_or("child row")?;
+    let fields: Vec<&str> = row.split('\t').collect();
+    assert_eq!(fields.get(2), Some(&process_id.to_string().as_str()));
+    assert_eq!(fields.get(3), Some(&"cat"));
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    assert!(
+        fields
+            .get(4)
+            .is_some_and(|bytes| bytes.parse::<u64>().is_ok_and(|bytes| bytes > 0))
+    );
+    let _ = process.shutdown();
+    assert_eq!(process.process_id(), None);
+
+    let mut crashed = LanguageServerProcess::start(shell("exit 7")?, identity(1))?;
+    let _ = wait_for(&mut crashed, |event| {
+        matches!(event, ProcessEvent::Exited { .. })
+    })?;
+    assert_eq!(crashed.process_id(), None);
+    Ok(())
+}
+
+#[test]
+fn a_reported_exit_unpublishes_the_pid_before_announcing_it() {
+    let announced = Arc::new(AtomicU32::new(u32::MAX));
+    let seen = Arc::clone(&announced);
+    let counters = Arc::new_cyclic(|counters: &std::sync::Weak<Counters>| {
+        let counters = counters.clone();
+        let wake: ProcessWake = Arc::new(move || {
+            if let Some(counters) = counters.upgrade() {
+                seen.store(
+                    counters.process_id.load(Ordering::Acquire),
+                    Ordering::Release,
+                );
+            }
+        });
+        Counters {
+            wake: Some(wake),
+            ..Counters::default()
+        }
+    });
+    counters.process_id.store(42, Ordering::Release);
+    let (events, receiver) = sync_channel(1);
+    let exit = Ok(Some(ExitStatus::default()));
+    let decision = handle_wait(identity(1), ProcessEpoch(1), exit, &events, &counters);
+    assert_eq!(decision, WaitDecision::Exited);
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(ProcessEvent::Exited { .. })
+    ));
+    assert_eq!(announced.load(Ordering::Acquire), 0);
+}
+
+// Records the published PID when the input writer exits, which a stop causes
+// by dropping the input sender before it kills or reaps the child.
+struct PidAtWriterExit {
+    counters: Arc<Counters>,
+    seen: Arc<AtomicU32>,
+}
+
+impl ThreadSpawner for PidAtWriterExit {
+    fn spawn<F>(
+        &self,
+        stage: ProcessStage,
+        name: &'static str,
+        job: F,
+    ) -> io::Result<JoinHandle<()>>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let counters = Arc::clone(&self.counters);
+        let seen = Arc::clone(&self.seen);
+        SystemThreadSpawner.spawn(stage, name, move || {
+            job();
+            if stage == ProcessStage::SpawnInput {
+                seen.store(
+                    counters.process_id.load(Ordering::Acquire),
+                    Ordering::Release,
+                );
+            }
+        })
+    }
+}
+
+// A published `/bin/cat` child and the PID its input writer saw on exit.
+#[cfg(unix)]
+struct PublishedChild {
+    process: Running,
+    counters: Arc<Counters>,
+    writer_saw: Arc<AtomicU32>,
+}
+
+#[cfg(unix)]
+impl PublishedChild {
+    fn spawn() -> Result<Self, Box<dyn Error>> {
+        let counters = Arc::new(Counters::default());
+        let writer_saw = Arc::new(AtomicU32::new(u32::MAX));
+        let spawner = PidAtWriterExit {
+            counters: Arc::clone(&counters),
+            seen: Arc::clone(&writer_saw),
+        };
+        let spec = ProcessSpec::new("/bin/cat", std::iter::empty::<&str>(), None)?;
+        let process = spawn_process_with(&spec, identity(1), ProcessEpoch(1), &counters, &spawner)?;
+        counters
+            .process_id
+            .store(process.child.id(), Ordering::Release);
+        Ok(Self {
+            process,
+            counters,
+            writer_saw,
+        })
+    }
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn stops_unpublish_the_pid_before_killing_or_reaping_the_child() -> Result<(), Box<dyn Error>> {
+    let (events, _receiver) = sync_channel(EVENT_CAPACITY);
+    let child = PublishedChild::spawn()?;
+    stop_for_restart(child.process, &events, &child.counters);
+    assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
+    let child = PublishedChild::spawn()?;
+    let reason = StopReason::OutputOverflow;
+    let _ = stop_for_reason(&mut Some(child.process), reason, &events, &child.counters);
+    assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
+    // The supervisor's exit path, then its shutdown tail.
+    for kill in [false, true] {
+        let mut child = PublishedChild::spawn()?;
+        assert!(!stop_running(&mut child.process, kill, &child.counters));
+        assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
+    }
+
+    let counters = Arc::new(Counters::default());
+    let (full, _full_receiver) = sync_channel(0);
+    let spec = ProcessSpec::new("/bin/cat", std::iter::empty::<&str>(), None)?;
+    assert!(start_running(&spec, identity(1), ProcessEpoch(1), &full, &counters).is_none());
+    assert_eq!(counters.process_id.load(Ordering::Acquire), 0);
+    Ok(())
 }

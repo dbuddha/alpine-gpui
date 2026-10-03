@@ -21,6 +21,9 @@ use crate::{
 
 /// Hard concurrency cap: a sixth identity evicts rather than failing the open.
 pub(crate) const MAX_WARM_SERVERS: usize = 5;
+// Servers one process sample may see: every warm slot plus the fallback.
+const RUNNING_SERVERS: usize = MAX_WARM_SERVERS + 1;
+const _: () = assert!(RUNNING_SERVERS <= alpine_platform_macos::MAX_SAMPLED_CHILDREN);
 const MAX_OPEN_PATHS: usize = 32;
 const IDLE_TTL: Duration = Duration::from_mins(1);
 
@@ -134,6 +137,14 @@ impl LanguageServices {
     #[cfg(test)]
     pub(crate) fn warm_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Running servers' process IDs, each with its executable's file name.
+    pub(crate) fn server_processes(&self) -> impl Iterator<Item = (u32, &str)> {
+        let models = self.slots.iter().map(|slot| &slot.model);
+        models
+            .chain([&self.fallback])
+            .filter_map(|model| Some((model.server_process_id()?, model.server_name())))
     }
 
     #[cfg(test)]

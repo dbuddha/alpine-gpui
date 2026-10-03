@@ -2273,6 +2273,21 @@ impl RustDiagnostics {
         }
     }
 
+    pub(crate) fn server_process_id(&self) -> Option<u32> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.client.process_id())
+    }
+
+    /// The server executable's file name, such as `rust-analyzer`, or empty.
+    pub(crate) fn server_name(&self) -> &str {
+        self.server_path
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default()
+    }
+
     pub(crate) fn snapshot(&self) -> RustDiagnosticsSnapshot {
         let (
             generation,
