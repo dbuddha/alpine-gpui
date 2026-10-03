@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreMedia
 import CoreVideo
@@ -183,6 +184,9 @@ struct CaptureMain {
             switch options.command {
             case "run":
                 let request = try CaptureRequest(&options)
+                // ScreenCaptureKit needs a window server connection; AppKit
+                // opens it, and a prohibited policy keeps the helper unfocused.
+                await MainActor.run { _ = NSApplication.shared.setActivationPolicy(.prohibited) }
                 try await capture(request)
             case "self-test":
                 try options.finish()
