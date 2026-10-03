@@ -31,6 +31,8 @@ const FRAME_HEADER: &str = concat!(
     "\thandler_end_ns\tsubmit_begin_ns\tsubmit_end_ns\tgpu_observed_ns\ttarget_ns",
     "\ttarget_present_ns\tpresented_ns\trecorded_ns\n",
 );
+// A child row's server is empty when its name is unknown. The editor row's
+// dropped_children counts children past MAX_SAMPLED_CHILDREN, left unread.
 const SAMPLE_HEADER: &str = concat!(
     "time_ns\trole\tpid\tserver\tphys_footprint\tcpu_ns",
     "\tinterrupt_wakeups\tidle_wakeups\tsubmissions\tdropped_children\n",
@@ -496,9 +498,7 @@ impl RecorderSnapshot {
         Ok(())
     }
 
-    /// Writes a header and one TSV row per process per sample. Child rows
-    /// name their server, empty if unknown; the editor row's
-    /// `dropped_children` counts children past the sixth, left unread.
+    /// Writes a header and one TSV row per process per sample.
     /// # Errors
     /// Returns the first error from `out`.
     pub fn write_samples_tsv(&self, out: &mut impl Write) -> io::Result<()> {
