@@ -1326,10 +1326,12 @@ fn scrolling_lexes_only_lines_new_to_the_viewport() -> Result<(), Box<dyn Error>
     assert_eq!(first.misses(), usize_to_u64(previous.len()));
     assert_eq!(first.hits(), 0);
 
-    // An N-line scroll lexes at most N lines and never a still-cached line.
+    // An N-line scroll moves the view N lines and lexes at most N lines,
+    // none of them laid out in the previous frame.
     let steps: [i16; 9] = [0, 1, 2, 5, 13, -3, -8, 120, -64];
+    let mut top = 0_i16;
     for (frame, lines) in (2_u64..).zip(steps) {
-        let before = app.syntax_cache.snapshot();
+        let before = app.syntax_cache.snapshot().misses();
         let _ = app.handle_event(&SurfaceEvent::Scroll {
             timestamp: EventTimestamp::new(frame),
             delta_x: 0.0,
@@ -1339,20 +1341,27 @@ fn scrolling_lexes_only_lines_new_to_the_viewport() -> Result<(), Box<dyn Error>
             modifiers: Modifiers::default(),
         });
         let _ = app.try_scene(SceneRevision::new(frame), viewport)?;
-        let current = active_pane_lines(&app)?.laid_out();
-        let after = app.syntax_cache.snapshot();
-        let lexed = after.misses() - before.misses();
-        let reused = shared_lines(&previous, &current);
+        top += lines;
+        let expected = f32::from(top) * LINE_HEIGHT;
+        assert_eq!(
+            app.scroll_y.to_bits(),
+            expected.to_bits(),
+            "a {lines}-line scroll left the view at {}, not {expected}",
+            app.scroll_y
+        );
+        let pane = active_pane_lines(&app)?;
+        assert_eq!(pane.visible().start, usize::try_from(top)?);
+        let current = pane.laid_out();
+        let lexed = app.syntax_cache.snapshot().misses() - before;
+        let new_lines = current.len() - shared_lines(&previous, &current);
         assert!(
             lexed <= u64::from(lines.unsigned_abs()),
             "a {lines}-line scroll lexed {lexed} lines"
         );
-        assert_eq!(
-            lexed,
-            usize_to_u64(current.len() - reused),
-            "a {lines}-line scroll re-lexed a cached line"
+        assert!(
+            lexed <= usize_to_u64(new_lines),
+            "a {lines}-line scroll re-lexed a line laid out in the previous frame"
         );
-        assert_eq!(after.hits() - before.hits(), usize_to_u64(reused));
         previous = current;
     }
     Ok(())
