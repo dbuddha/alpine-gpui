@@ -13,6 +13,8 @@ members = [
   "tools/alpine-assurance",
   "tools/alpine-ax-client",
 ]
+# bench/ is its own workspace: a local GUI tool that never ships.
+exclude = ["bench"]
 resolver = "3"
 
 [workspace.package]
