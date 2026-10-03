@@ -1278,6 +1278,123 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     Ok(())
 }
 
+// The syntax cache is content-addressed, so lexing counts need distinct lines.
+fn distinct_source(lines: usize) -> Result<String, fmt::Error> {
+    use std::fmt::Write as _;
+    let mut source = String::with_capacity(lines.saturating_mul(40));
+    for index in 0..lines {
+        writeln!(source, "pub fn item_{index}() {{ let n = {index}; }}")?;
+    }
+    Ok(source)
+}
+
+fn active_pane_lines(app: &EditorApp) -> Result<VisibleLines, Box<dyn Error>> {
+    let pane = app.active_pane_bounds()?;
+    Ok(VisibleLines::new(
+        app.buffer().snapshot().line_count(),
+        app.scroll_y,
+        PositiveFinite::new(pane.size().height()).ok_or("pane height")?,
+        PositiveFinite::new(LINE_HEIGHT).ok_or("line height")?,
+        DEFAULT_OVERSCAN_LINES,
+    )?)
+}
+
+fn shared_lines(first: &Range<usize>, second: &Range<usize>) -> usize {
+    first
+        .end
+        .min(second.end)
+        .saturating_sub(first.start.max(second.start))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "large-file lexing counts are covered outside Miri")]
+fn scrolling_lexes_only_lines_new_to_the_viewport() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", distinct_source(5_000)?)?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    let viewport = viewport()?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let mut previous = active_pane_lines(&app)?.laid_out();
+    let first = app.syntax_cache.snapshot();
+    assert_eq!(first.misses(), usize_to_u64(previous.len()));
+    assert_eq!(first.hits(), 0);
+
+    // An N-line scroll lexes at most N lines and never a still-cached line.
+    let steps: [i16; 9] = [0, 1, 2, 5, 13, -3, -8, 120, -64];
+    for (frame, lines) in (2_u64..).zip(steps) {
+        let before = app.syntax_cache.snapshot();
+        let _ = app.handle_event(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(frame),
+            delta_x: 0.0,
+            delta_y: -f32::from(lines) * LINE_HEIGHT,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        });
+        let _ = app.try_scene(SceneRevision::new(frame), viewport)?;
+        let current = active_pane_lines(&app)?.laid_out();
+        let after = app.syntax_cache.snapshot();
+        let lexed = after.misses() - before.misses();
+        let reused = shared_lines(&previous, &current);
+        assert!(
+            lexed <= u64::from(lines.unsigned_abs()),
+            "a {lines}-line scroll lexed {lexed} lines"
+        );
+        assert_eq!(
+            lexed,
+            usize_to_u64(current.len() - reused),
+            "a {lines}-line scroll re-lexed a cached line"
+        );
+        assert_eq!(after.hits() - before.hits(), usize_to_u64(reused));
+        previous = current;
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "large-file lexing counts are covered outside Miri")]
+fn cold_open_of_a_large_file_lexes_only_the_laid_out_range() -> Result<(), Box<dyn Error>> {
+    const LINES: usize = 20_000;
+    let source = distinct_source(LINES)?;
+    let root = TestWorkspace::new()?;
+    let groups = [
+        ("main.rs", crate::syntax::SyntaxLanguage::Rust),
+        ("main.py", crate::syntax::SyntaxLanguage::Python),
+        ("main.cpp", crate::syntax::SyntaxLanguage::Cpp),
+        ("Main.java", crate::syntax::SyntaxLanguage::Java),
+        ("main.ts", crate::syntax::SyntaxLanguage::TypeScript),
+        ("main.js", crate::syntax::SyntaxLanguage::JavaScript),
+    ];
+    for (name, language) in groups {
+        root.write(name, &source)?;
+        let path = root.path().join(name);
+        let mut app = EditorApp::open_file(TestTextSystem, &path)?;
+        assert_eq!(
+            app.rust_diagnostics.highlighter_for_path(Some(&path)),
+            language
+        );
+        let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+        let lines = active_pane_lines(&app)?;
+        let cache = app.syntax_cache.snapshot();
+        // The 100 ms budget is a bench row; CI proves the first frame lexes
+        // the visible range plus overscan, never the whole file.
+        assert_eq!(
+            cache.misses(),
+            usize_to_u64(lines.laid_out().len()),
+            "{name}"
+        );
+        assert!(lines.laid_out().len() <= lines.visible().len() + 2 * DEFAULT_OVERSCAN_LINES);
+        assert!(lines.laid_out().len() < LINES / 100, "{name}");
+        assert_eq!(cache.hits(), 0, "{name}");
+        assert_eq!(
+            app.rust_diagnostics.warm_count(),
+            0,
+            "{name} started a server"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeError> {
     let viewport = viewport()?;
