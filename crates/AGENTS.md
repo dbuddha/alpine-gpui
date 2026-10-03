@@ -80,7 +80,8 @@ and destroy elements before revoking the handler.
 
 AppKit tests are `harness = false` main-thread executables that need
 `--cfg alpine_native_validation`; without it 13 of the 14 print a `skipped:`
-line and pass (`native_surface` returns early instead). A test filter
+line and pass. `native_surface` has no such gate and shows a real window, so
+`scripts/check.sh` opens one. A test filter
 matching zero tests exits 0, so check the count. Hosted CI uses the test-only
 Metal route and `ALPINE_PRESENTATION_EVIDENCE_MODE=hosted-direct`.
 
