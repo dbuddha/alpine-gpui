@@ -9,7 +9,7 @@ parity:
   language_intelligence: {status: partial, closes: M4}
   git: {status: none, closes: M7}
 criteria:
-  "2.1": "CI proves warm frames lex nothing and a cold first frame lexes only the laid-out range (SyntaxCache counters); the 100 ms budget, cold and warm, is a bench row"
+  "2.1": "CI proves warm frames lex nothing and a cold first frame lexes only the laid-out range (SyntaxCache counters); the 100 ms budget, cold and warm, becomes a bench row in M1.4"
   "2.2": "Rust passes; C++ shows clangd diagnostics only; Python, Java, TypeScript and JavaScript need a server"
   "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
   "2.4": "passes on main"

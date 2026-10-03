@@ -40,7 +40,7 @@ autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their o
 next:
   - "M1.1 recorder: frame-stage rings, 1 Hz footprint per process, idle counters, export"
   - "M1.2 first permissioned bench session with Deepak, 2026-10-02"
-  - "M1.4 ten-trial baseline against Zed and AppKit, budgets set, CP1"
+  - "M1.4 highlight-latency bench row (2.1), ten-trial baseline against Zed and AppKit, budgets, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
