@@ -47,8 +47,23 @@ pub fn stamp_from_table(table: &Table) -> Result<Stamp, String> {
     Ok(stamp)
 }
 
-/// Reasons the run cannot become a baseline row; empty means it qualifies.
-pub fn protocol_violations(stamp: &Stamp, summary: &Table) -> Result<Vec<String>, String> {
+/// Measured trials (not warm-ups) that stayed valid, from `trials.tsv`.
+pub fn valid_trials(trials: &Table) -> Result<usize, String> {
+    let mut count = 0;
+    for row in &trials.rows {
+        if trials.get(row, "warmup")? == "0" && trials.get(row, "valid")? == "1" {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Reasons the run cannot become baseline rows; empty means it qualifies.
+pub fn protocol_violations(
+    stamp: &Stamp,
+    valid: usize,
+    summary: &Table,
+) -> Result<Vec<String>, String> {
     let mut violations = Vec::new();
     let power = stamp.require("power")?;
     if !stamp::is_ac_full_power(power) {
@@ -68,23 +83,13 @@ pub fn protocol_violations(stamp: &Stamp, summary: &Table) -> Result<Vec<String>
             ));
         }
     }
+    if valid < MIN_TRIALS {
+        violations.push(format!(
+            "the run has {valid} valid measured trials; the protocol needs {MIN_TRIALS}"
+        ));
+    }
     if summary.rows.is_empty() {
         violations.push("the run has no summary rows".to_owned());
-    }
-    let mut short = 0;
-    for row in &summary.rows {
-        let n: usize = summary
-            .get(row, "n")?
-            .parse()
-            .map_err(|_| "summary n is not a count")?;
-        if n < MIN_TRIALS {
-            short += 1;
-        }
-    }
-    if short > 0 {
-        violations.push(format!(
-            "{short} summary rows have fewer than {MIN_TRIALS} valid trials"
-        ));
     }
     Ok(violations)
 }
@@ -103,21 +108,32 @@ fn app_identity<'a>(stamp: &'a Stamp, app: &str) -> (&'a str, &'a str) {
     }
 }
 
+/// Baseline rows for every summary row with at least `MIN_TRIALS` values,
+/// and a note for each row skipped because a metric was missing in a trial.
 pub fn baseline_rows(
     stamp: &Stamp,
     summary: &Table,
     milestone: &str,
     note: &str,
     date: &str,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<(Vec<Vec<String>>, Vec<String>), String> {
     if milestone.trim().is_empty() {
         return Err("--milestone must name a milestone, for example M1".to_owned());
     }
     let app = stamp.require("app")?;
     let (app_version, app_tree) = app_identity(stamp, app);
     let mut rows = Vec::with_capacity(summary.rows.len());
+    let mut skipped = Vec::new();
     for row in &summary.rows {
         let value = |name: &str| summary.get(row, name).map(str::to_owned);
+        let n: usize = summary
+            .get(row, "n")?
+            .parse()
+            .map_err(|_| "summary n is not a count")?;
+        if n < MIN_TRIALS {
+            skipped.push(format!("{} {} (n={n})", value("phase")?, value("metric")?));
+            continue;
+        }
         rows.push(vec![
             date.to_owned(),
             milestone.to_owned(),
@@ -146,7 +162,7 @@ pub fn baseline_rows(
             stamp.require("zed_version")?.to_owned(),
         ]);
     }
-    Ok(rows)
+    Ok((rows, skipped))
 }
 
 pub fn append(
@@ -157,7 +173,8 @@ pub fn append(
 ) -> Result<usize, String> {
     let stamp = stamp_from_table(&tsv::read(&run_dir.join("run.tsv"))?)?;
     let summary = tsv::read(&run_dir.join("summary.tsv"))?;
-    let violations = protocol_violations(&stamp, &summary)?;
+    let valid = valid_trials(&tsv::read(&run_dir.join("trials.tsv"))?)?;
+    let violations = protocol_violations(&stamp, valid, &summary)?;
     if !violations.is_empty() {
         return Err(format!(
             "{} does not meet the protocol:\n  {}",
@@ -166,16 +183,24 @@ pub fn append(
         ));
     }
     let (date, _) = stamp::utc(stamp::now_seconds());
-    let rows = baseline_rows(&stamp, &summary, milestone, note, &date)?;
+    let (rows, skipped) = baseline_rows(&stamp, &summary, milestone, note, &date)?;
+    if !skipped.is_empty() {
+        eprintln!(
+            "bench: skipped rows with fewer than {MIN_TRIALS} values: {}",
+            skipped.join(", ")
+        );
+    }
     tsv::append(baseline, BASELINE_HEADER, &rows)?;
     Ok(rows.len())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BASELINE_HEADER, baseline_rows, protocol_violations, stamp_from_table};
+    use super::{
+        BASELINE_HEADER, baseline_rows, protocol_violations, stamp_from_table, valid_trials,
+    };
     use crate::stamp::Stamp;
-    use crate::trial::SUMMARY_HEADER;
+    use crate::trial::{SUMMARY_HEADER, TRIALS_HEADER};
     use crate::tsv::Table;
 
     fn stamp(app: &str, power: &str, tree: &str) -> Stamp {
@@ -230,6 +255,7 @@ mod tests {
     fn a_protocol_run_qualifies() -> Result<(), String> {
         let violations = protocol_violations(
             &stamp("alpine", "ac lowpower=0 battery=100%", "clean"),
+            10,
             &summary(10)?,
         )?;
         assert!(violations.is_empty(), "{violations:?}");
@@ -240,26 +266,61 @@ mod tests {
     fn short_battery_or_dirty_runs_are_refused() -> Result<(), String> {
         let violations = protocol_violations(
             &stamp("alpine", "battery lowpower=0 battery=80%", "dirty"),
+            1,
             &summary(1)?,
         )?;
         assert_eq!(violations.len(), 3, "{violations:?}");
-        let empty = Table::new(SUMMARY_HEADER);
         assert!(
-            !protocol_violations(&stamp("zed", "ac lowpower=0 battery=100%", "clean"), &empty)?
-                .is_empty()
+            violations[2].contains("1 valid measured trials"),
+            "{violations:?}"
         );
+        let empty = Table::new(SUMMARY_HEADER);
+        let stamp = stamp("zed", "ac lowpower=0 battery=100%", "clean");
+        assert!(!protocol_violations(&stamp, 10, &empty)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn valid_trials_count_measured_valid_rows_only() -> Result<(), String> {
+        let mut trials = Table::new(TRIALS_HEADER);
+        for (warmup, valid) in [("1", "1"), ("0", "1"), ("0", "0"), ("0", "1")] {
+            let mut row = vec![
+                "r".to_owned(),
+                "1".to_owned(),
+                warmup.to_owned(),
+                valid.to_owned(),
+            ];
+            row.resize(TRIALS_HEADER.len(), String::new());
+            trials.push(row)?;
+        }
+        assert_eq!(valid_trials(&trials)?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn rows_missing_values_are_skipped_not_fatal() -> Result<(), String> {
+        let mut table = summary(10)?;
+        let mut short = table.rows[0].clone();
+        short[4] = "footprint_tool_end".to_owned();
+        short[6] = "9".to_owned();
+        table.push(short)?;
+        let stamp = stamp("alpine", "ac lowpower=0 battery=100%", "clean");
+        let (rows, skipped) = baseline_rows(&stamp, &table, "M1", "", "d")?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(skipped, vec!["idle footprint_tool_end (n=9)".to_owned()]);
         Ok(())
     }
 
     #[test]
     fn rows_carry_the_stamp_and_the_measured_app_version() -> Result<(), String> {
-        let rows = baseline_rows(
+        let (rows, skipped) = baseline_rows(
             &stamp("zed", "ac lowpower=0 battery=100%", "clean"),
             &summary(10)?,
             "M1",
             "first",
             "2026-10-02T18:30:05Z",
         )?;
+        assert!(skipped.is_empty());
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.len(), BASELINE_HEADER.len());

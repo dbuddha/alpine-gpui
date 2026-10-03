@@ -226,7 +226,7 @@ fn run_trials(context: &Context<'_>) -> Result<(), String> {
         request.app.name()
     );
     thread::sleep(Duration::from_secs(3));
-    let mut kept: Vec<Metric> = Vec::new();
+    let mut kept: Vec<Vec<Metric>> = Vec::new();
     for index in 0..total {
         let number = index + 1;
         let warm = index < warmup;
@@ -235,7 +235,7 @@ fn run_trials(context: &Context<'_>) -> Result<(), String> {
                 record(context, &outcome)?;
                 eprintln!("bench: {}", outcome_line(&outcome, total));
                 if !outcome.warmup && outcome.driven.invalid.is_none() {
-                    kept.extend(outcome.metrics);
+                    kept.push(outcome.metrics);
                 }
             }
             Err(error) => {
@@ -1059,9 +1059,9 @@ fn optional(value: Option<f64>) -> String {
     value.map_or_else(|| MISSING.to_owned(), format_value)
 }
 
-fn write_summary(context: &Context<'_>, kept: &[Metric]) -> Result<(), String> {
+fn write_summary(context: &Context<'_>, kept: &[Vec<Metric>]) -> Result<(), String> {
     let mut table = tsv::Table::new(SUMMARY_HEADER);
-    for row in analysis::summarize(kept) {
+    for row in analysis::summarize_trials(kept) {
         let summary = &row.summary;
         table.push(vec![
             context.run_id.clone(),

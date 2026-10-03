@@ -166,6 +166,8 @@ pub struct Workload {
     /// Hands-off time after the window is verified, inside `startup`.
     pub settle_seconds: u32,
     pub phases: &'static [Phase],
+    /// Untimed trials first, so file caches and app code pages are warm and
+    /// the first measured trial is not an outlier. `--warmup` overrides it.
     pub warmup_trials: u32,
     pub rust_analyzer: bool,
 }
@@ -215,7 +217,7 @@ pub const WORKLOADS: &[Workload] = &[
             },
             setup: Some(CARET_TO_LINE_11),
         }],
-        warmup_trials: 0,
+        warmup_trials: 1,
         rust_analyzer: false,
     },
     Workload {
@@ -233,7 +235,7 @@ pub const WORKLOADS: &[Workload] = &[
             },
             setup: Some(CARET_TO_LINE_11),
         }],
-        warmup_trials: 0,
+        warmup_trials: 1,
         rust_analyzer: false,
     },
     Workload {
@@ -251,7 +253,7 @@ pub const WORKLOADS: &[Workload] = &[
             },
             setup: None,
         }],
-        warmup_trials: 0,
+        warmup_trials: 1,
         rust_analyzer: false,
     },
     Workload {
@@ -265,7 +267,7 @@ pub const WORKLOADS: &[Workload] = &[
             action: Action::Idle,
             setup: None,
         }],
-        warmup_trials: 0,
+        warmup_trials: 1,
         rust_analyzer: false,
     },
     Workload {
@@ -305,7 +307,7 @@ pub const WORKLOADS: &[Workload] = &[
             action: Action::Idle,
             setup: None,
         }],
-        warmup_trials: 0,
+        warmup_trials: 1,
         rust_analyzer: false,
     },
 ];
@@ -458,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_analyzer_is_only_for_the_repository_workload() -> Result<(), String> {
+    fn rust_analyzer_is_only_for_the_repository_workload() {
         for workload in WORKLOADS {
             assert_eq!(
                 workload.rust_analyzer,
@@ -467,9 +469,18 @@ mod tests {
                 workload.name
             );
         }
-        assert_eq!(find("open-repo")?.warmup_trials, 1);
         assert!(find("nope").is_err());
-        Ok(())
+    }
+
+    #[test]
+    fn every_workload_starts_with_an_untimed_warm_up() {
+        for workload in WORKLOADS {
+            assert!(
+                workload.warmup_trials >= 1,
+                "{} has no warm-up",
+                workload.name
+            );
+        }
     }
 
     #[test]

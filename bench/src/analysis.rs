@@ -594,12 +594,41 @@ pub fn summarize(metrics: &[Metric]) -> Vec<SummaryRow> {
         .collect()
 }
 
+pub const CHILD_FOOTPRINT: &str = "footprint_child_max:";
+
+/// Like `summarize` over valid trials, but a child name that a tick caught
+/// in some trials only (a short-lived `rustc`) counts as 0 bytes in a trial
+/// that ran the phase without it, so every row has one value per trial.
+pub fn summarize_trials(trials: &[Vec<Metric>]) -> Vec<SummaryRow> {
+    let mut children: Vec<(&str, &str, &'static str)> = Vec::new();
+    for metric in trials.iter().flatten() {
+        let key = (metric.phase.as_str(), metric.name.as_str(), metric.unit);
+        if metric.name.starts_with(CHILD_FOOTPRINT) && !children.contains(&key) {
+            children.push(key);
+        }
+    }
+    let mut filled: Vec<Metric> = Vec::new();
+    for trial in trials {
+        filled.extend(trial.iter().cloned());
+        for (phase, name, unit) in &children {
+            let ran_phase = trial.iter().any(|metric| metric.phase == *phase);
+            let has_child = trial
+                .iter()
+                .any(|metric| metric.phase == *phase && metric.name == *name);
+            if ran_phase && !has_child {
+                filled.push(Metric::new(phase, *name, 0.0, unit));
+            }
+        }
+    }
+    summarize(&filled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, cpu_points, frame_intervals,
         interval_metrics, key_latencies, phase_label, phase_metrics, phase_windows, quiet_since,
-        summarize, trial_metrics, visibility,
+        summarize, summarize_trials, trial_metrics, visibility,
     };
     use crate::helpers::{
         Appeared, Frame, InputEvent, Mark, ProcRow, SampleSet, SetKind, Timebase, WindowInfo,
@@ -1061,5 +1090,30 @@ mod tests {
         assert_eq!(rows[0].summary.n, 2);
         assert!((rows[0].summary.mean - 15.0).abs() < 1e-9);
         assert_eq!(rows[2].phase, "startup");
+    }
+
+    #[test]
+    fn transient_children_count_as_zero_in_trials_without_them() {
+        let child = "footprint_child_max:rustc";
+        let trials = vec![
+            vec![
+                Metric::new("indexing", "cpu_time", 10.0, "ms"),
+                Metric::new("indexing", child, 300.0, "bytes"),
+            ],
+            vec![Metric::new("indexing", "cpu_time", 12.0, "ms")],
+            vec![Metric::new("startup", "cpu_time", 50.0, "ms")],
+        ];
+        let rows = summarize_trials(&trials);
+        let rustc = rows
+            .iter()
+            .find(|row| row.name == child)
+            .map(|row| (row.summary.n, row.summary.mean));
+        // Two trials ran `indexing`; the third never reached it.
+        assert_eq!(rustc, Some((2, 150.0)));
+        let cpu = rows
+            .iter()
+            .find(|row| row.phase == "indexing" && row.name == "cpu_time")
+            .map(|row| row.summary.n);
+        assert_eq!(cpu, Some(2));
     }
 }
