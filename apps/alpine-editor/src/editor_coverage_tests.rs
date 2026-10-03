@@ -1287,7 +1287,7 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
 }
 
 // The syntax cache is content-addressed, so lexing counts need distinct lines.
-fn distinct_source(lines: usize) -> Result<String, fmt::Error> {
+fn distinct_source(lines: usize) -> Result<String, std::fmt::Error> {
     use std::fmt::Write as _;
     let mut source = String::with_capacity(lines.saturating_mul(40));
     for index in 0..lines {
