@@ -194,8 +194,10 @@ impl EditorSignposts {
     }
 
     /// Emits one point and returns its correlation when recording is enabled.
+    /// Frame-stage points also reach the main thread's always-on recorder.
     #[must_use]
     pub fn emit(self, point: EditorSignpost) -> Option<u64> {
+        crate::recorder::record_stage(point);
         if self.enabled() {
             Some(imp::emit(
                 point,

@@ -8342,3 +8342,49 @@ fn switching_existing_tabs_does_not_report_missing_file_io() -> Result<(), Box<d
     assert_no_missing_file_io_status(runtime.delegate());
     Ok(())
 }
+
+#[test]
+fn idle_editor_and_stage_points_outside_native_dispatch_record_nothing()
+-> Result<(), Box<dyn Error>> {
+    alpine_platform_macos::start_recorder_for_test();
+    let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?;
+    let mut runtime = Application::new(test_app()?, viewport()?, clear, WorkerConfig::default())?;
+    assert!(runtime.frame_if_dirty().is_some());
+    assert!(runtime.frame_if_dirty().is_none());
+    for timestamp in 1..=3 {
+        let _ = runtime.dispatch(&SurfaceEvent::Wake {
+            timestamp: EventTimestamp::new(timestamp),
+        });
+    }
+    assert!(runtime.frame_if_dirty().is_none());
+    assert_eq!(RecorderSnapshot::capture().work(), 0);
+    Ok(())
+}
+
+#[test]
+fn performance_log_writes_frames_under_library_logs() -> Result<(), Box<dyn Error>> {
+    let home = TestWorkspace::new()?;
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_759_400_000);
+    let snapshot = RecorderSnapshot::default();
+    let frames = super::profiling::write_performance_log(Some(home.path().into()), at, &snapshot)?;
+    let logs = home.path().join("Library/Logs/Alpine Editor");
+    assert_eq!(frames, logs.join("perf-1759400000-frames.tsv"));
+    assert!(fs::read_to_string(&frames)?.starts_with("event\trevision\toutcome\tevent_ns\t"));
+    for missing in [None, Some(std::ffi::OsString::new())] {
+        assert!(super::profiling::write_performance_log(missing, at, &snapshot).is_err());
+    }
+
+    let mut app = test_app()?;
+    assert!(
+        app.save_performance_log(Some(home.path().into()))
+            .visual_changed
+    );
+    let saved = app.local_status.as_ref().map(LocalStatus::message);
+    assert!(saved.is_some_and(|message| message.starts_with("Saved performance log ")));
+    assert!(app.save_performance_log(None).visual_changed);
+    assert_eq!(
+        app.local_status.as_ref().map(LocalStatus::message),
+        Some("Could not save the performance log: HOME is not set")
+    );
+    Ok(())
+}
