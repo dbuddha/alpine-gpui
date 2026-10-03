@@ -21,6 +21,10 @@ use alpine_scene::Scene;
 
 mod accessibility;
 pub use accessibility::*;
+mod recorder;
+pub use recorder::RecorderSnapshot;
+#[cfg(any(test, feature = "test-support"))]
+pub use recorder::start_recorder_for_test;
 mod signpost;
 pub use signpost::*;
 
@@ -390,6 +394,8 @@ pub enum MenuAction {
     SaveAsPath(std::path::PathBuf),
     /// Close the active editor tab, matching Zed Cmd+W.
     CloseTab,
+    /// Write the always-on performance recorder's contents as TSV files.
+    SavePerformanceLog,
 }
 
 /// Handle-free event vocabulary crossing the native surface boundary.

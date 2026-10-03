@@ -75,7 +75,8 @@ That hides `~/.rustup`, so set `RUSTUP_HOME` or `ALPINE_RUST_ANALYZER`. Capture
 through ScreenCaptureKit (`tools/onscreen-sdr-capture`); `screencapture -l`
 cannot see the Metal layer. The capturing terminal needs Screen Recording
 permission. Clean up only the processes a capture owns; never close unrelated
-apps.
+apps. Window > Save Performance Log writes `perf-<unix s>-frames.tsv` to
+`~/Library/Logs/Alpine Editor/` for T3 dogfood.
 
 ## Correctness that must never regress
 

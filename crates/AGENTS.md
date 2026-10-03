@@ -30,6 +30,9 @@ budgets; this file owns how the framework keeps them.
   `waitUntilCompleted` outside offscreen readback, no `presentAtTime` with
   CAMetalDisplayLink, no fourth command buffer when the three slots are busy.
 - Presentation telemetry never owns slot release.
+- The always-on recorder (`recorder.rs`) is the one sanctioned global:
+  main-thread diagnostic state started by the first surface, holding no app
+  state. Its rings are reserved once, never reallocated, with no timer.
 - In-flight frames and closes finish without display-link updates: a 40 ms
   frame-progress timer, alive only while a frame is in flight, polls
   completion, falls back once the link is silent and drains a close.

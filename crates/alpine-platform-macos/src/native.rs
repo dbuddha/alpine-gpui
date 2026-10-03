@@ -58,6 +58,7 @@ use block2::RcBlock;
 use dispatch2::DispatchQueue;
 
 use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
+use crate::recorder;
 use crate::{
     AccessibilityRequest, AccessibilityResponse, ClipboardError, ClipboardEvent,
     ClipboardOperation, ClipboardText, ClipboardWrite, CloseDisposition, EditorSignposts,
@@ -498,6 +499,7 @@ struct EventFrameTiming {
     received_media_time_seconds: f64,
     handler_finished_at: Instant,
     admitted_at: Instant,
+    stages: recorder::EditorStages,
 }
 
 #[derive(Clone, Copy)]
@@ -555,6 +557,48 @@ impl AttemptTiming {
             elapsed_ns(event.received_at, terminal_at),
         ))
     }
+
+    // Offsets are from event receipt. A frame no event produced anchors at its
+    // submit start (else its record time) and has no media columns.
+    fn recorder_frame(
+        self,
+        revision: u64,
+        outcome: PresentationOutcome,
+        presented_time_bits: u64,
+        recorded_at: Instant,
+    ) -> (recorder::FrameRecord, Instant) {
+        use recorder::{
+            GPU_OBSERVED, HANDLER_END, PRESENTED, RECORDED, SUBMIT_BEGIN, SUBMIT_END, TARGET,
+            TARGET_PRESENT,
+        };
+        let mut frame = recorder::FrameRecord::new(revision, outcome);
+        let Some(event) = self.event else {
+            let anchor = self.submission_started_at.unwrap_or(recorded_at);
+            let since = |at: Instant| elapsed_ns(anchor, at);
+            frame.set(SUBMIT_BEGIN, self.submission_started_at.map(since));
+            frame.set(SUBMIT_END, self.submission_finished_at.map(since));
+            frame.set(GPU_OBSERVED, self.gpu_terminal_observed_at.map(since));
+            frame.set(RECORDED, Some(since(recorded_at)));
+            return (frame, anchor);
+        };
+        let since = |at: Instant| elapsed_ns(event.received_at, at);
+        let media = |bits: u64| {
+            media_time_delta_ns(event.received_media_time_seconds, f64::from_bits(bits))
+        };
+        frame.set_event(event.timestamp.get(), event.stages);
+        frame.set(HANDLER_END, Some(since(event.handler_finished_at)));
+        frame.set(SUBMIT_BEGIN, self.submission_started_at.map(since));
+        frame.set(SUBMIT_END, self.submission_finished_at.map(since));
+        frame.set(GPU_OBSERVED, self.gpu_terminal_observed_at.map(since));
+        frame.set(TARGET, media(self.target_timestamp_bits));
+        frame.set(
+            TARGET_PRESENT,
+            media(self.target_presentation_timestamp_bits),
+        );
+        frame.set(PRESENTED, media(presented_time_bits));
+        frame.set(RECORDED, Some(since(recorded_at)));
+        (frame, event.received_at)
+    }
 }
 
 fn elapsed_ns(start: Instant, end: Instant) -> u64 {
@@ -581,6 +625,77 @@ fn profile_latency_for_terminal(
 }
 
 #[cfg(test)]
+mod recorder_tests {
+    use std::{
+        error::Error,
+        time::{Duration, Instant},
+    };
+
+    use super::{AttemptTiming, EventFrameTiming, PresentationOutcome};
+    use crate::{EventTimestamp, RecorderSnapshot, recorder};
+
+    #[test]
+    fn recorder_frames_offset_each_stage_from_event_receipt() -> Result<(), Box<dyn Error>> {
+        let origin = Instant::now();
+        let at = |ns: u64| origin + Duration::from_nanos(ns);
+        recorder::start(origin, 100.0);
+        let mut stages = recorder::NO_STAGES;
+        stages[1] = 3;
+        let timing = AttemptTiming {
+            target_timestamp_bits: (101.0 + 1.0 / 256.0_f64).to_bits(),
+            target_presentation_timestamp_bits: (101.0 + 1.0 / 128.0_f64).to_bits(),
+            event: Some(EventFrameTiming {
+                timestamp: EventTimestamp::new(11),
+                received_at: at(5),
+                received_media_time_seconds: 101.0,
+                handler_finished_at: at(18),
+                admitted_at: at(22),
+                stages,
+            }),
+            submission_started_at: Some(at(28)),
+            submission_finished_at: Some(at(36)),
+            ..AttemptTiming::default()
+        };
+        let (frame, base) = timing.recorder_frame(9, PresentationOutcome::Presented, 0, at(50));
+        assert_eq!(base, at(5));
+        recorder::record_frame(frame, base);
+        let (frame, base) =
+            AttemptTiming::default().recorder_frame(10, PresentationOutcome::Cancelled, 0, at(60));
+        assert_eq!(base, at(60));
+        recorder::record_frame(frame, base);
+        let submitted = AttemptTiming {
+            submission_started_at: Some(at(70)),
+            submission_finished_at: Some(at(78)),
+            gpu_terminal_observed_at: Some(at(90)),
+            ..AttemptTiming::default()
+        };
+        let (frame, base) = submitted.recorder_frame(11, PresentationOutcome::Failed, 0, at(95));
+        assert_eq!(base, at(70));
+        recorder::record_frame(frame, base);
+
+        let mut tsv = Vec::new();
+        RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
+        let event = [
+            "", "3", "", "", "", "", "", "", "13", "23", "31", "", "3906250", "7812500", "", "45",
+        ];
+        let eventless = format!("{}\t0", "\t".repeat(15));
+        let submitted = format!("{}\t0\t8\t20\t\t\t\t25", "\t".repeat(9));
+        assert_eq!(
+            std::str::from_utf8(&tsv)?
+                .lines()
+                .skip(1)
+                .collect::<Vec<_>>(),
+            [
+                format!("11\t9\tpresented\t100000000005\t{}", event.join("\t")),
+                format!("\t10\tcancelled\t100000000060{eventless}"),
+                format!("\t11\tfailed\t100000000070{submitted}"),
+            ]
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod frame_latency_timing_tests {
     use std::time::{Duration, Instant};
 
@@ -596,6 +711,7 @@ mod frame_latency_timing_tests {
             received_media_time_seconds: 101.0,
             handler_finished_at: origin + Duration::from_nanos(13),
             admitted_at: origin + Duration::from_nanos(17),
+            stages: crate::recorder::NO_STAGES,
         };
         let complete = AttemptTiming {
             event: Some(event),
@@ -1369,15 +1485,23 @@ impl PresentationDriver {
             }
             PresentationOutcome::None | PresentationOutcome::Failed => {}
         }
+        let terminal_at = Instant::now();
         let evidence = FrameTerminalEvidence::new(
             attempt,
             timing.target_timestamp_bits,
             timing.target_presentation_timestamp_bits,
             observed_presentation_time_bits,
-            timing.latency_evidence(Instant::now()),
+            timing.latency_evidence(terminal_at),
             self.backend.accounting().current_retained_bytes(),
             recovery,
         );
+        let (frame, base) = timing.recorder_frame(
+            attempt.frame_revision().get(),
+            attempt.outcome(),
+            observed_presentation_time_bits,
+            terminal_at,
+        );
+        recorder::record_frame(frame, base);
         if let Some(latency) = profile_latency_for_terminal(evidence.latency(), recovery) {
             let _emitted = self.latency_signposts.emit_terminal_frame_latency(latency);
         }
@@ -3579,6 +3703,7 @@ impl DisplayLinkDelegate {
     ) -> Result<CloseDisposition, SurfaceError> {
         let event_timestamp = event.timestamp();
         let close_requested = matches!(event, SurfaceEvent::CloseRequested { .. });
+        recorder::begin_event(event_timestamp.get(), receipt.instant);
         let response = {
             let mut installed = self
                 .ivars()
@@ -3590,6 +3715,7 @@ impl DisplayLinkDelegate {
                 .map_or_else(SurfaceResponse::default, |handler| handler(event))
         };
         let handler_finished_at = Instant::now();
+        let stages = recorder::take_stages(event_timestamp.get());
         let (frame, clipboard_write, close, accessibility) = response.into_channels();
         if accessibility.is_some() {
             return Err(SurfaceError::invariant(SurfaceOperation::Input));
@@ -3610,6 +3736,7 @@ impl DisplayLinkDelegate {
                 received_media_time_seconds: receipt.media_time_seconds,
                 handler_finished_at,
                 admitted_at: Instant::now(),
+                stages,
             };
             let (_, directive) = self
                 .ivars()
@@ -4554,6 +4681,7 @@ impl NativeSurface {
         let Some(main_thread) = MainThreadMarker::new() else {
             return Err(native_unavailable(SurfaceStage::MainThread));
         };
+        recorder::start(Instant::now(), CACurrentMediaTime());
 
         let extent = descriptor.extent();
         let (lifecycle, callback_count, rejected_callback_count) = control.observer_state();
@@ -6730,6 +6858,7 @@ mod tests {
             received_media_time_seconds: 101.0,
             handler_finished_at: received_at,
             admitted_at: received_at,
+            stages: crate::recorder::NO_STAGES,
         };
         let timed_signal = Arc::new(PresentationSignal::new(
             Some(event),

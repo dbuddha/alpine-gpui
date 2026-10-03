@@ -90,6 +90,11 @@ define_class!(
         fn close_tab(&self, _sender: Option<&AnyObject>) {
             self.emit(MenuAction::CloseTab);
         }
+
+        #[unsafe(method(alpineSavePerformanceLog:))]
+        fn save_performance_log(&self, _sender: Option<&AnyObject>) {
+            self.emit(MenuAction::SavePerformanceLog);
+        }
     }
 );
 
@@ -421,6 +426,14 @@ fn window_menu(mtm: MainThreadMarker, main: &NSMenu, target: &MenuTarget) -> Ret
                 key: "",
                 shift: false,
                 owned: false,
+            }),
+            None,
+            Some(Item {
+                title: "Save Performance Log",
+                selector: sel!(alpineSavePerformanceLog:),
+                key: "",
+                shift: false,
+                owned: true,
             }),
         ],
         target,

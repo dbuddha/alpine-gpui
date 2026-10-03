@@ -1,7 +1,14 @@
 #[cfg(test)]
 use std::{cell::RefCell, rc::Rc};
+use std::{
+    ffi::OsString,
+    fs::{self, File},
+    io::{self, BufWriter, Write},
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use alpine_platform_macos::{EditorSignpost, EditorSignposts};
+use alpine_platform_macos::{EditorSignpost, EditorSignposts, RecorderSnapshot};
 use alpine_text_layout::{
     FontKey, GlyphRasterizer, LayoutError, LineLayout, RasterizedGlyph, TextShaper,
 };
@@ -143,4 +150,26 @@ impl EditorProfiler {
             enabled_override: Some(false),
         }
     }
+}
+
+/// Writes `snapshot` as TSV under `~/Library/Logs/Alpine Editor/`, creating
+/// the folder, and returns the frames file's path.
+pub(super) fn write_performance_log(
+    home: Option<OsString>,
+    now: SystemTime,
+    snapshot: &RecorderSnapshot,
+) -> io::Result<PathBuf> {
+    let home = home
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+    let directory = PathBuf::from(home).join("Library/Logs/Alpine Editor");
+    fs::create_dir_all(&directory)?;
+    let stamp = now
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let frames = directory.join(format!("perf-{stamp}-frames.tsv"));
+    let mut out = BufWriter::new(File::create(&frames)?);
+    snapshot.write_frames_tsv(&mut out)?;
+    out.flush()?;
+    Ok(frames)
 }

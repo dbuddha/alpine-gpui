@@ -110,7 +110,7 @@ use alpine_platform_macos::{
     AccessibilityRequestKind, ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText,
     ClipboardWrite, EditorSignpost, EditorSignpostStage, EventTimestamp, ImeEvent, InputEpoch,
     InputEpochAdmission, KeyState, MenuAction, Modifiers, PointerAction, PointerButton,
-    SurfaceError, SurfaceEvent,
+    RecorderSnapshot, SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
@@ -2944,9 +2944,6 @@ impl EditorApp {
         revision: SceneRevision,
         values: [u64; 3],
     ) {
-        if !self.profiler.enabled() {
-            return;
-        }
         self.profiler.record(EditorSignpost::new(
             stage,
             self.profile_event_timestamp.get(),
@@ -5498,6 +5495,9 @@ impl EditorApp {
         match command {
             EditorCommand::SaveFile => self.save_document(),
             EditorCommand::ReloadSettings => self.request_settings_reload(),
+            EditorCommand::SavePerformanceLog => {
+                self.save_performance_log(std::env::var_os("HOME"))
+            }
             EditorCommand::CloseTab => self.close_active_tab_or_record(),
             EditorCommand::NavigateBack => self.navigate_document_history(false),
             EditorCommand::NavigateForward => self.navigate_document_history(true),
@@ -7324,7 +7324,19 @@ impl EditorApp {
             MenuAction::Save => self.save_document(),
             MenuAction::SaveAsPath(path) => self.save_document_as(path),
             MenuAction::CloseTab => self.close_active_tab_or_record(),
+            MenuAction::SavePerformanceLog => self.save_performance_log(std::env::var_os("HOME")),
         }
+    }
+
+    /// Writes the recorder's TSV files under `home` and reports where.
+    fn save_performance_log(&mut self, home: Option<std::ffi::OsString>) -> EventEffect {
+        let snapshot = RecorderSnapshot::capture();
+        let now = std::time::SystemTime::now();
+        let message = match profiling::write_performance_log(home, now, &snapshot) {
+            Ok(frames) => format!("Saved performance log {}", frames.display()),
+            Err(error) => format!("Could not save the performance log: {error}"),
+        };
+        self.set_local_status(LocalStatus::Command(Arc::from(message)))
     }
 
     /// Opens a chosen file as a tab, or a chosen folder as the workspace.
