@@ -144,6 +144,18 @@ fn child_maxima<'a>(sets: &[&'a SampleSet]) -> BTreeMap<&'a str, u64> {
     maxima
 }
 
+/// Every child process name any sample saw under the app, first seen first;
+/// a no-server trial needs this empty.
+pub fn child_names(sets: &[SampleSet]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for row in sets.iter().flat_map(|set| &set.rows) {
+        if row.depth > 0 && !names.contains(&row.name) {
+            names.push(row.name.clone());
+        }
+    }
+    names
+}
+
 fn set_by_seq(sets: &[SampleSet], seq: u64) -> Result<&SampleSet, String> {
     sets.iter()
         .find(|set| set.seq == seq)
@@ -626,9 +638,9 @@ pub fn summarize_trials(trials: &[Vec<Metric>]) -> Vec<SummaryRow> {
 #[cfg(test)]
 mod tests {
     use super::{
-        KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, cpu_points, frame_intervals,
-        interval_metrics, key_latencies, phase_label, phase_metrics, phase_windows, quiet_since,
-        summarize, summarize_trials, trial_metrics, visibility,
+        KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, child_names, cpu_points,
+        frame_intervals, interval_metrics, key_latencies, phase_label, phase_metrics,
+        phase_windows, quiet_since, summarize, summarize_trials, trial_metrics, visibility,
     };
     use crate::helpers::{
         Appeared, Frame, InputEvent, Mark, ProcRow, SampleSet, SetKind, Timebase, WindowInfo,
@@ -685,6 +697,32 @@ mod tests {
             .iter()
             .find(|metric| metric.name == name)
             .map(|metric| metric.value)
+    }
+
+    #[test]
+    fn child_names_list_each_child_any_sample_saw_once() {
+        let alone = [set(
+            1,
+            SetKind::Tick,
+            10,
+            vec![row(600, 0, "alpine-editor", 1, 1)],
+        )];
+        assert!(child_names(&alone).is_empty());
+        let with_server = [
+            alone[0].clone(),
+            set(
+                2,
+                SetKind::Tick,
+                20,
+                vec![
+                    row(600, 0, "alpine-editor", 1, 1),
+                    row(700, 1, "clangd", 1, 1),
+                    row(701, 2, "clangd", 1, 1),
+                ],
+            ),
+            set(3, SetKind::Mark, 30, vec![row(702, 1, "xcrun", 1, 1)]),
+        ];
+        assert_eq!(child_names(&with_server), ["clangd", "xcrun"]);
     }
 
     #[test]

@@ -5,6 +5,10 @@ AGENTS.md files are. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
 
+## 2026-10-03: M1 bench notes
+
+- **Moved from bench/AGENTS.md for space:** on 2026-10-02 a windowless Zed probe, with the owner's Zed running, migrated its databases in the disposable home, exited at the single-instance check after 409 ms and changed nothing real.
+
 ## 2026-10-02: M0e closed
 
 - **Delivered:**

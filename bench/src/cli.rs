@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "usage:
   bench run <workload> --app alpine|zed|appkit [--trials N] [--warmup N]
-            [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH]
+            [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH] [--dry-run]
   bench baseline <run-dir> --milestone ID [--note TEXT]
   bench workloads | stamp | fixtures | permissions
   bench zed-isolation [--seconds N] [--allow-window] [--open-fixture]
@@ -33,6 +33,8 @@ pub struct RunArgs {
     pub keep_homes: bool,
     pub rust_analyzer: Option<PathBuf>,
     pub key_interval_ms: Option<u64>,
+    /// Prints the launches and input a run would make, starting nothing.
+    pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,7 +138,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     "rust-analyzer",
                     "key-interval-ms",
                 ],
-                &["keep-homes"],
+                &["keep-homes", "dry-run"],
             )?;
             parsed.exactly(1, "one workload")?;
             let key_interval_ms: Option<u64> = parsed.number("key-interval-ms")?;
@@ -153,6 +155,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 keep_homes: parsed.flag("keep-homes"),
                 rust_analyzer: parsed.value("rust-analyzer").map(PathBuf::from),
                 key_interval_ms,
+                dry_run: parsed.flag("dry-run"),
             }))
         }
         "baseline" => {
@@ -199,12 +202,13 @@ pub fn execute(command: Command) -> Result<(), String> {
         }
         Command::Workloads => {
             for workload in WORKLOADS {
-                let needs = if workload.needs_input() {
-                    "Accessibility + Screen Recording"
+                let only = if workload.alpine_only {
+                    ", alpine only"
                 } else {
-                    "no permission"
+                    ""
                 };
-                println!("{:<10} {} ({needs})", workload.name, workload.summary);
+                let needs = workload.permissions();
+                println!("{:<10} {} ({needs}{only})", workload.name, workload.summary);
             }
             Ok(())
         }
@@ -219,7 +223,11 @@ pub fn execute(command: Command) -> Result<(), String> {
                 rust_analyzer: args.rust_analyzer,
                 key_interval_ms: args.key_interval_ms,
             };
-            trial::run(&paths, &request).map(|_| ())
+            if args.dry_run {
+                trial::dry_run(&paths, &request)
+            } else {
+                trial::run(&paths, &request).map(|_| ())
+            }
         }
         Command::Baseline {
             run_dir,
@@ -322,6 +330,7 @@ mod tests {
                 keep_homes: false,
                 rust_analyzer: None,
                 key_interval_ms: None,
+                dry_run: false,
             })
         );
         Ok(())
@@ -339,6 +348,11 @@ mod tests {
         assert_eq!((run.trials, run.warmup, run.keep_homes), (1, Some(0), true));
         assert_eq!(run.rust_analyzer, Some(PathBuf::from("/ra")));
         assert_eq!(run.key_interval_ms, Some(400));
+        assert!(!run.dry_run);
+        let Command::Run(dry) = parse(&args("run highlight --app alpine --dry-run"))? else {
+            return Err("not a run".to_owned());
+        };
+        assert!(dry.dry_run && dry.workload == "highlight");
         Ok(())
     }
 

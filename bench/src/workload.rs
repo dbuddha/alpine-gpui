@@ -1,7 +1,43 @@
 //! The workload table. Each workload names its document, its phases and
 //! what it needs, so a run needs no parser and the table is reviewable here.
 
-/// Generated plain-text documents; every line is 64 bytes including LF.
+use crate::apps::App;
+
+/// Criterion 2.1's language groups; `id` is Alpine's registry name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Language {
+    Rust,
+    Python,
+    Cpp,
+    Java,
+    TypeScript,
+    JavaScript,
+}
+
+impl Language {
+    pub const ALL: [Self; 6] = [
+        Self::Rust,
+        Self::Python,
+        Self::Cpp,
+        Self::Java,
+        Self::TypeScript,
+        Self::JavaScript,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::Cpp => "cpp",
+            Self::Java => "java",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
+        }
+    }
+}
+
+/// Generated documents: plain text whose lines are 64 bytes including LF,
+/// or source code in one language group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fixture {
     Idle,
@@ -9,15 +45,22 @@ pub enum Fixture {
     Caret,
     Scroll,
     Large,
+    Source(Language),
 }
 
 impl Fixture {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 11] = [
         Self::Idle,
         Self::Typing,
         Self::Caret,
         Self::Scroll,
         Self::Large,
+        Self::Source(Language::Rust),
+        Self::Source(Language::Python),
+        Self::Source(Language::Cpp),
+        Self::Source(Language::Java),
+        Self::Source(Language::TypeScript),
+        Self::Source(Language::JavaScript),
     ];
 
     pub fn file_name(self) -> &'static str {
@@ -27,6 +70,12 @@ impl Fixture {
             Self::Caret => "caret-1000.txt",
             Self::Scroll => "scroll-10100.txt",
             Self::Large => "large-50mib.txt",
+            Self::Source(Language::Rust) => "highlight-20000.rs",
+            Self::Source(Language::Python) => "highlight-20000.py",
+            Self::Source(Language::Cpp) => "highlight-20000.cpp",
+            Self::Source(Language::Java) => "highlight-20000.java",
+            Self::Source(Language::TypeScript) => "highlight-20000.ts",
+            Self::Source(Language::JavaScript) => "highlight-20000.js",
         }
     }
 
@@ -35,6 +84,7 @@ impl Fixture {
             Self::Idle | Self::Typing => 200,
             Self::Caret => 1_000,
             Self::Scroll => 10_100,
+            Self::Source(_) => 20_000,
             // 819,200 lines of 64 bytes is exactly 50 MiB.
             Self::Large => 819_200,
         }
@@ -48,6 +98,12 @@ impl Fixture {
             Self::Caret => 0xca2e,
             Self::Scroll => 0x5c20,
             Self::Large => 0x1a26,
+            Self::Source(Language::Rust) => 0x2b01,
+            Self::Source(Language::Python) => 0x2b02,
+            Self::Source(Language::Cpp) => 0x2b03,
+            Self::Source(Language::Java) => 0x2b04,
+            Self::Source(Language::TypeScript) => 0x2b05,
+            Self::Source(Language::JavaScript) => 0x2b06,
         }
     }
 }
@@ -57,6 +113,19 @@ pub enum Document {
     Fixture(Fixture),
     /// A Rust file inside the measured checkout, so rust-analyzer starts.
     RepositoryFile(&'static str),
+    /// Each group's source fixture, opened by its own fresh process.
+    Languages(&'static [Language]),
+}
+
+/// The language servers a trial lets the app start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Servers {
+    /// Whatever the app discovers on the Dock's PATH.
+    Discovered,
+    /// The pinned rust-analyzer, for both editors.
+    RustAnalyzer,
+    /// PATH is an empty directory, and any child process voids the trial.
+    None,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,19 +157,25 @@ pub enum Action {
         quiet_seconds: u32,
         max_seconds: u32,
     },
+    /// Runs "Window: Save Performance Log" from the command palette, then
+    /// reads the frames TSV Alpine's recorder writes in the disposable home.
+    SaveRecorderLog,
 }
 
 impl Action {
     pub fn needs_input(self) -> bool {
         matches!(
             self,
-            Self::Type { .. } | Self::Keys { .. } | Self::Scroll { .. }
+            Self::Type { .. } | Self::Keys { .. } | Self::Scroll { .. } | Self::SaveRecorderLog
         )
     }
 
-    /// Input actions are timed by the capture helper.
+    /// Timed input is timed by the capture helper; the recorder log is not.
     pub fn needs_capture(self) -> bool {
-        self.needs_input()
+        matches!(
+            self,
+            Self::Type { .. } | Self::Keys { .. } | Self::Scroll { .. }
+        )
     }
 
     /// Time the input script takes, excluding the phase's tail.
@@ -117,7 +192,7 @@ impl Action {
             | Self::Scroll {
                 count, interval_ms, ..
             } => u64::from(count).saturating_mul(interval_ms),
-            Self::Idle | Self::UntilQuiet { .. } => 0,
+            Self::Idle | Self::UntilQuiet { .. } | Self::SaveRecorderLog => 0,
         }
     }
 
@@ -125,7 +200,9 @@ impl Action {
     pub fn key_interval_ms(self) -> Option<u64> {
         match self {
             Self::Type { interval_ms, .. } | Self::Keys { interval_ms, .. } => Some(interval_ms),
-            Self::Idle | Self::Scroll { .. } | Self::UntilQuiet { .. } => None,
+            Self::Idle | Self::Scroll { .. } | Self::UntilQuiet { .. } | Self::SaveRecorderLog => {
+                None
+            }
         }
     }
 
@@ -169,7 +246,9 @@ pub struct Workload {
     /// Untimed trials first, so file caches and app code pages are warm and
     /// the first measured trial is not an outlier. `--warmup` overrides it.
     pub warmup_trials: u32,
-    pub rust_analyzer: bool,
+    pub servers: Servers,
+    /// Reads Alpine's in-app recorder, which Zed and `AppKit` do not have.
+    pub alpine_only: bool,
 }
 
 impl Workload {
@@ -179,6 +258,29 @@ impl Workload {
 
     pub fn needs_capture(&self) -> bool {
         self.phases.iter().any(|phase| phase.action.needs_capture())
+    }
+
+    /// What `bench workloads` lists as the run's privacy permissions.
+    pub fn permissions(&self) -> &'static str {
+        if self.needs_capture() {
+            "Accessibility + Screen Recording"
+        } else if self.needs_input() {
+            "Accessibility"
+        } else {
+            "no permission"
+        }
+    }
+
+    /// Refuses an app this workload cannot measure.
+    pub fn check_app(&self, app: App) -> Result<(), String> {
+        if self.alpine_only && app != App::Alpine {
+            return Err(format!(
+                "{} reads Alpine's in-app frame recorder, which {} does not have; run it with --app alpine",
+                self.name,
+                app.name()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -218,7 +320,8 @@ pub const WORKLOADS: &[Workload] = &[
             setup: Some(CARET_TO_LINE_11),
         }],
         warmup_trials: 1,
-        rust_analyzer: false,
+        servers: Servers::Discovered,
+        alpine_only: false,
     },
     Workload {
         name: "caret",
@@ -236,7 +339,8 @@ pub const WORKLOADS: &[Workload] = &[
             setup: Some(CARET_TO_LINE_11),
         }],
         warmup_trials: 1,
-        rust_analyzer: false,
+        servers: Servers::Discovered,
+        alpine_only: false,
     },
     Workload {
         name: "scroll",
@@ -254,7 +358,8 @@ pub const WORKLOADS: &[Workload] = &[
             setup: None,
         }],
         warmup_trials: 1,
-        rust_analyzer: false,
+        servers: Servers::Discovered,
+        alpine_only: false,
     },
     Workload {
         name: "open-50mb",
@@ -268,7 +373,8 @@ pub const WORKLOADS: &[Workload] = &[
             setup: None,
         }],
         warmup_trials: 1,
-        rust_analyzer: false,
+        servers: Servers::Discovered,
+        alpine_only: false,
     },
     Workload {
         name: "open-repo",
@@ -294,7 +400,8 @@ pub const WORKLOADS: &[Workload] = &[
             },
         ],
         warmup_trials: 1,
-        rust_analyzer: true,
+        servers: Servers::RustAnalyzer,
+        alpine_only: false,
     },
     Workload {
         name: "idle",
@@ -308,7 +415,23 @@ pub const WORKLOADS: &[Workload] = &[
             setup: None,
         }],
         warmup_trials: 1,
-        rust_analyzer: false,
+        servers: Servers::Discovered,
+        alpine_only: false,
+    },
+    Workload {
+        name: "highlight",
+        summary: "per language group, open a 20,000-line file with no server; time the cold first frame's build",
+        document: Document::Languages(&Language::ALL),
+        settle_seconds: 2,
+        phases: &[Phase {
+            name: "save",
+            seconds: 0,
+            action: Action::SaveRecorderLog,
+            setup: None,
+        }],
+        warmup_trials: 1,
+        servers: Servers::None,
+        alpine_only: true,
     },
 ];
 
@@ -333,13 +456,14 @@ pub fn typed_text(phrase: &str, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, CARET_TO_LINE_11, Document, Fixture, KEY_INTERVAL_MS, STARTUP_PHASE, TRIAL_PHASE,
-        WORKLOADS, find, typed_text,
+        Action, CARET_TO_LINE_11, Document, Fixture, KEY_INTERVAL_MS, Language, STARTUP_PHASE,
+        Servers, TRIAL_PHASE, WORKLOADS, find, typed_text,
     };
+    use crate::apps::App;
     use std::collections::BTreeSet;
 
     #[test]
-    fn the_table_has_the_six_brief_workloads_once_each() {
+    fn the_table_has_each_workload_once() {
         let names: Vec<&str> = WORKLOADS.iter().map(|workload| workload.name).collect();
         assert_eq!(
             names,
@@ -349,7 +473,8 @@ mod tests {
                 "scroll",
                 "open-50mb",
                 "open-repo",
-                "idle"
+                "idle",
+                "highlight"
             ]
         );
         let unique: BTreeSet<&str> = names.iter().copied().collect();
@@ -384,6 +509,7 @@ mod tests {
         for name in ["typing", "caret", "scroll"] {
             let workload = find(name)?;
             assert!(workload.needs_input() && workload.needs_capture(), "{name}");
+            assert_eq!(workload.permissions(), "Accessibility + Screen Recording");
         }
         for name in ["open-50mb", "open-repo", "idle"] {
             let workload = find(name)?;
@@ -391,8 +517,63 @@ mod tests {
                 !workload.needs_input() && !workload.needs_capture(),
                 "{name}"
             );
+            assert_eq!(workload.permissions(), "no permission");
+        }
+        // The palette keys need Accessibility; nothing is captured.
+        let highlight = find("highlight")?;
+        assert!(highlight.needs_input() && !highlight.needs_capture());
+        assert_eq!(highlight.permissions(), "Accessibility");
+        Ok(())
+    }
+
+    #[test]
+    fn highlight_opens_each_language_group_with_no_server_on_alpine_only() -> Result<(), String> {
+        let highlight = find("highlight")?;
+        assert_eq!(highlight.document, Document::Languages(&Language::ALL));
+        assert_eq!(highlight.servers, Servers::None);
+        assert_eq!(highlight.phases.len(), 1);
+        assert_eq!(highlight.phases[0].action, Action::SaveRecorderLog);
+        assert!(highlight.settle_seconds > 0 && highlight.warmup_trials >= 1);
+        assert!(highlight.check_app(App::Alpine).is_ok());
+        for app in [App::Zed, App::AppKit] {
+            let refusal = highlight.check_app(app).err().ok_or("not refused")?;
+            assert!(refusal.contains(app.name()) && refusal.contains("--app alpine"));
+        }
+        for workload in WORKLOADS
+            .iter()
+            .filter(|workload| workload.name != "highlight")
+        {
+            assert!(!workload.alpine_only, "{}", workload.name);
+            for app in [App::Alpine, App::Zed, App::AppKit] {
+                assert!(workload.check_app(app).is_ok(), "{}", workload.name);
+            }
         }
         Ok(())
+    }
+
+    #[test]
+    fn source_fixtures_are_twenty_thousand_lines_named_by_extension() {
+        let ids: BTreeSet<&str> = Language::ALL.iter().map(|language| language.id()).collect();
+        assert_eq!(ids.len(), 6);
+        // Alpine's registry picks each group's lexer by these extensions.
+        for (language, extension) in Language::ALL
+            .into_iter()
+            .zip([".rs", ".py", ".cpp", ".java", ".ts", ".js"])
+        {
+            let fixture = Fixture::Source(language);
+            assert_eq!(fixture.lines(), 20_000);
+            assert!(fixture.file_name().ends_with(extension), "{language:?}");
+            assert!(Fixture::ALL.contains(&fixture));
+        }
+        let seeds: BTreeSet<u64> = Fixture::ALL.iter().map(|fixture| fixture.seed()).collect();
+        let names: BTreeSet<&str> = Fixture::ALL
+            .iter()
+            .map(|fixture| fixture.file_name())
+            .collect();
+        assert_eq!(
+            (seeds.len(), names.len()),
+            (Fixture::ALL.len(), Fixture::ALL.len())
+        );
     }
 
     #[test]
@@ -463,7 +644,7 @@ mod tests {
     fn rust_analyzer_is_only_for_the_repository_workload() {
         for workload in WORKLOADS {
             assert_eq!(
-                workload.rust_analyzer,
+                workload.servers == Servers::RustAnalyzer,
                 matches!(workload.document, Document::RepositoryFile(_)),
                 "{}",
                 workload.name

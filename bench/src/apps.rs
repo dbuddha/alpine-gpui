@@ -126,6 +126,8 @@ pub struct LaunchInputs<'a> {
     pub documents: &'a [PathBuf],
     pub identity: &'a Identity,
     pub rust_analyzer: Option<&'a RustAnalyzer>,
+    /// Replaces the Dock's PATH, such as with an empty directory.
+    pub path: Option<&'a Path>,
     pub alpine_bundle: &'a Path,
     pub zed_app: &'a Path,
     pub reference_binary: &'a Path,
@@ -240,6 +242,13 @@ fn rust_analyzer_env(env: &mut Vec<(String, OsString)>, rust_analyzer: &RustAnal
 /// unless `--open-fixture` asks it to open one.
 pub fn launch_spec(inputs: &LaunchInputs<'_>) -> Result<LaunchSpec, String> {
     let mut env = dock_env(inputs.home, inputs.tmpdir, inputs.identity);
+    if let Some(path) = inputs.path {
+        for (name, value) in &mut env {
+            if name == "PATH" {
+                path.as_os_str().clone_into(value);
+            }
+        }
+    }
     let mut args: Vec<OsString> = Vec::new();
     let mut seed_files = Vec::new();
     let program = match inputs.app {
@@ -341,6 +350,15 @@ mod tests {
         documents: &[PathBuf],
         ra: Option<&RustAnalyzer>,
     ) -> Result<LaunchSpec, String> {
+        spec_with_path(app, documents, ra, None)
+    }
+
+    fn spec_with_path(
+        app: App,
+        documents: &[PathBuf],
+        ra: Option<&RustAnalyzer>,
+        path: Option<&Path>,
+    ) -> Result<LaunchSpec, String> {
         let identity = identity();
         launch_spec(&LaunchInputs {
             app,
@@ -349,6 +367,7 @@ mod tests {
             documents,
             identity: &identity,
             rust_analyzer: ra,
+            path,
             alpine_bundle: Path::new("/Users/me/Applications/Alpine Editor.app"),
             zed_app: Path::new("/Applications/Zed.app"),
             reference_binary: Path::new("/bench/target/helpers/bench-reference-appkit"),
@@ -389,6 +408,28 @@ mod tests {
                 Some(&OsString::from("/fixtures/idle-200.txt"))
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_path_directory_replaces_only_the_docks_path() -> Result<(), String> {
+        let empty = Path::new("/tmp/alpine-bench/r1-01/empty-path");
+        let documents = vec![PathBuf::from("/fixtures/highlight-20000.cpp")];
+        let spec = spec_with_path(App::Alpine, &documents, None, Some(empty))?;
+        let paths: Vec<&OsString> = spec
+            .env
+            .iter()
+            .filter(|(name, _)| name == "PATH")
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(
+            paths,
+            [&OsString::from("/tmp/alpine-bench/r1-01/empty-path")]
+        );
+        let plain = spec_with_path(App::Alpine, &documents, None, None)?;
+        assert_eq!(env_value(&plain, "PATH"), Some(&OsString::from(DOCK_PATH)));
+        assert_eq!(spec.env.len(), plain.env.len());
+        assert_eq!(spec.args, plain.args);
         Ok(())
     }
 
