@@ -3429,12 +3429,16 @@ mod discovery_tests {
         let binary = directory.join(SERVER_NAME);
         let _ = fs::write(&binary, b"#!/bin/sh\nsleep 600\n");
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
-        let started = std::time::Instant::now();
-        assert_eq!(resolve_server_from(&binary, None, None), None);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "discovery waited {:?} on a candidate that never exits",
-            started.elapsed()
+        // Discovery runs on a helper thread; if it waits on the candidate,
+        // this receive expires long before the candidate's 600 s sleep ends.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = sender.send(resolve_server_from(&binary, None, None));
+        });
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(30)),
+            Ok(None),
+            "discovery waited on a candidate that never exits"
         );
     }
 
