@@ -285,9 +285,29 @@ fn command_palette_stages_do_bounded_work() -> Result<(), Box<dyn std::error::Er
     assert_eq!(matched.query_bytes, 4);
     assert!(matched.retained_matches > 0);
     assert!(matched.retained_matches < opened.retained_matches);
+
+    // With every command available, the matches overflow the row window.
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
+    );
+    let everything = CommandContext {
+        can_save: true,
+        can_close_tab: true,
+        can_navigate_back: true,
+        can_navigate_forward: true,
+        can_cycle_tabs: true,
+        has_workspace: true,
+        can_split_right: true,
+        can_split_down: true,
+        can_close_pane: true,
+        can_complete: true,
+    };
+    assert!(app.command_palette.open(everything)?);
+    let window = commands::MAX_VISIBLE_COMMANDS + commands::MAX_VISIBLE_OVERSCAN * 2;
+    assert!(app.command_palette.report().retained_matches > window);
     let rows = app.command_palette.visible_commands()?;
-    assert_eq!(rows.len(), matched.visible_rows);
-    assert!(rows.len() <= commands::MAX_VISIBLE_COMMANDS + commands::MAX_VISIBLE_OVERSCAN * 2);
+    assert!(rows.len() <= window, "projected {} rows", rows.len());
 
     // The scene lays out one title and one shortcut per projected row.
     let keymap = &app.settings.active().keymap;
