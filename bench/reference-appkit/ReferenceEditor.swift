@@ -113,12 +113,26 @@ func installMenu(appName: String) {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let launch: Launch
-    private let text: String
     private var window: NSWindow?
 
-    init(launch: Launch, text: String) {
+    init(launch: Launch) {
         self.launch = launch
-        self.text = text
+    }
+
+    // Like Zed, the window shows first and the file loads on the next turn
+    // of the run loop, so launch-to-window never includes reading the file.
+    private func load(into view: NSTextView) {
+        guard let path = launch.path else { return }
+        do {
+            let text = try String(contentsOfFile: path, encoding: .utf8)
+            view.textStorage?.setAttributedString(
+                NSAttributedString(string: text, attributes: editorAttributes())
+            )
+            view.setSelectedRange(NSRange(location: 0, length: 0))
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            exit(1)
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -130,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.isRestorable = false
         window.title = launch.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Untitled"
-        guard let editor = makeEditor(text: text) else {
+        guard let editor = makeEditor(text: ""), let view = editor.documentView as? NSTextView else {
             FileHandle.standardError.write(Data("error: NSTextView setup failed\n".utf8))
             exit(1)
         }
@@ -150,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // comes forward with it; the cooperative activate() did not in the
         // first bench run, which then refused to measure.
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [self] in load(into: view) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -191,7 +206,9 @@ struct ReferenceEditorMain {
                 try selfTest()
                 return
             }
-            let text = try launch.path.map { try String(contentsOfFile: $0, encoding: .utf8) } ?? ""
+            if let path = launch.path, !FileManager.default.isReadableFile(atPath: path) {
+                throw ReferenceFailure("cannot read \(path)")
+            }
             // Registration defaults live in memory only. They stop the caret
             // blink and window restoration without writing preferences.
             UserDefaults.standard.register(defaults: [
@@ -202,7 +219,7 @@ struct ReferenceEditorMain {
             let app = NSApplication.shared
             app.setActivationPolicy(.regular)
             installMenu(appName: "Bench Reference")
-            let delegate = AppDelegate(launch: launch, text: text)
+            let delegate = AppDelegate(launch: launch)
             app.delegate = delegate
             app.run()
         } catch {

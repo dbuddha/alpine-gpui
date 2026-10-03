@@ -107,6 +107,8 @@ pub struct RustAnalyzer {
     pub binary: PathBuf,
     pub rustup_home: PathBuf,
     pub cargo_home: PathBuf,
+    /// `CARGO_TARGET_DIR` for the servers' cargo runs, under bench/target.
+    pub target_dir: PathBuf,
 }
 
 /// Values copied from the bench's own environment into the app's.
@@ -182,8 +184,9 @@ fn json_string(value: &str) -> String {
     quoted
 }
 
-/// Zed's isolated settings: no updates, telemetry, AI or sign-in server, a
-/// steady caret like Alpine's, and Alpine's font metrics (Menlo 15/22).
+/// Zed's isolated settings: no updates, telemetry, AI or sign-in server; a
+/// steady caret and Alpine's font metrics (Menlo 15/22); and no completion
+/// popups or git decorations, which Alpine does not have.
 pub fn zed_settings(rust_analyzer: Option<&Path>) -> String {
     let mut lines = vec![
         "  \"auto_update\": false".to_owned(),
@@ -194,6 +197,9 @@ pub fn zed_settings(rust_analyzer: Option<&Path>) -> String {
         "  \"buffer_font_family\": \"Menlo\"".to_owned(),
         "  \"buffer_font_size\": 15".to_owned(),
         "  \"buffer_line_height\": { \"custom\": 1.4667 }".to_owned(),
+        "  \"show_completions_on_input\": false".to_owned(),
+        "  \"git\": { \"inline_blame\": { \"enabled\": false }, \"git_gutter\": \"hide\" }"
+            .to_owned(),
     ];
     if let Some(binary) = rust_analyzer {
         lines.push(format!(
@@ -223,6 +229,10 @@ fn rust_analyzer_env(env: &mut Vec<(String, OsString)>, rust_analyzer: &RustAnal
     env.push((
         "CARGO_HOME".to_owned(),
         rust_analyzer.cargo_home.as_os_str().to_owned(),
+    ));
+    env.push((
+        "CARGO_TARGET_DIR".to_owned(),
+        rust_analyzer.target_dir.as_os_str().to_owned(),
     ));
 }
 
@@ -382,14 +392,35 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn alpine_runs_the_installed_bundle_binary_with_one_path() -> Result<(), String> {
-        let documents = vec![PathBuf::from("/repo"), PathBuf::from("/repo/src/lib.rs")];
-        let ra = RustAnalyzer {
+    fn rust_analyzer() -> RustAnalyzer {
+        RustAnalyzer {
             binary: PathBuf::from("/rustup/toolchains/1.97.1/bin/rust-analyzer"),
             rustup_home: PathBuf::from("/Users/me/.rustup"),
             cargo_home: PathBuf::from("/Users/me/.cargo"),
-        };
+            target_dir: PathBuf::from("/repo/bench/target/rust-analyzer"),
+        }
+    }
+
+    #[test]
+    fn both_editors_send_rust_analyzer_output_under_bench_target() -> Result<(), String> {
+        let documents = vec![PathBuf::from("/repo"), PathBuf::from("/repo/src/lib.rs")];
+        let ra = rust_analyzer();
+        for app in [App::Alpine, App::Zed] {
+            let spec = spec(app, &documents, Some(&ra))?;
+            assert_eq!(
+                env_value(&spec, "CARGO_TARGET_DIR"),
+                Some(&OsString::from("/repo/bench/target/rust-analyzer")),
+                "{}",
+                app.name()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn alpine_runs_the_installed_bundle_binary_with_one_path() -> Result<(), String> {
+        let documents = vec![PathBuf::from("/repo"), PathBuf::from("/repo/src/lib.rs")];
+        let ra = rust_analyzer();
         let spec = spec(App::Alpine, &documents, Some(&ra))?;
         assert_eq!(
             spec.program,
@@ -439,6 +470,8 @@ mod tests {
         );
         assert!(settings.contains("\"auto_update\": false"));
         assert!(settings.contains("\"cursor_blink\": false"));
+        assert!(settings.contains("\"show_completions_on_input\": false"));
+        assert!(settings.contains("\"git_gutter\": \"hide\""));
         Ok(())
     }
 

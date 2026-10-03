@@ -47,8 +47,16 @@ impl BenchPaths {
         })
     }
 
+    /// Outside any git checkout, so no editor's git integration sees the
+    /// fixtures; next to the disposable homes.
     pub fn fixtures_dir(&self) -> PathBuf {
-        self.results.join("fixtures/v1")
+        self.home_root.join("fixtures/v1")
+    }
+
+    /// rust-analyzer's cargo output for both editors, so `open-repo` never
+    /// writes the measured checkout's own `target/`.
+    pub fn rust_analyzer_target(&self) -> PathBuf {
+        self.helpers_dir.with_file_name("rust-analyzer")
     }
 }
 
@@ -102,6 +110,7 @@ pub fn rust_analyzer(paths: &BenchPaths, explicit: Option<&Path>) -> Result<Rust
         binary,
         rustup_home,
         cargo_home,
+        target_dir: paths.rust_analyzer_target(),
     })
 }
 
@@ -123,7 +132,11 @@ mod tests {
         assert!(paths.helpers_dir.starts_with(&bench_root));
         assert!(paths.results.starts_with(&bench_root));
         assert_eq!(paths.baseline, bench_root.join("baseline.tsv"));
-        assert!(paths.fixtures_dir().starts_with(&paths.results));
+        assert!(paths.fixtures_dir().starts_with(&paths.home_root));
+        assert_eq!(
+            paths.rust_analyzer_target(),
+            bench_root.join("target/rust-analyzer")
+        );
         Ok(())
     }
 }

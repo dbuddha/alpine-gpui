@@ -68,10 +68,14 @@ final class Poster {
         }
         self.pid = pid
         self.windowID = windowID
-        source = CGEventSource(stateID: .hidSystemState)
+        // A private state source does not inherit keys held on the keyboard.
+        source = CGEventSource(stateID: .privateState)
     }
 
+    // Flags are cleared on every event, so no held or system modifier rides
+    // along (Option turns a scroll into a fast scroll in Zed).
     private func deliver(_ event: CGEvent) {
+        event.flags = []
         event.postToPid(pid)
     }
 
@@ -98,8 +102,6 @@ final class Poster {
                 up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
             }
         }
-        down.flags = []
-        up.flags = []
         let stamp = Clock.now()
         deliver(down)
         Clock.wait(until: stamp + Clock.ticks(nanos: keyHoldNanos))
