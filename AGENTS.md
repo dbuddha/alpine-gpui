@@ -3,7 +3,7 @@ program: Alpine GPUI framework, Alpine Editor app, a terminal app later
 updated: 2026-10-02
 precedence: AGENTS.md files, code comments, README.md, vault notes
 archive: ARCHIVE.md (history only, never an operating rule)
-scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md]
+scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
 goals:
   editor: daily driver that beats Zed at parity (see apps/alpine-editor/AGENTS.md)
@@ -39,7 +39,7 @@ milestones:
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
   - "M1.1 recorder: frame-stage rings, 1 Hz footprint per process, idle counters, export"
-  - "M1.2 bench/: orchestrator, Swift input and capture helpers, AppKit reference"
+  - "M1.2 first permissioned bench session with Deepak, 2026-10-02"
   - "M1.3 CI work counters replace wall-clock asserts; 2.1 measures the cold path"
   - "M1.4 ten-trial baseline against Zed and AppKit, budgets set, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]

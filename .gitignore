@@ -1,4 +1,6 @@
 /target/
+/bench/target/
+/bench/results/
 /.idea/
 /.vscode/
 .DS_Store
