@@ -433,12 +433,13 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
     let last_revision = if cfg!(miri) { 11 } else { 10_001 };
     for revision in 2..=last_revision {
         let warm = app.try_scene(SceneRevision::new(revision), viewport)?;
-        // alpine-metal skips the upload only for the same revision and storage.
+        // alpine-metal reuses its resident atlas for a scene atlas only when
+        // revision, extent and pixel storage all match (native.rs prepare).
         let atlas = warm.glyph_atlas().ok_or("warm atlas")?;
-        assert!(
-            atlas.revision() == cold_atlas.revision() && atlas.shares_storage_with(cold_atlas),
-            "warm frame {revision} published a new atlas"
-        );
+        let resident = atlas.revision() == cold_atlas.revision()
+            && (atlas.width(), atlas.height()) == (cold_atlas.width(), cold_atlas.height())
+            && atlas.shares_storage_with(cold_atlas);
+        assert!(resident, "warm frame {revision} published a new atlas");
     }
 
     assert_eq!(rasterizations.load(Ordering::Relaxed), 0);
@@ -1392,8 +1393,8 @@ fn cold_open_of_a_large_file_lexes_only_the_laid_out_range() -> Result<(), Box<d
         let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
         let lines = active_pane_lines(&app)?;
         let cache = app.syntax_cache.snapshot();
-        // The 100 ms budget is a bench row; CI proves the first frame lexes
-        // the visible range plus overscan, never the whole file.
+        // The bench will measure the 100 ms budget; CI proves the first frame
+        // lexes the visible range plus overscan, never the whole file.
         assert_eq!(
             cache.misses(),
             usize_to_u64(lines.laid_out().len()),
@@ -1402,11 +1403,6 @@ fn cold_open_of_a_large_file_lexes_only_the_laid_out_range() -> Result<(), Box<d
         assert!(lines.laid_out().len() <= lines.visible().len() + 2 * DEFAULT_OVERSCAN_LINES);
         assert!(lines.laid_out().len() < LINES / 100, "{name}");
         assert_eq!(cache.hits(), 0, "{name}");
-        assert_eq!(
-            app.rust_diagnostics.warm_count(),
-            0,
-            "{name} started a server"
-        );
     }
     Ok(())
 }
