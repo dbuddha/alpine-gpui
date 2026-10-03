@@ -1437,6 +1437,63 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
 }
 
 #[test]
+fn settled_editor_builds_no_frames_and_submits_no_work_while_idle() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    app.open_workspace_path(&root.path().join("main.rs"), None)?;
+    app.settings_reload = settings::SettingsReload::explicit(None, None);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let (wake_sender, wakes) = std::sync::mpsc::channel();
+    runtime.set_worker_waker(move || {
+        let _ = wake_sender.send(());
+    });
+    let wake = |timestamp| SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(timestamp),
+    };
+    let pending = |snapshot: alpine_runtime::ApplicationSnapshot| {
+        let worker = snapshot.worker();
+        worker.queued_requests()
+            + worker.active_jobs()
+            + worker.queued_results()
+            + snapshot.external().current_items()
+    };
+    assert!(runtime.frame_if_dirty().is_some());
+
+    // Startup work settles on worker wakes, not a clock; a timeout fails.
+    let mut timestamp = 1;
+    let mut settled = false;
+    for _ in 0..4 {
+        let _ = runtime.dispatch(&wake(timestamp));
+        timestamp += 1;
+        let snapshot = runtime.snapshot();
+        if pending(snapshot) == 0 && !snapshot.is_dirty() {
+            settled = true;
+            break;
+        }
+        wakes.recv_timeout(std::time::Duration::from_secs(30))?;
+    }
+    assert!(settled, "startup work did not settle");
+
+    let frames = runtime.snapshot().next_scene_revision();
+    for _ in 0..100 {
+        let frame = runtime.dispatch(&wake(timestamp));
+        assert!(frame.is_none(), "an idle wake built a frame");
+        timestamp += 1;
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.next_scene_revision(), frames);
+        assert!(!snapshot.is_dirty());
+        assert_eq!(
+            pending(snapshot),
+            0,
+            "an idle wake submitted background work"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn failed_rust_server_does_not_reinvalidate_noop_keyboard_events()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
