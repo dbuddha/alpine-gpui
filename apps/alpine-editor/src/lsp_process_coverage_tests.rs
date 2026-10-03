@@ -950,9 +950,13 @@ fn blocked_input_is_nonblocking_and_shutdown_releases_payloads() -> Result<(), B
         let outcomes: Vec<_> = (0..16).map(|_| process.send(&payload)).collect();
         let _ = sender.send((process, outcomes));
     });
-    let (mut process, outcomes) = receiver
-        .recv_timeout(Duration::from_secs(20))
-        .map_err(|_| "a send blocked on a child that never reads")?;
+    let (mut process, outcomes) =
+        receiver
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => "a send blocked on a child that never reads",
+                RecvTimeoutError::Disconnected => "the send helper panicked",
+            })?;
     let admitted = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
     let rejected = outcomes
         .iter()
@@ -965,9 +969,14 @@ fn blocked_input_is_nonblocking_and_shutdown_releases_payloads() -> Result<(), B
         .count();
     assert_eq!(
         admitted,
-        MAX_RETAINED_PAYLOAD_BYTES / (MAX_MESSAGE_BYTES / 2)
+        MAX_RETAINED_PAYLOAD_BYTES / (MAX_MESSAGE_BYTES / 2),
+        "outcomes: {outcomes:?}"
     );
-    assert_eq!(rejected, outcomes.len() - admitted);
+    assert_eq!(
+        rejected,
+        outcomes.len() - admitted,
+        "outcomes: {outcomes:?}"
+    );
     let snapshot = process.shutdown();
     assert!(snapshot.peak_retained_bytes <= MAX_RETAINED_PAYLOAD_BYTES);
     assert_eq!(snapshot.retained_bytes, 0);

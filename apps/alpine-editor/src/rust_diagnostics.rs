@@ -3429,6 +3429,10 @@ mod discovery_tests {
         let binary = directory.join(SERVER_NAME);
         let _ = fs::write(&binary, b"#!/bin/sh\nexec sleep 600\n");
         let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
+        assert!(
+            is_executable_file(&binary),
+            "the hung candidate stub is not an executable file"
+        );
         // Discovery runs on a helper thread; if it waits on the candidate,
         // this receive expires long before the candidate's 600 s sleep ends.
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
