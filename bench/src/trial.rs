@@ -28,6 +28,8 @@ pub struct RunRequest {
     pub warmup: Option<u32>,
     pub keep_homes: bool,
     pub rust_analyzer: Option<PathBuf>,
+    /// Overrides the workload's spacing of timed keys.
+    pub key_interval_ms: Option<u64>,
 }
 
 const MIN_WINDOW_SIDE: f64 = 100.0;
@@ -572,7 +574,7 @@ fn run_phase(
     trial_dir: &Path,
     driven: &mut Driven,
 ) -> Result<(), String> {
-    match phase.action {
+    match effective_action(context, phase) {
         Action::Idle => thread::sleep(Duration::from_secs(u64::from(phase.seconds))),
         Action::UntilQuiet {
             quiet_core_pct,
@@ -598,6 +600,16 @@ fn run_phase(
     Ok(())
 }
 
+/// The phase's action with the run's key spacing, when one was given.
+fn effective_action(context: &Context<'_>, phase: &Phase) -> Action {
+    context
+        .request
+        .key_interval_ms
+        .map_or(phase.action, |interval| {
+            phase.action.with_key_interval(interval)
+        })
+}
+
 fn run_input_phase(
     context: &Context<'_>,
     phase: &Phase,
@@ -607,7 +619,16 @@ fn run_input_phase(
     driven: &mut Driven,
 ) -> Result<(), String> {
     let window = check_visible(context.helpers, pid)?;
+    if let Some(setup) = phase.setup {
+        let log = trial_dir.join(format!("setup-{}.stderr.log", phase.name));
+        context
+            .helpers
+            .run_input(&input_args(setup, pid, &window), &log)?;
+        thread::sleep(Duration::from_millis(300));
+    }
     let duration_ms = action.script_ms() + u64::from(phase.seconds) * 1_000 + 1_000;
+    let (x, y, width, height) = analysis::capture_region(window.width, window.height);
+    let region = [x, y, width, height].map(format_value).join(",");
     let capture_args: Vec<String> = [
         "run",
         "--pid",
@@ -616,6 +637,8 @@ fn run_input_phase(
         &window.id.to_string(),
         "--duration-ms",
         &duration_ms.to_string(),
+        "--region",
+        &region,
     ]
     .iter()
     .map(ToString::to_string)
@@ -750,9 +773,12 @@ fn trial_metrics(
             .filter(|(name, _)| name == phase.name)
             .map(|(_, frame)| *frame)
             .collect();
-        match phase.action {
+        let action = effective_action(context, phase);
+        match action {
             Action::Type { .. } | Action::Keys { .. } => {
-                let latencies = analysis::key_latencies(&events, &frames, timebase);
+                let spacing_ms = action.key_interval_ms().unwrap_or_default();
+                let spacing = timebase.ticks(spacing_ms.saturating_mul(1_000_000));
+                let latencies = analysis::key_latencies(&events, &frames, timebase, spacing);
                 metrics.extend(analysis::latency_metrics(
                     phase.name,
                     &latencies,

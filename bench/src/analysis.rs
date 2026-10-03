@@ -320,37 +320,52 @@ fn changed_frames(frames: &[Frame]) -> Vec<Frame> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct KeyLatencies {
     pub measured_ms: Vec<f64>,
-    pub overlapped: usize,
+    pub late: usize,
     pub missed: usize,
 }
 
-/// Each key's latency is the display time of the first changed frame after
-/// it. A key posted before the previous key's response is ambiguous, since
-/// that response could be mistaken for its own, so it is counted, not timed.
-pub fn key_latencies(events: &[InputEvent], frames: &[Frame], timebase: Timebase) -> KeyLatencies {
+/// A key is timed only if the first changed frame after it shows before the
+/// next key (last key: within `spacing_ticks`) and the previous key's did too;
+/// else it is late (the change may be a neighbor's) or missed (no change).
+pub fn key_latencies(
+    events: &[InputEvent],
+    frames: &[Frame],
+    timebase: Timebase,
+    spacing_ticks: u64,
+) -> KeyLatencies {
     let changes = changed_frames(frames);
     let mut sorted: Vec<&InputEvent> = events.iter().collect();
     sorted.sort_by_key(|event| event.mach);
     let mut result = KeyLatencies::default();
-    let mut previous_response: Option<u64> = None;
-    for event in sorted {
-        let ambiguous = previous_response.is_some_and(|response| response > event.mach);
+    let mut previous_in_window = true;
+    for (index, event) in sorted.iter().enumerate() {
+        let window_end = sorted
+            .get(index + 1)
+            .map_or(event.mach.saturating_add(spacing_ticks), |next| next.mach);
         let response = changes
             .iter()
             .find(|frame| frame.display_mach > event.mach)
             .map(|frame| frame.display_mach);
+        let in_window = response.is_some_and(|display| display < window_end);
         match response {
             None => result.missed += 1,
-            Some(_) if ambiguous => result.overlapped += 1,
-            Some(display) => result
+            Some(display) if in_window && previous_in_window => result
                 .measured_ms
                 .push(timebase.millis_between(event.mach, display)),
+            Some(_) => result.late += 1,
         }
-        if response.is_some() {
-            previous_response = response;
-        }
+        previous_in_window = in_window;
     }
     result
+}
+
+/// The captured band in window points as (x, y, width, height): the width
+/// less 32 pt of scroll bar, from 30% down to 40 pt above the bottom, so
+/// title, tab and status bars and scroll-bar fades never count as changes.
+pub fn capture_region(width: f64, height: f64) -> (f64, f64, f64, f64) {
+    let top = (height * 0.3).round();
+    let bottom = (height - 40.0).max(top + 1.0);
+    (0.0, top, (width - 32.0).max(1.0), bottom - top)
 }
 
 /// Intervals between consecutive changed frames displayed in the window.
@@ -374,12 +389,7 @@ pub fn latency_metrics(phase: &str, latencies: &KeyLatencies, sent: usize) -> Ve
             to_f64(latencies.measured_ms.len() as u64),
             "count",
         ),
-        Metric::new(
-            phase,
-            "keys_overlapped",
-            to_f64(latencies.overlapped as u64),
-            "count",
-        ),
+        Metric::new(phase, "keys_late", to_f64(latencies.late as u64), "count"),
         Metric::new(
             phase,
             "keys_missed",
@@ -587,7 +597,7 @@ pub fn summarize(metrics: &[Metric]) -> Vec<SummaryRow> {
 #[cfg(test)]
 mod tests {
     use super::{
-        KeyLatencies, Metric, PhaseWindow, Visibility, cpu_points, frame_intervals,
+        KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, cpu_points, frame_intervals,
         interval_metrics, key_latencies, phase_label, phase_metrics, phase_windows, quiet_since,
         summarize, trial_metrics, visibility,
     };
@@ -837,37 +847,75 @@ mod tests {
         }
     }
 
+    const MS: u64 = 1_000_000;
+
     #[test]
-    fn keys_match_the_first_changed_frame_after_them() {
-        let ms = 1_000_000;
+    fn keys_are_timed_by_the_first_change_inside_their_own_window() {
         let frames = vec![
             frame(1, 0, 1),
-            frame(2, 10 * ms, 1),
-            frame(3, 128 * ms, 2),
-            frame(4, 250 * ms, 2),
-            frame(5, 262 * ms, 3),
+            frame(2, 10 * MS, 1),
+            frame(3, 128 * MS, 2),
+            frame(4, 360 * MS, 2),
+            frame(5, 392 * MS, 3),
         ];
-        let events = vec![key(1, 100 * ms), key(2, 220 * ms)];
-        let latencies = key_latencies(&events, &frames, UNIT);
+        let events = vec![key(1, 100 * MS), key(2, 350 * MS)];
+        let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
         assert_eq!(
             latencies,
             KeyLatencies {
                 measured_ms: vec![28.0, 42.0],
-                overlapped: 0,
+                late: 0,
                 missed: 0,
             }
         );
     }
 
     #[test]
-    fn a_key_before_the_previous_response_is_not_timed() {
-        let ms = 1_000_000;
-        let frames = vec![frame(1, 0, 1), frame(2, 150 * ms, 2), frame(3, 170 * ms, 3)];
-        let events = vec![key(1, 100 * ms), key(2, 140 * ms), key(3, 400 * ms)];
-        let latencies = key_latencies(&events, &frames, UNIT);
-        assert_eq!(latencies.measured_ms, vec![50.0]);
-        assert_eq!(latencies.overlapped, 1);
+    fn a_response_after_the_next_key_is_late_and_so_is_that_key() {
+        // Key 1's change shows at 400, after key 2 at 350: key 1 is late,
+        // and key 2's first change (400) may be key 1's, so it is late too.
+        let frames = vec![frame(1, 0, 1), frame(2, 400 * MS, 2), frame(3, 420 * MS, 3)];
+        let events = vec![key(1, 100 * MS), key(2, 350 * MS), key(3, 600 * MS)];
+        let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
+        assert!(latencies.measured_ms.is_empty());
+        assert_eq!(latencies.late, 2);
         assert_eq!(latencies.missed, 1);
+    }
+
+    #[test]
+    fn timing_resumes_once_a_key_is_answered_in_its_window() {
+        let frames = vec![
+            frame(1, 0, 1),
+            frame(2, 400 * MS, 2),
+            frame(3, 630 * MS, 3),
+            frame(4, 880 * MS, 4),
+        ];
+        let events = vec![
+            key(1, 100 * MS),
+            key(2, 350 * MS),
+            key(3, 600 * MS),
+            key(4, 850 * MS),
+        ];
+        let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
+        assert_eq!(latencies.measured_ms, vec![30.0, 30.0]);
+        assert_eq!(latencies.late, 2);
+        assert_eq!(latencies.missed, 0);
+    }
+
+    #[test]
+    fn the_last_key_gets_one_spacing_to_respond() {
+        let frames = vec![frame(1, 0, 1), frame(2, 400 * MS, 2)];
+        let events = vec![key(1, 100 * MS)];
+        assert_eq!(key_latencies(&events, &frames, UNIT, 250 * MS).late, 1);
+        let wider = key_latencies(&events, &frames, UNIT, 400 * MS);
+        assert_eq!(wider.measured_ms, vec![300.0]);
+    }
+
+    #[test]
+    fn the_capture_band_skips_chrome_and_scroll_bars() {
+        assert_eq!(capture_region(960.0, 572.0), (0.0, 172.0, 928.0, 360.0));
+        let (_, y, width, height) = capture_region(10.0, 10.0);
+        assert!(width >= 1.0 && height >= 1.0 && y >= 0.0);
     }
 
     #[test]

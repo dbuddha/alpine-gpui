@@ -120,6 +120,32 @@ impl Action {
             Self::Idle | Self::UntilQuiet { .. } => 0,
         }
     }
+
+    /// The spacing of timed keys, which is also each key's response window.
+    pub fn key_interval_ms(self) -> Option<u64> {
+        match self {
+            Self::Type { interval_ms, .. } | Self::Keys { interval_ms, .. } => Some(interval_ms),
+            Self::Idle | Self::Scroll { .. } | Self::UntilQuiet { .. } => None,
+        }
+    }
+
+    /// The same action with keys spaced `interval_ms` apart; other actions
+    /// are unchanged.
+    pub fn with_key_interval(self, interval_ms: u64) -> Self {
+        match self {
+            Self::Type { phrase, count, .. } => Self::Type {
+                phrase,
+                count,
+                interval_ms,
+            },
+            Self::Keys { keycode, count, .. } => Self::Keys {
+                keycode,
+                count,
+                interval_ms,
+            },
+            other => other,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -128,6 +154,8 @@ pub struct Phase {
     /// The whole phase for `Idle`; the tail after the script otherwise.
     pub seconds: u32,
     pub action: Action,
+    /// Untimed input before capture starts, such as placing the caret.
+    pub setup: Option<Action>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -158,11 +186,23 @@ pub const TRIAL_PHASE: &str = "trial";
 
 const TYPING_PHRASE: &str = "the quick brown fox jumps over the lazy dog ";
 const KEY_DOWN_ARROW: u16 = 125;
+const KEY_RIGHT_ARROW: u16 = 124;
+
+/// Default spacing of timed keys: above the worst latency expected, so a
+/// response lands before the next key. `bench run --key-interval-ms` sets it.
+pub const KEY_INTERVAL_MS: u64 = 250;
+
+/// Moves the caret from line 1 to line 11, inside the captured text band.
+const CARET_TO_LINE_11: Action = Action::Keys {
+    keycode: KEY_DOWN_ARROW,
+    count: 10,
+    interval_ms: 60,
+};
 
 pub const WORKLOADS: &[Workload] = &[
     Workload {
         name: "typing",
-        summary: "type 100 characters at 120 ms into a 200-line text file",
+        summary: "on line 11 of a 200-line text file, type 100 characters 250 ms apart",
         document: Document::Fixture(Fixture::Typing),
         settle_seconds: 3,
         phases: &[Phase {
@@ -171,25 +211,27 @@ pub const WORKLOADS: &[Workload] = &[
             action: Action::Type {
                 phrase: TYPING_PHRASE,
                 count: 100,
-                interval_ms: 120,
+                interval_ms: KEY_INTERVAL_MS,
             },
+            setup: Some(CARET_TO_LINE_11),
         }],
         warmup_trials: 0,
         rust_analyzer: false,
     },
     Workload {
         name: "caret",
-        summary: "press Down 100 times at 120 ms in a 1,000-line text file",
+        summary: "on line 11 of a 1,000-line text file, press Right 100 times 250 ms apart",
         document: Document::Fixture(Fixture::Caret),
         settle_seconds: 3,
         phases: &[Phase {
             name: "caret",
             seconds: 2,
             action: Action::Keys {
-                keycode: KEY_DOWN_ARROW,
+                keycode: KEY_RIGHT_ARROW,
                 count: 100,
-                interval_ms: 120,
+                interval_ms: KEY_INTERVAL_MS,
             },
+            setup: Some(CARET_TO_LINE_11),
         }],
         warmup_trials: 0,
         rust_analyzer: false,
@@ -207,6 +249,7 @@ pub const WORKLOADS: &[Workload] = &[
                 count: 3_334,
                 interval_ms: 8,
             },
+            setup: None,
         }],
         warmup_trials: 0,
         rust_analyzer: false,
@@ -220,6 +263,7 @@ pub const WORKLOADS: &[Workload] = &[
             name: "loaded",
             seconds: 20,
             action: Action::Idle,
+            setup: None,
         }],
         warmup_trials: 0,
         rust_analyzer: false,
@@ -238,11 +282,13 @@ pub const WORKLOADS: &[Workload] = &[
                     quiet_seconds: 5,
                     max_seconds: 180,
                 },
+                setup: None,
             },
             Phase {
                 name: "steady",
                 seconds: 30,
                 action: Action::Idle,
+                setup: None,
             },
         ],
         warmup_trials: 1,
@@ -257,6 +303,7 @@ pub const WORKLOADS: &[Workload] = &[
             name: "idle",
             seconds: 60,
             action: Action::Idle,
+            setup: None,
         }],
         warmup_trials: 0,
         rust_analyzer: false,
@@ -284,7 +331,8 @@ pub fn typed_text(phrase: &str, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Document, Fixture, STARTUP_PHASE, TRIAL_PHASE, WORKLOADS, find, typed_text,
+        Action, CARET_TO_LINE_11, Document, Fixture, KEY_INTERVAL_MS, STARTUP_PHASE, TRIAL_PHASE,
+        WORKLOADS, find, typed_text,
     };
     use std::collections::BTreeSet;
 
@@ -369,18 +417,39 @@ mod tests {
     }
 
     #[test]
-    fn input_scripts_leave_room_for_each_response() -> Result<(), String> {
+    fn key_workloads_space_keys_above_the_worst_expected_latency() -> Result<(), String> {
         for name in ["typing", "caret"] {
             let workload = find(name)?;
-            let action = workload.phases[0].action;
-            let (Action::Type { interval_ms, .. } | Action::Keys { interval_ms, .. }) = action
-            else {
-                return Err(format!("{name} is not a key action"));
-            };
-            assert!(interval_ms >= 100, "{name} keys overlap slow responses");
-            assert!(action.script_ms() >= 10_000, "{name} is too short");
+            let phase = workload.phases[0];
+            let interval = phase.action.key_interval_ms().ok_or("not a key action")?;
+            assert!(
+                interval >= KEY_INTERVAL_MS,
+                "{name} keys are {interval} ms apart"
+            );
+            assert!(phase.action.script_ms() >= 10_000, "{name} is too short");
+            // The caret starts inside the captured band, not on line 1.
+            assert_eq!(phase.setup, Some(CARET_TO_LINE_11), "{name}");
         }
+        assert_eq!(find("scroll")?.phases[0].action.key_interval_ms(), None);
         Ok(())
+    }
+
+    #[test]
+    fn key_interval_overrides_touch_only_key_actions() {
+        let typing = Action::Type {
+            phrase: "ab",
+            count: 3,
+            interval_ms: 250,
+        };
+        assert_eq!(typing.with_key_interval(400).key_interval_ms(), Some(400));
+        assert_eq!(typing.with_key_interval(400).script_ms(), 1_200);
+        let scroll = Action::Scroll {
+            pixels: -66,
+            count: 2,
+            interval_ms: 8,
+        };
+        assert_eq!(scroll.with_key_interval(400), scroll);
+        assert_eq!(Action::Idle.with_key_interval(400), Action::Idle);
     }
 
     #[test]
