@@ -55,9 +55,9 @@ pub fn save_steps(pid: &str) -> [Vec<String>; 3] {
     ]
 }
 
-/// The frames and samples files, once `perf-<s>-samples.tsv` exists: the
-/// recorder writes and closes the frames file before it creates that one.
-pub fn saved_files(dir: &Path) -> Result<Option<(PathBuf, PathBuf)>, String> {
+/// The frames file, once `perf-<s>-samples.tsv` exists: the recorder writes
+/// and closes the frames file before it creates that one, which may be partial.
+pub fn saved_frames(dir: &Path) -> Result<Option<PathBuf>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -81,10 +81,7 @@ pub fn saved_files(dir: &Path) -> Result<Option<(PathBuf, PathBuf)>, String> {
             if !frames.is_file() {
                 return Err(format!("{} is missing", frames.display()));
             }
-            Ok(Some((
-                frames,
-                dir.join(format!("perf-{stamp}-samples.tsv")),
-            )))
+            Ok(Some(frames))
         }
         _ => Err(format!(
             "{} holds {} performance logs; a fresh home holds one",
@@ -145,13 +142,15 @@ pub fn first_build(frames: &[RecorderFrame]) -> FirstBuild {
     });
     let Some((index, event, begin, end)) = built else {
         return FirstBuild::Refused(
-            "no frames.tsv row has build_begin_ns and build_end_ns".to_owned(),
+            "no frames.tsv row has build_begin_ns and build_end_ns; an Alpine without \
+             request_startup_frame records none"
+                .to_owned(),
         );
     };
     if let Some(event) = event {
         return FirstBuild::Refused(format!(
-            "the first row with build columns (row {}) is event {event}'s warm frame, \
-             not the startup build",
+            "no startup (event 0) row: an event frame likely replaced the pending \
+             startup frame before it was drawn; row {} is event {event}'s warm frame",
             index + 1
         ));
     }
@@ -165,7 +164,7 @@ pub fn first_build(frames: &[RecorderFrame]) -> FirstBuild {
 mod tests {
     use super::{
         FirstBuild, PALETTE_QUERY, RecorderFrame, first_build, log_dir, parse_frames, save_steps,
-        saved_files,
+        saved_frames,
     };
     use std::path::Path;
 
@@ -264,6 +263,11 @@ mod tests {
             reason.contains("event 2") && reason.contains("row 2"),
             "{reason}"
         );
+        // The likely cause: an event frame replaced the pending startup frame.
+        assert!(
+            reason.contains("replaced the pending startup frame"),
+            "{reason}"
+        );
         for refused in [
             table(&[row("", "", "")]),
             table(&[row("", "10", ""), row("", "", "20")]),
@@ -314,21 +318,20 @@ mod tests {
         let home = crate::test_dir("recorder-log")?;
         let dir = log_dir(&home);
         assert!(dir.ends_with("Library/Logs/Alpine Editor"));
-        assert_eq!(saved_files(&dir)?, None);
+        assert_eq!(saved_frames(&dir)?, None);
         let write = |name: &str| {
             std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
             std::fs::write(dir.join(name), HEADER).map_err(|error| error.to_string())
         };
         write("perf-1759500000-frames.tsv")?;
-        assert_eq!(saved_files(&dir)?, None, "frames alone may be partial");
+        assert_eq!(saved_frames(&dir)?, None, "frames alone may be partial");
         write("perf-1759500000-samples.tsv")?;
-        let (frames, samples) = saved_files(&dir)?.ok_or("no saved pair")?;
+        let frames = saved_frames(&dir)?.ok_or("no saved frames")?;
         assert!(frames.ends_with("perf-1759500000-frames.tsv"));
-        assert!(samples.ends_with("perf-1759500000-samples.tsv"));
         write("perf-1759500009-samples.tsv")?;
-        assert!(saved_files(&dir).is_err(), "two logs in a fresh home");
+        assert!(saved_frames(&dir).is_err(), "two logs in a fresh home");
         std::fs::remove_dir_all(&home).map_err(|error| error.to_string())?;
-        assert!(saved_files(Path::new("/nonexistent/alpine")).is_ok_and(|found| found.is_none()));
+        assert!(saved_frames(Path::new("/nonexistent/alpine")).is_ok_and(|found| found.is_none()));
         Ok(())
     }
 }

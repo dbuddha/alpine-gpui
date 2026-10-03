@@ -653,12 +653,12 @@ fn run_trial(
     real_state_unchanged(context, &before, &format!("trial {number}"))?;
     let mut driven =
         driven.map_err(|error| format!("{error} (home kept at {})", home.root.display()))?;
-    let children = analysis::child_names(&data.sets);
-    if context.request.workload.servers == Servers::None && !children.is_empty() {
-        driven.invalid.get_or_insert(format!(
-            "the app started {}, but this workload runs with no server",
-            children.join(", ")
-        ));
+    if context.request.workload.servers == Servers::None
+        && let Some(evidence) = analysis::child_process_evidence(&data.sets)
+    {
+        driven
+            .invalid
+            .get_or_insert(format!("{evidence}, but this workload runs with no server"));
     }
     if let Some(reason) = driven.invalid.take() {
         driven.invalid = Some(subject.named(&reason));
@@ -980,8 +980,8 @@ fn run_step(
     }
 }
 
-/// Saves Alpine's recorder from the palette, keeps both TSV files with the
-/// trial and reads the startup build from the frames file.
+/// Saves Alpine's recorder from the palette, keeps the frames file with the
+/// trial and reads the startup build from it.
 fn save_recorder_log(
     context: &Context<'_>,
     phase: &Phase,
@@ -1002,8 +1002,8 @@ fn save_recorder_log(
     }
     let dir = recorder_log::log_dir(home);
     let started = Instant::now();
-    let (frames, samples) = loop {
-        if let Some(saved) = recorder_log::saved_files(&dir)? {
+    let frames = loop {
+        if let Some(saved) = recorder_log::saved_frames(&dir)? {
             break saved;
         }
         if started.elapsed() >= SAVE_TIMEOUT {
@@ -1015,13 +1015,8 @@ fn save_recorder_log(
         }
         thread::sleep(Duration::from_millis(100));
     };
-    for (from, name) in [
-        (&frames, "recorder-frames.tsv"),
-        (&samples, "recorder-samples.tsv"),
-    ] {
-        fs::copy(from, trial_dir.join(name))
-            .map_err(|error| format!("copy {}: {error}", from.display()))?;
-    }
+    fs::copy(&frames, trial_dir.join("recorder-frames.tsv"))
+        .map_err(|error| format!("copy {}: {error}", frames.display()))?;
     let text = fs::read_to_string(&frames)
         .map_err(|error| format!("read {}: {error}", frames.display()))?;
     match recorder_log::first_build(&recorder_log::parse_frames(&text)?) {

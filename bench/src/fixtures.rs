@@ -162,6 +162,12 @@ pub struct FixtureFile {
     pub fnv64: String,
 }
 
+/// The temporary name while writing: unique per fixture, so concurrent runs
+/// never rename one fixture's half-written bytes into another's place.
+fn partial_path(dir: &Path, fixture: Fixture) -> PathBuf {
+    dir.join(format!("{}.partial", fixture.file_name()))
+}
+
 /// Writes the fixture unless a file of the right size exists, then hashes
 /// the file on disk so the run records what the apps actually opened.
 pub fn ensure(dir: &Path, fixture: Fixture) -> Result<FixtureFile, String> {
@@ -170,7 +176,7 @@ pub fn ensure(dir: &Path, fixture: Fixture) -> Result<FixtureFile, String> {
     let expected = expected_bytes(fixture);
     let current = fs::metadata(&path).map(|meta| meta.len()).ok();
     if current != Some(expected) {
-        let partial = path.with_extension("partial");
+        let partial = partial_path(dir, fixture);
         let file = File::create(&partial)
             .map_err(|error| format!("create {}: {error}", partial.display()))?;
         let mut writer = BufWriter::new(file);
@@ -218,7 +224,7 @@ pub fn hash_file(path: &Path) -> Result<(u64, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fnv64, LINE_BYTES, ensure, expected_bytes, generate};
+    use super::{Fnv64, LINE_BYTES, ensure, expected_bytes, generate, partial_path};
     use crate::workload::{Fixture, Language};
     use std::collections::BTreeSet;
 
@@ -274,6 +280,17 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn every_fixture_writes_through_its_own_partial_file() {
+        let dir = std::path::Path::new("/tmp/alpine-bench/fixtures/v1");
+        let names: BTreeSet<_> = Fixture::ALL
+            .iter()
+            .map(|fixture| partial_path(dir, *fixture))
+            .collect();
+        assert_eq!(names.len(), Fixture::ALL.len());
+        assert!(names.contains(&dir.join("highlight-20000.rs.partial")));
     }
 
     #[test]
