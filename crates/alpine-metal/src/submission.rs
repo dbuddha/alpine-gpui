@@ -1329,6 +1329,8 @@ mod tests {
         assert!(timing_started::<true>().is_some());
         assert_eq!(elapsed_timing(None), None);
 
+        // The probe's own contract, not a budget: the start is backdated 5 ms,
+        // so a monotonic Instant guarantees elapsed >= 5 ms with no sleep.
         let started = Instant::now()
             .checked_sub(Duration::from_millis(5))
             .ok_or(RenderError::SubmissionInvariantViolated)?;

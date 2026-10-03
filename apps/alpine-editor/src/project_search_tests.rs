@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use alpine_platform_macos::{
@@ -227,9 +227,8 @@ fn stale_selected_file_preserves_the_current_document_and_tab_identity()
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "wall-clock qualification is not meaningful under Miri")]
-fn project_search_stages_are_separate_bounded_and_diagnostic_only()
--> Result<(), Box<dyn std::error::Error>> {
+#[cfg_attr(miri, ignore = "the 130-file fixture is covered outside Miri")]
+fn project_search_stages_do_bounded_work() -> Result<(), Box<dyn std::error::Error>> {
     let project = TempProject::new()?;
     for index in 0..128 {
         fs::write(
@@ -238,39 +237,41 @@ fn project_search_stages_are_separate_bounded_and_diagnostic_only()
         )?;
     }
     let mut app = EditorApp::open_workspace_lazy(SearchTextSystem, &project.root)?;
-    let open_start = Instant::now();
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let _ = app.scene(SceneRevision::new(2), viewport);
     assert!(app.open_project_search().visual_changed);
-    let open_elapsed = open_start.elapsed();
+    let opened = app.project_search.report();
+    assert_eq!((opened.scanned_entries, opened.searched_files), (0, 0));
     assert!(app.handle_event(&ime("needle")).visual_changed);
-    let worker_start = Instant::now();
-    while let Some(request) = app.prepare_project_search_request()? {
+
+    // One inventory request, then 130 files in batches of at most 64.
+    let mut requests = 0;
+    for _ in 0..8 {
+        let Some(request) = app.prepare_project_search_request()? else {
+            break;
+        };
+        requests += 1;
         let _ = app.apply_project_search_output(request.execute());
     }
-    let worker_elapsed = worker_start.elapsed();
-    let projection_start = Instant::now();
-    let rows = app
-        .project_search
-        .visible_results(PROJECT_SEARCH_VISIBLE_ROWS, PROJECT_SEARCH_OVERSCAN_ROWS)?;
-    let projection_elapsed = projection_start.elapsed();
-    let scene_start = Instant::now();
-    let _ = app.scene(
-        SceneRevision::new(3),
-        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?,
-    );
-    let scene_elapsed = scene_start.elapsed();
     let report = app.project_search.report();
+    assert!(report.terminal);
+    assert_eq!(report.inventory_files, 130);
+    assert_eq!(report.searched_files, 130);
+    assert_eq!(report.batches, 3);
+    assert_eq!(requests, report.batches + 1);
     assert_eq!(report.retained_matches, 130);
     assert!(report.result_bytes <= project_search::MAX_RESULT_BYTES);
     assert!(report.inventory_bytes <= project_search::MAX_INVENTORY_BYTES);
+    let rows = app
+        .project_search
+        .visible_results(PROJECT_SEARCH_VISIBLE_ROWS, PROJECT_SEARCH_OVERSCAN_ROWS)?;
     assert!(rows.len() <= PROJECT_SEARCH_VISIBLE_ROWS + PROJECT_SEARCH_OVERSCAN_ROWS * 2);
-    for elapsed in [
-        open_elapsed,
-        worker_elapsed,
-        projection_elapsed,
-        scene_elapsed,
-    ] {
-        assert!(elapsed < Duration::from_secs(5));
-    }
+
+    // The scene lays out the projected rows, not all 130 matches.
+    let before = app.label_cache.snapshot().misses();
+    let _ = app.scene(SceneRevision::new(3), viewport);
+    let labels = app.label_cache.snapshot().misses() - before;
+    assert_eq!(labels, usize_to_u64(rows.len()));
     Ok(())
 }
 
