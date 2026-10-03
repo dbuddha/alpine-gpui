@@ -332,7 +332,8 @@ struct Counters {
     restarts: AtomicU64,
     exits: AtomicU64,
     shutdown_timeouts: AtomicU64,
-    // The running child's PID, or 0 when none is running.
+    // The running child's PID, or 0. Cleared before the child is killed or
+    // reaped, since the OS may reuse a reaped PID at once.
     process_id: AtomicU32,
     wake: Option<ProcessWake>,
 }
@@ -904,7 +905,7 @@ fn supervise(
                 &counters,
             ));
             if exited && let Some(mut stopped) = running.take() {
-                let _ = stop_running(&mut stopped, false);
+                let _ = stop_running(&mut stopped, false, &counters);
             }
             terminate = merge_stop_reason(terminate, wait_reason);
         }
@@ -912,13 +913,10 @@ fn supervise(
             let _ = stop_for_reason(&mut running, reason, &events, &counters);
             continue_supervising = false;
         }
-        let process_id = running.as_ref().map_or(0, |process| process.child.id());
-        counters.process_id.store(process_id, Ordering::Release);
     }
     if let Some(mut process) = running {
-        let _ = stop_running(&mut process, true);
+        let _ = stop_running(&mut process, true, &counters);
     }
-    counters.process_id.store(0, Ordering::Release);
 }
 
 fn merge_stop_reason(
@@ -961,7 +959,7 @@ fn start_running(
                 Some(process)
             } else {
                 let mut process = process;
-                let _ = stop_running(&mut process, true);
+                let _ = stop_running(&mut process, true, counters);
                 None
             }
         }
@@ -1105,6 +1103,8 @@ fn handle_wait(
 ) -> WaitDecision {
     match classify_wait(identity, epoch, result) {
         Ok(Some(event)) => {
+            // try_wait reaped the child: unpublish its PID before announcing.
+            counters.process_id.store(0, Ordering::Release);
             counters.exits.fetch_add(1, Ordering::Relaxed);
             let _ = emit_terminal(events, event, counters);
             WaitDecision::Exited
@@ -1136,7 +1136,7 @@ fn stop_for_reason(
     };
     let identity = process.identity;
     let epoch = process.epoch;
-    let _ = stop_running(&mut process, true);
+    let _ = stop_running(&mut process, true, counters);
     let _ = emit_terminal(
         events,
         ProcessEvent::Stopped {
@@ -1152,7 +1152,7 @@ fn stop_for_reason(
 fn stop_for_restart(mut process: Running, events: &SyncSender<ProcessEvent>, counters: &Counters) {
     let identity = process.identity;
     let epoch = process.epoch;
-    let panicked = stop_running(&mut process, true);
+    let panicked = stop_running(&mut process, true, counters);
     let _ = emit_terminal(
         events,
         ProcessEvent::Stopped {
@@ -1379,7 +1379,10 @@ fn reader<R: Read>(
     }
 }
 
-fn stop_running(process: &mut Running, kill: bool) -> bool {
+fn stop_running(process: &mut Running, kill: bool, counters: &Counters) -> bool {
+    // Unpublish before the kill and the reap, after which the OS may reuse
+    // the PID.
+    counters.process_id.store(0, Ordering::Release);
     process.input.take();
     if kill {
         let _ = process.child.kill();
