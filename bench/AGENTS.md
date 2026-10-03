@@ -4,8 +4,9 @@ parent: ../AGENTS.md
 updated: 2026-10-03
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
-  - "bench-input and bench-capture have never run: they wait for the first permissioned trials"
-  - "unverified until then: the reference editor's 960x540 content fix, its caret blink suppression, PID-targeted scrolls moving each app down, highlight's palette keys, and CFFIXED_USER_HOME keeping saved state out of the real home"
+  - "PID-targeted scroll moved neither Alpine nor the reference editor on 2026-10-03"
+  - "Zed's and the reference editor's windows miss the requested 960x572 pt (1486x933, 944x562); Zed timed 0 to 3 of 100 keys"
+  - "unverified: the reference editor's caret blink suppression and highlight's palette keys"
 ---
 
 # Bench
@@ -51,8 +52,8 @@ input, starting nothing. Alpine is the installed
   directory; a child process voids the trial. `--trials` counts per group;
   other rows pool the groups.
 - From before measuring, every second, the app must be frontmost and
-  uncovered by other apps' visible windows at any layer; a failure stops the
-  run before measuring and invalidates the trial after.
+  uncovered by other apps' visible windows at any layer but the pointer's; a
+  failure stops the run before measuring and invalidates the trial after.
 - Report 95% Student t intervals of per-trial values.
 
 ## Permissions

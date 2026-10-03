@@ -89,13 +89,24 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Vec<Change> {
     changes
 }
 
-/// Paths from `lsof -Fn` output that fall under any of the roots.
-pub fn open_under(lsof: &str, roots: &[PathBuf]) -> Vec<String> {
-    lsof.lines()
-        .filter_map(|line| line.strip_prefix('n'))
-        .filter(|path| roots.iter().any(|root| Path::new(path).starts_with(root)))
-        .map(ToOwned::to_owned)
-        .collect()
+/// Paths from `lsof -Fn` output that fall under any of the roots, except
+/// program code mapped from `bundle`.
+pub fn open_under(lsof: &str, roots: &[PathBuf], bundle: &Path) -> Vec<String> {
+    let mut descriptor = "";
+    let mut open = Vec::new();
+    for line in lsof.lines() {
+        if let Some(value) = line.strip_prefix('f') {
+            descriptor = value;
+        } else if let Some(path) = line.strip_prefix('n') {
+            // lsof also lists closed shared writable mappings as `txt`, so
+            // only the probe's own code under Zed.app is exempt.
+            let program = descriptor == "txt" && Path::new(path).starts_with(bundle);
+            if !program && roots.iter().any(|root| Path::new(path).starts_with(root)) {
+                open.push(path.to_owned());
+            }
+        }
+    }
+    open
 }
 
 pub fn describe(change: &Change) -> String {
@@ -189,7 +200,7 @@ fn observe(
             |seen| seen.to_string()
         )
     ));
-    open_under(&lsof, roots)
+    open_under(&lsof, roots, &paths.zed_app)
 }
 
 fn home_summary(home: &Path) -> String {
@@ -384,11 +395,30 @@ mod tests {
     }
 
     #[test]
+    fn only_mapped_code_from_the_bundle_is_exempt() {
+        let bundle = Path::new("/Applications/Zed.app");
+        let data = "/Users/me/Library/Application Support/Zed";
+        let roots = [bundle.to_path_buf(), PathBuf::from(data)];
+        let lsof = format!(
+            "p9\nftxt\nn{0}/Contents/MacOS/zed\nf12\nn{0}/Contents/Resources/x\nftxt\nn{1}/db.sqlite-shm\n",
+            bundle.display(),
+            data
+        );
+        assert_eq!(
+            open_under(&lsof, &roots, bundle),
+            [
+                "/Applications/Zed.app/Contents/Resources/x".to_owned(),
+                format!("{data}/db.sqlite-shm"),
+            ]
+        );
+    }
+
+    #[test]
     fn lsof_paths_are_matched_by_component_prefix() {
         let roots = vec![PathBuf::from("/Users/me/Library/Application Support/Zed")];
         let lsof = "p123\nfcwd\nn/tmp/alpine-bench/x/home\nn/Users/me/Library/Application Support/Zed/db/0-stable/db.sqlite\nn/Users/me/Library/Application Support/Zedfoo\n";
         assert_eq!(
-            open_under(lsof, &roots),
+            open_under(lsof, &roots, Path::new("/Applications/Zed.app")),
             vec!["/Users/me/Library/Application Support/Zed/db/0-stable/db.sqlite".to_owned()]
         );
     }
