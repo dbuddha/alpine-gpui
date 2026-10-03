@@ -517,6 +517,30 @@ impl EventReceipt {
     }
 }
 
+// Event sequences start at 1, so event 0 names a build that runs before any
+// event, such as the first frame's before the window shows.
+const STARTUP_EVENT: EventTimestamp = EventTimestamp::new(0);
+
+// Runs `build` as recorder event 0, so its frame record keeps the stages the
+// build signposts with no event, measured from `receipt`.
+fn startup_frame_timing<T>(
+    receipt: EventReceipt,
+    build: impl FnOnce() -> T,
+) -> (T, EventFrameTiming) {
+    recorder::begin_event(STARTUP_EVENT.get(), receipt.instant);
+    let output = build();
+    let handler_finished_at = Instant::now();
+    let timing = EventFrameTiming {
+        timestamp: STARTUP_EVENT,
+        received_at: receipt.instant,
+        received_media_time_seconds: receipt.media_time_seconds,
+        handler_finished_at,
+        admitted_at: Instant::now(),
+        stages: recorder::take_stages(STARTUP_EVENT.get()),
+    };
+    (output, timing)
+}
+
 #[derive(Clone, Copy, Default)]
 struct AttemptTiming {
     target_timestamp_bits: u64,
@@ -719,8 +743,11 @@ mod recorder_tests {
         time::{Duration, Instant},
     };
 
-    use super::{AttemptTiming, EventFrameTiming, PresentationOutcome, phys_footprint, task_usage};
-    use crate::{EventTimestamp, RecorderSnapshot, recorder};
+    use super::{
+        AttemptTiming, EventFrameTiming, EventReceipt, PresentationOutcome, phys_footprint,
+        startup_frame_timing, task_usage,
+    };
+    use crate::{EditorSignpost, EditorSignpostStage, EventTimestamp, RecorderSnapshot, recorder};
 
     #[test]
     fn recorder_frames_offset_each_stage_from_event_receipt() -> Result<(), Box<dyn Error>> {
@@ -779,6 +806,62 @@ mod recorder_tests {
                 format!("\t11\tfailed\t100000000070{submitted}"),
             ]
         );
+        Ok(())
+    }
+
+    // The editor signposts a build that runs before any event with event 0.
+    // Requested plainly, its row loses the build columns; startup timing
+    // keeps them, still with an empty `event`.
+    #[test]
+    fn the_startup_build_keeps_its_stages_as_event_zero() -> Result<(), Box<dyn Error>> {
+        recorder::start(Instant::now(), 100.0);
+        let build = || {
+            for stage in [
+                EditorSignpostStage::FrameBuildBegin,
+                EditorSignpostStage::FrameBuildComplete,
+            ] {
+                recorder::record_stage(EditorSignpost::new(stage, 0, 1, 1, 1, [0; 3]));
+            }
+        };
+        build();
+        let (frame, base) = AttemptTiming::default().recorder_frame(
+            1,
+            PresentationOutcome::Presented,
+            0,
+            Instant::now(),
+        );
+        recorder::record_frame(frame, base, 1);
+        let ((), event) = startup_frame_timing(EventReceipt::now(), build);
+        let timing = AttemptTiming {
+            event: Some(event),
+            ..AttemptTiming::default()
+        };
+        let (frame, base) =
+            timing.recorder_frame(2, PresentationOutcome::Presented, 0, Instant::now());
+        recorder::record_frame(frame, base, 1);
+
+        let mut tsv = Vec::new();
+        RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
+        let text = String::from_utf8(tsv)?;
+        let rows: Vec<Vec<&str>> = text
+            .lines()
+            .map(|line| line.split('\t').collect())
+            .collect();
+        let column =
+            |name: &'static str| rows[0].iter().position(|field| *field == name).ok_or(name);
+        let event = column("event")?;
+        let (dispatch, begin, end) = (
+            column("dispatch_ns")?,
+            column("build_begin_ns")?,
+            column("build_end_ns")?,
+        );
+        assert_eq!(rows.len(), 3, "{text}");
+        assert_eq!([rows[1][event], rows[1][begin], rows[1][end]], ["", "", ""]);
+        assert_eq!([rows[2][event], rows[2][dispatch]], ["", ""]);
+        let begin_ns: u64 = rows[2][begin].parse()?;
+        let end_ns: u64 = rows[2][end].parse()?;
+        assert!(end_ns >= begin_ns, "{text}");
+        assert_eq!(recorder::take_stages(0), recorder::NO_STAGES);
         Ok(())
     }
 
@@ -5684,6 +5767,27 @@ impl NativeSurface {
             .request_frame(scene, clear)?;
         self.delegate.apply_link_directive(directive);
         Ok(revision)
+    }
+
+    pub(crate) fn request_startup_frame<F>(
+        &self,
+        build: F,
+    ) -> Result<Option<alpine_platform::PresentationRevision>, SurfaceError>
+    where
+        F: FnOnce() -> Option<crate::SurfaceFrame>,
+    {
+        let (frame, timing) = startup_frame_timing(EventReceipt::now(), build);
+        let Some(frame) = frame else {
+            return Ok(None);
+        };
+        let (scene, clear) = frame.into_parts();
+        let (revision, directive) = self
+            .driver
+            .try_borrow_mut()
+            .map_err(|_| SurfaceError::owner_conflict(SurfaceOperation::Presentation))?
+            .request_frame_with_event(scene, clear, Some(timing))?;
+        self.delegate.apply_link_directive(directive);
+        Ok(Some(revision))
     }
 
     #[cfg(alpine_native_validation)]

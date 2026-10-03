@@ -1402,10 +1402,9 @@ impl<D: AppDelegate + 'static> Application<D> {
         application.set_worker_waker(move || {
             let _ = surface_waker.wake();
         });
-        if let Some(frame) = application.frame_if_dirty() {
-            let (scene, clear) = frame.into_parts();
-            let _revision = surface.request_frame(scene, clear)?;
-        }
+        // The cold first build runs before any event; this keeps its stages
+        // in the recorder, so a saved frames.tsv shows it.
+        let _revision = surface.request_startup_frame(|| application.frame_if_dirty())?;
         surface.show()?;
         before_run(surface)?;
         let _ = startup_waker.wake();

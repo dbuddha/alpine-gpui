@@ -3697,6 +3697,19 @@ impl NativeSurface {
         self.implementation.request_frame(scene, clear)
     }
 
+    /// Requests the frame `build` makes before any event, as recorder event 0.
+    /// # Errors
+    /// Returns the errors of [`Self::request_frame`].
+    pub fn request_startup_frame<F>(
+        &self,
+        build: F,
+    ) -> Result<Option<PresentationRevision>, SurfaceError>
+    where
+        F: FnOnce() -> Option<SurfaceFrame>,
+    {
+        self.implementation.request_startup_frame(build)
+    }
+
     /// Removes the latest asynchronous callback failure, if one exists.
     ///
     /// # Errors

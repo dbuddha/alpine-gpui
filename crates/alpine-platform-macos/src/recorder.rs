@@ -22,9 +22,9 @@ const NO_SERVER: u8 = u8::MAX;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const ABSENT: u32 = u32::MAX;
 
-// Columns after `event_ns` are ns after event receipt, or after submit start
-// for a frame no event produced (empty `event`). gpu_observed is when a poll
-// saw the GPU finish, an upper bound on completion.
+// Columns after `event_ns` are ns after event receipt (for event 0, the
+// startup build's start) or after submit start for a frame no event produced.
+// Both leave `event` empty; gpu_observed is a poll's upper bound on completion.
 const FRAME_HEADER: &str = concat!(
     "event\trevision\toutcome\tevent_ns\tdispatch_ns\tmutation_ns\tbuild_begin_ns",
     "\tlayout_begin_ns\tlayout_end_ns\tatlas_begin_ns\tatlas_end_ns\tbuild_end_ns",
