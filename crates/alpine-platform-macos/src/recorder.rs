@@ -802,7 +802,8 @@ mod tests {
     }
 
     #[test]
-    fn events_sample_at_most_once_a_second_and_idle_samples_nothing() {
+    fn events_sample_at_most_once_a_second_and_idle_samples_nothing() -> Result<(), Box<dyn Error>>
+    {
         let calls = Cell::new(0_u32);
         let children = |children: &mut SampledChildren<'_>| {
             calls.set(calls.get() + 1);
@@ -811,12 +812,16 @@ mod tests {
         sample_processes(children);
         assert_eq!((RecorderSnapshot::capture().work(), calls.get()), (0, 0));
         start_recorder_for_test();
+        let started = Instant::now();
         for _ in 0..3 {
             sample_processes(children);
         }
+        // A stalled runner may sample again a second later, but never sooner.
+        let allowed = 1 + started.elapsed().as_secs();
         let sampled = RecorderSnapshot::capture();
-        let observed = (sampled.sample_count(), sampled.work(), calls.get());
-        assert_eq!(observed, (1, 1, 1));
+        let count = u64::try_from(sampled.sample_count())?;
+        assert!((1..=allowed).contains(&count));
+        assert_eq!((sampled.work(), u64::from(calls.get())), (count, count));
         assert_eq!(RecorderSnapshot::capture(), sampled);
 
         let origin = Instant::now();
@@ -825,6 +830,7 @@ mod tests {
         recorder.sample(origin, |_| {}, |_| None, None);
         assert!(!recorder.sample_due(nanos_after(origin, 999_999_999)));
         assert!(recorder.sample_due(origin + SAMPLE_INTERVAL));
+        Ok(())
     }
 
     #[test]

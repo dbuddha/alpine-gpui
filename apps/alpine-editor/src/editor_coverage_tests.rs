@@ -8531,13 +8531,18 @@ fn idle_editor_records_nothing_and_events_sample_at_most_once_a_second()
     assert!(runtime.frame_if_dirty().is_some());
     assert!(runtime.frame_if_dirty().is_none());
     assert_eq!(RecorderSnapshot::capture().work(), 0);
+    let started = std::time::Instant::now();
     for timestamp in 1..=3 {
         let _ = runtime.dispatch(&SurfaceEvent::Wake {
             timestamp: EventTimestamp::new(timestamp),
         });
     }
+    // A stalled runner may sample again a second later, but never sooner.
+    let allowed = 1 + started.elapsed().as_secs();
     let sampled = RecorderSnapshot::capture();
-    assert_eq!((sampled.sample_count(), sampled.work()), (1, 1));
+    let count = u64::try_from(sampled.sample_count())?;
+    assert!((1..=allowed).contains(&count));
+    assert_eq!(sampled.work(), count);
     assert!(runtime.frame_if_dirty().is_none());
     assert_eq!(RecorderSnapshot::capture(), sampled);
     Ok(())
