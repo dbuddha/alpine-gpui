@@ -422,7 +422,8 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
         rasterizations: Arc::clone(&rasterizations),
     })?;
     let viewport = viewport()?;
-    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let cold = app.try_scene(SceneRevision::new(1), viewport)?;
+    let cold_atlas = cold.glyph_atlas().ok_or("cold atlas")?;
     let cold_rasterizations = rasterizations.swap(0, Ordering::Relaxed);
     assert!(cold_rasterizations > 0);
     let publication_revision = app.atlas_revision;
@@ -431,7 +432,13 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
 
     let last_revision = if cfg!(miri) { 11 } else { 10_001 };
     for revision in 2..=last_revision {
-        let _ = app.try_scene(SceneRevision::new(revision), viewport)?;
+        let warm = app.try_scene(SceneRevision::new(revision), viewport)?;
+        // alpine-metal skips the upload only for the same revision and storage.
+        let atlas = warm.glyph_atlas().ok_or("warm atlas")?;
+        assert!(
+            atlas.revision() == cold_atlas.revision() && atlas.shares_storage_with(cold_atlas),
+            "warm frame {revision} published a new atlas"
+        );
     }
 
     assert_eq!(rasterizations.load(Ordering::Relaxed), 0);
