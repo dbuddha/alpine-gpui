@@ -38,10 +38,9 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M1.1 recorder: frame-stage rings, 1 Hz footprint per process, idle counters, export"
+  - "M1.1 recorder: part 1 frames and export in review; part 2 footprint and idle counters next"
   - "M1.2 first permissioned bench session with Deepak, 2026-10-02"
-  - "M1.3 CI work counters replace wall-clock asserts; 2.1 measures the cold path"
-  - "M1.4 ten-trial baseline against Zed and AppKit, budgets set, CP1"
+  - "M1.4 highlight-latency bench row (2.1), ten-trial baseline against Zed and AppKit, budgets, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 

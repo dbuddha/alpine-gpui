@@ -18,12 +18,13 @@ const MAX_CHILDREN: usize = 6;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const ABSENT: u32 = u32::MAX;
 
-// Columns after `event_ns` are nanoseconds after event receipt. The first
-// EDITOR_STAGES come from editor stage points, the rest from presentation.
+// Columns after `event_ns` are ns after event receipt, or after submit start
+// for a frame no event produced (empty `event`). gpu_observed is when a poll
+// saw the GPU finish, an upper bound on completion.
 const FRAME_HEADER: &str = concat!(
     "event\trevision\toutcome\tevent_ns\tdispatch_ns\tmutation_ns\tbuild_begin_ns",
     "\tlayout_begin_ns\tlayout_end_ns\tatlas_begin_ns\tatlas_end_ns\tbuild_end_ns",
-    "\thandler_end_ns\tsubmit_begin_ns\tsubmit_end_ns\tgpu_done_ns\ttarget_ns",
+    "\thandler_end_ns\tsubmit_begin_ns\tsubmit_end_ns\tgpu_observed_ns\ttarget_ns",
     "\ttarget_present_ns\tpresented_ns\trecorded_ns\n",
 );
 const SAMPLE_HEADER: &str = concat!(
@@ -35,7 +36,7 @@ pub(crate) const EDITOR_STAGES: usize = 8;
 pub(crate) const HANDLER_END: usize = 8;
 pub(crate) const SUBMIT_BEGIN: usize = 9;
 pub(crate) const SUBMIT_END: usize = 10;
-pub(crate) const GPU_DONE: usize = 11;
+pub(crate) const GPU_OBSERVED: usize = 11;
 pub(crate) const TARGET: usize = 12;
 pub(crate) const TARGET_PRESENT: usize = 13;
 pub(crate) const PRESENTED: usize = 14;
@@ -396,10 +397,11 @@ impl RecorderSnapshot {
     pub fn write_frames_tsv(&self, out: &mut impl Write) -> io::Result<()> {
         out.write_all(FRAME_HEADER.as_bytes())?;
         for frame in &self.frames {
+            // Event sequences start at 1, so 0 marks a frame no event produced.
+            field_first(out, (frame.event != 0).then_some(frame.event))?;
             write!(
                 out,
-                "{}\t{}\t{}\t{}",
-                frame.event,
+                "\t{}\t{}\t{}",
                 frame.revision,
                 outcome_name(frame.outcome),
                 frame.event_ns
@@ -433,6 +435,13 @@ impl RecorderSnapshot {
             }
         }
         Ok(())
+    }
+}
+
+fn field_first(out: &mut impl Write, value: Option<u64>) -> io::Result<()> {
+    match value {
+        Some(value) => write!(out, "{value}"),
+        None => Ok(()),
     }
 }
 
@@ -597,9 +606,10 @@ mod tests {
         );
         assert_eq!(columns.get(4 + EDITOR_STAGES - 1), Some(&"build_end_ns"));
         assert_eq!(columns.get(4 + HANDLER_END), Some(&"handler_end_ns"));
+        assert_eq!(columns.get(4 + GPU_OBSERVED), Some(&"gpu_observed_ns"));
         assert_eq!(columns.get(4 + TARGET), Some(&"target_ns"));
         assert_eq!(columns.get(4 + RECORDED), Some(&"recorded_ns"));
-        let row = format!("0\t9\tcancelled\t0{}", "\t".repeat(STAGE_COUNT));
+        let row = format!("\t9\tcancelled\t0{}", "\t".repeat(STAGE_COUNT));
         assert_eq!(lines.next(), Some(row.as_str()));
         assert_eq!(lines.next(), None);
 

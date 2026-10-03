@@ -422,7 +422,8 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
         rasterizations: Arc::clone(&rasterizations),
     })?;
     let viewport = viewport()?;
-    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let cold = app.try_scene(SceneRevision::new(1), viewport)?;
+    let cold_atlas = cold.glyph_atlas().ok_or("cold atlas")?;
     let cold_rasterizations = rasterizations.swap(0, Ordering::Relaxed);
     assert!(cold_rasterizations > 0);
     let publication_revision = app.atlas_revision;
@@ -431,7 +432,14 @@ fn warm_unchanged_viewport_avoids_rasterization_and_atlas_publication_for_10000_
 
     let last_revision = if cfg!(miri) { 11 } else { 10_001 };
     for revision in 2..=last_revision {
-        let _ = app.try_scene(SceneRevision::new(revision), viewport)?;
+        let warm = app.try_scene(SceneRevision::new(revision), viewport)?;
+        // alpine-metal reuses its resident atlas for a scene atlas only when
+        // revision, extent and pixel storage all match (native.rs prepare).
+        let atlas = warm.glyph_atlas().ok_or("warm atlas")?;
+        let resident = atlas.revision() == cold_atlas.revision()
+            && (atlas.width(), atlas.height()) == (cold_atlas.width(), cold_atlas.height())
+            && atlas.shares_storage_with(cold_atlas);
+        assert!(resident, "warm frame {revision} published a new atlas");
     }
 
     assert_eq!(rasterizations.load(Ordering::Relaxed), 0);
@@ -1278,6 +1286,127 @@ fn editor_scene_projects_compiled_rust_syntax_onto_visible_glyphs() -> Result<()
     Ok(())
 }
 
+// The syntax cache is content-addressed, so lexing counts need distinct lines.
+fn distinct_source(lines: usize) -> Result<String, std::fmt::Error> {
+    use std::fmt::Write as _;
+    let mut source = String::with_capacity(lines.saturating_mul(40));
+    for index in 0..lines {
+        writeln!(source, "pub fn item_{index}() {{ let n = {index}; }}")?;
+    }
+    Ok(source)
+}
+
+fn active_pane_lines(app: &EditorApp) -> Result<VisibleLines, Box<dyn Error>> {
+    let pane = app.active_pane_bounds()?;
+    Ok(VisibleLines::new(
+        app.buffer().snapshot().line_count(),
+        app.scroll_y,
+        PositiveFinite::new(pane.size().height()).ok_or("pane height")?,
+        PositiveFinite::new(LINE_HEIGHT).ok_or("line height")?,
+        DEFAULT_OVERSCAN_LINES,
+    )?)
+}
+
+fn shared_lines(first: &Range<usize>, second: &Range<usize>) -> usize {
+    first
+        .end
+        .min(second.end)
+        .saturating_sub(first.start.max(second.start))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "large-file lexing counts are covered outside Miri")]
+fn scrolling_lexes_only_lines_new_to_the_viewport() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", distinct_source(5_000)?)?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("main.rs"))?;
+    let viewport = viewport()?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport)?;
+    let mut previous = active_pane_lines(&app)?.laid_out();
+    let first = app.syntax_cache.snapshot();
+    assert_eq!(first.misses(), usize_to_u64(previous.len()));
+    assert_eq!(first.hits(), 0);
+
+    // An N-line scroll moves the view N lines and lexes at most N lines,
+    // none of them laid out in the previous frame.
+    let steps: [i16; 9] = [0, 1, 2, 5, 13, -3, -8, 120, -64];
+    let mut top = 0_i16;
+    for (frame, lines) in (2_u64..).zip(steps) {
+        let before = app.syntax_cache.snapshot().misses();
+        let _ = app.handle_event(&SurfaceEvent::Scroll {
+            timestamp: EventTimestamp::new(frame),
+            delta_x: 0.0,
+            delta_y: -f32::from(lines) * LINE_HEIGHT,
+            phase: ScrollPhase::Changed,
+            precise: true,
+            modifiers: Modifiers::default(),
+        });
+        let _ = app.try_scene(SceneRevision::new(frame), viewport)?;
+        top += lines;
+        let expected = f32::from(top) * LINE_HEIGHT;
+        assert_eq!(
+            app.scroll_y.to_bits(),
+            expected.to_bits(),
+            "a {lines}-line scroll left the view at {}, not {expected}",
+            app.scroll_y
+        );
+        let pane = active_pane_lines(&app)?;
+        assert_eq!(pane.visible().start, usize::try_from(top)?);
+        let current = pane.laid_out();
+        let lexed = app.syntax_cache.snapshot().misses() - before;
+        let new_lines = current.len() - shared_lines(&previous, &current);
+        assert!(
+            lexed <= u64::from(lines.unsigned_abs()),
+            "a {lines}-line scroll lexed {lexed} lines"
+        );
+        assert!(
+            lexed <= usize_to_u64(new_lines),
+            "a {lines}-line scroll re-lexed a line laid out in the previous frame"
+        );
+        previous = current;
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "large-file lexing counts are covered outside Miri")]
+fn cold_open_of_a_large_file_lexes_only_the_laid_out_range() -> Result<(), Box<dyn Error>> {
+    const LINES: usize = 20_000;
+    let source = distinct_source(LINES)?;
+    let root = TestWorkspace::new()?;
+    let groups = [
+        ("main.rs", crate::syntax::SyntaxLanguage::Rust),
+        ("main.py", crate::syntax::SyntaxLanguage::Python),
+        ("main.cpp", crate::syntax::SyntaxLanguage::Cpp),
+        ("Main.java", crate::syntax::SyntaxLanguage::Java),
+        ("main.ts", crate::syntax::SyntaxLanguage::TypeScript),
+        ("main.js", crate::syntax::SyntaxLanguage::JavaScript),
+    ];
+    for (name, language) in groups {
+        root.write(name, &source)?;
+        let path = root.path().join(name);
+        let mut app = EditorApp::open_file(TestTextSystem, &path)?;
+        assert_eq!(
+            app.rust_diagnostics.highlighter_for_path(Some(&path)),
+            language
+        );
+        let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+        let lines = active_pane_lines(&app)?;
+        let cache = app.syntax_cache.snapshot();
+        // The bench will measure the 100 ms budget; CI proves the first frame
+        // lexes the visible range plus overscan, never the whole file.
+        assert_eq!(
+            cache.misses(),
+            usize_to_u64(lines.laid_out().len()),
+            "{name}"
+        );
+        assert!(lines.laid_out().len() <= lines.visible().len() + 2 * DEFAULT_OVERSCAN_LINES);
+        assert!(lines.laid_out().len() < LINES / 100, "{name}");
+        assert_eq!(cache.hits(), 0, "{name}");
+    }
+    Ok(())
+}
+
 #[test]
 fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeError> {
     let viewport = viewport()?;
@@ -1309,6 +1438,63 @@ fn runtime_builds_only_after_an_accepted_editor_change() -> Result<(), RuntimeEr
             })
             .is_none()
     );
+    Ok(())
+}
+
+#[test]
+fn settled_editor_builds_no_frames_and_submits_no_work_while_idle() -> Result<(), Box<dyn Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("main.rs", "fn main() {}\n")?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    app.open_workspace_path(&root.path().join("main.rs"), None)?;
+    app.settings_reload = settings::SettingsReload::explicit(None, None);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let (wake_sender, wakes) = std::sync::mpsc::channel();
+    runtime.set_worker_waker(move || {
+        let _ = wake_sender.send(());
+    });
+    let wake = |timestamp| SurfaceEvent::Wake {
+        timestamp: EventTimestamp::new(timestamp),
+    };
+    let pending = |snapshot: alpine_runtime::ApplicationSnapshot| {
+        let worker = snapshot.worker();
+        worker.queued_requests()
+            + worker.active_jobs()
+            + worker.queued_results()
+            + snapshot.external().current_items()
+    };
+    assert!(runtime.frame_if_dirty().is_some());
+
+    // Startup work settles on worker wakes, not a clock; a timeout fails.
+    let mut timestamp = 1;
+    let mut settled = false;
+    for _ in 0..4 {
+        let _ = runtime.dispatch(&wake(timestamp));
+        timestamp += 1;
+        let snapshot = runtime.snapshot();
+        if pending(snapshot) == 0 && !snapshot.is_dirty() {
+            settled = true;
+            break;
+        }
+        wakes.recv_timeout(std::time::Duration::from_secs(30))?;
+    }
+    assert!(settled, "startup work did not settle");
+
+    let frames = runtime.snapshot().next_scene_revision();
+    for _ in 0..100 {
+        let frame = runtime.dispatch(&wake(timestamp));
+        assert!(frame.is_none(), "an idle wake built a frame");
+        timestamp += 1;
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.next_scene_revision(), frames);
+        assert!(!snapshot.is_dirty());
+        assert_eq!(
+            pending(snapshot),
+            0,
+            "an idle wake submitted background work"
+        );
+    }
     Ok(())
 }
 
@@ -6633,47 +6819,40 @@ fn runtime_file_tree_submission_admits_and_forced_failure_rolls_back()
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "wall-clock qualification is not meaningful under Miri")]
-fn file_tree_stage_measurements_are_separate_and_bounded() -> Result<(), Box<dyn std::error::Error>>
-{
+#[cfg_attr(miri, ignore = "the 1,024-file fixture is covered outside Miri")]
+fn file_tree_stages_do_bounded_work() -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
     for index in 0..1_024 {
         root.write(&format!("file-{index:04}.rs"), "x")?;
     }
     let mut app = EditorApp::open_workspace_lazy(TestTextSystem, root.path())?;
     let command_shift = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT);
+    let viewport = viewport()?;
 
-    let activation_start = std::time::Instant::now();
+    // Activation reads nothing; one directory request lists every entry.
     assert!(app.handle_event(&key(KEY_E, command_shift)).visual_changed);
-    let activation = activation_start.elapsed();
-
+    assert_eq!(app.file_tree.snapshot().1, 0);
+    let _ = app.try_scene(SceneRevision::new(199), viewport)?;
     let request = app
         .prepare_file_tree_request()?
         .ok_or("stage directory request")?;
-    let enumeration_start = std::time::Instant::now();
-    let output = request.execute();
-    let enumeration = enumeration_start.elapsed();
-    assert!(app.apply_file_tree_output(output).visual_changed);
-
-    let flatten_start = std::time::Instant::now();
-    let rows = app.file_tree.visible_rows(0, 40, TREE_OVERSCAN_ROWS)?;
-    let flatten = flatten_start.elapsed();
-    assert_eq!(
-        rows.len(),
-        40_usize.saturating_add(TREE_OVERSCAN_ROWS.saturating_mul(2))
-    );
+    assert!(app.apply_file_tree_output(request.execute()).visual_changed);
     assert_eq!(app.file_tree.snapshot().1, 1_024);
+    assert!(app.prepare_file_tree_request()?.is_none());
 
-    let scene_start = std::time::Instant::now();
-    let scene = app.try_scene(SceneRevision::new(200), viewport()?)?;
-    let scene_build = scene_start.elapsed();
+    let rows = app.file_tree.visible_rows(0, 40, TREE_OVERSCAN_ROWS)?;
+    assert_eq!(rows.len(), 40 + 2 * TREE_OVERSCAN_ROWS);
+
+    // The scene shapes the rows the sidebar shows, not all 1,024 entries.
+    let sidebar_rows = floor_f32_to_usize(viewport.height() / TREE_ROW_HEIGHT).unwrap_or(0) + 1;
+    let shown = app
+        .file_tree
+        .visible_rows(0, sidebar_rows, TREE_OVERSCAN_ROWS)?;
+    TEST_SHAPE_CALLS.with(|calls| calls.set(0));
+    let scene = app.try_scene(SceneRevision::new(200), viewport)?;
     assert!(!scene.glyphs().is_empty());
-    for elapsed in [activation, enumeration, flatten, scene_build] {
-        assert!(elapsed < std::time::Duration::from_secs(5));
-    }
-    eprintln!(
-        "file-tree stages: activation={activation:?} enumeration={enumeration:?} flatten={flatten:?} scene={scene_build:?}"
-    );
+    let shapes = TEST_SHAPE_CALLS.with(Cell::get);
+    assert_eq!(shapes, usize_to_u64(shown.len()));
     Ok(())
 }
 

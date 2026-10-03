@@ -9,7 +9,7 @@ parity:
   language_intelligence: {status: partial, closes: M4}
   git: {status: none, closes: M7}
 criteria:
-  "2.1": "CI proves warm frames lex nothing (SyntaxCache counters and the editor scene path); the 100 ms budget, cold and warm, becomes a bench row in M1"
+  "2.1": "CI proves warm frames lex nothing and a cold first frame lexes only the laid-out range (SyntaxCache counters); the 100 ms budget, cold and warm, becomes a bench row in M1.4"
   "2.2": "Rust passes; C++ shows clangd diagnostics only; Python, Java, TypeScript and JavaScript need a server"
   "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
   "2.4": "passes on main"
@@ -75,7 +75,8 @@ That hides `~/.rustup`, so set `RUSTUP_HOME` or `ALPINE_RUST_ANALYZER`. Capture
 through ScreenCaptureKit (`tools/onscreen-sdr-capture`); `screencapture -l`
 cannot see the Metal layer. The capturing terminal needs Screen Recording
 permission. Clean up only the processes a capture owns; never close unrelated
-apps.
+apps. Window > Save Performance Log writes `perf-<unix s>-frames.tsv` to
+`~/Library/Logs/Alpine Editor/` for T3 dogfood.
 
 ## Correctness that must never regress
 

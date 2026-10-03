@@ -3,7 +3,6 @@ use std::{
     num::NonZeroU32,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::Instant,
 };
 
 use alpine_platform_macos::{
@@ -267,42 +266,60 @@ fn command_availability_refresh_prevents_stale_execution() -> Result<(), Box<dyn
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "wall-clock qualification is not meaningful under Miri")]
-fn command_palette_stage_measurements_are_separate_and_bounded()
--> Result<(), Box<dyn std::error::Error>> {
+fn command_palette_stages_do_bounded_work() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = EditorApp::new(PaletteTextSystem::default())?;
-    let open_start = Instant::now();
+    let viewport = Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?;
+    let _ = app.try_scene(SceneRevision::new(901), viewport)?;
     assert!(
         app.handle_event(&key(KEY_P, command_shift()))
             .visual_changed
     );
-    let open = open_start.elapsed();
-    let match_start = Instant::now();
+    let opened = app.command_palette.report();
+    assert_eq!(opened.query_bytes, 0);
+    assert!(opened.retained_matches <= commands::MAX_COMMANDS);
     assert!(
         app.handle_event(&ime(ImeEvent::Committed("find".into())))
             .visual_changed
     );
-    let matching = match_start.elapsed();
-    let projection_start = Instant::now();
-    let rows = app.command_palette.visible_commands()?;
-    let projection = projection_start.elapsed();
-    let scene_start = Instant::now();
-    let scene = app.try_scene(
-        SceneRevision::new(902),
-        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT).ok_or("viewport")?,
-    )?;
-    let scene_build = scene_start.elapsed();
-    assert!(!rows.is_empty());
-    assert!(!scene.glyphs().is_empty());
-    for elapsed in [open, matching, projection, scene_build] {
-        assert!(elapsed < std::time::Duration::from_secs(5));
-    }
-    let report = app.command_palette.report();
-    assert!(report.query_bytes <= commands::MAX_QUERY_BYTES);
-    assert!(report.retained_matches <= commands::MAX_COMMANDS);
-    eprintln!(
-        "command-palette stages: open={open:?} match={matching:?} projection={projection:?} scene={scene_build:?}"
+    let matched = app.command_palette.report();
+    assert_eq!(matched.query_bytes, 4);
+    assert!(matched.retained_matches > 0);
+    assert!(matched.retained_matches < opened.retained_matches);
+
+    // With every command available, the matches overflow the row window.
+    assert!(
+        app.handle_event(&key(KEY_ESCAPE, Modifiers::default()))
+            .visual_changed
     );
+    let everything = CommandContext {
+        can_save: true,
+        can_close_tab: true,
+        can_navigate_back: true,
+        can_navigate_forward: true,
+        can_cycle_tabs: true,
+        has_workspace: true,
+        can_split_right: true,
+        can_split_down: true,
+        can_close_pane: true,
+        can_complete: true,
+    };
+    assert!(app.command_palette.open(everything)?);
+    let window = commands::MAX_VISIBLE_COMMANDS + commands::MAX_VISIBLE_OVERSCAN * 2;
+    assert!(app.command_palette.report().retained_matches > window);
+    let rows = app.command_palette.visible_commands()?;
+    assert!(rows.len() <= window, "projected {} rows", rows.len());
+
+    // The scene lays out one title and one shortcut per projected row.
+    let keymap = &app.settings.active().keymap;
+    let shortcuts = rows
+        .iter()
+        .filter(|row| keymap.shortcut_for(row.command).is_some())
+        .count();
+    let before = app.label_cache.snapshot().misses();
+    let scene = app.try_scene(SceneRevision::new(902), viewport)?;
+    assert!(!scene.glyphs().is_empty());
+    let labels = app.label_cache.snapshot().misses() - before;
+    assert_eq!(labels, usize_to_u64(rows.len() + shortcuts));
     Ok(())
 }
 
