@@ -6,8 +6,8 @@ use crate::analysis::{self, Metric, Visibility};
 use crate::apps::{self, App, Identity, LaunchInputs, RustAnalyzer};
 use crate::fixtures::{self, FixtureFile};
 use crate::helpers::{
-    self, Appeared, Frame, Helpers, InputEvent, ProcRow, SampleSet, Sampler, SamplerData, SetKind,
-    WindowInfo,
+    self, Appeared, Frame, Helpers, InputEvent, InputOutcome, ProcRow, SampleSet, Sampler,
+    SamplerData, SetKind, WindowInfo,
 };
 use crate::isolation::{self, Snapshot};
 use crate::paths::{self, BenchPaths};
@@ -40,6 +40,8 @@ const COOLDOWN: Duration = Duration::from_secs(3);
 /// cfprefsd writes preferences after a short delay, so the real-state check
 /// waits before comparing.
 const STATE_SETTLE: Duration = Duration::from_secs(2);
+/// How often every phase re-checks that the window is frontmost and bare.
+const VISIBILITY_POLL: Duration = Duration::from_secs(1);
 const HOME_MARKER: &str = ".alpine-bench-home";
 
 pub const TRIALS_HEADER: &[&str] = &[
@@ -490,8 +492,6 @@ fn drive(
         .wait_for_window(app.pid(), WINDOW_TIMEOUT_MS)
         .map_err(|error| launch_failure(trial_dir, &error))?;
     ensure_visible(helpers, app.pid())?;
-    thread::sleep(Duration::from_secs(u64::from(workload.settle_seconds)));
-    sampler.mark(&analysis::phase_label(STARTUP_PHASE, "end"))?;
     let mut driven = Driven {
         appeared,
         invalid: None,
@@ -499,7 +499,13 @@ fn drive(
         frames: Vec::new(),
         footprint_tool: None,
     };
+    let settle = Duration::from_secs(u64::from(workload.settle_seconds));
+    hands_off(context, app.pid(), STARTUP_PHASE, settle, &mut driven);
+    sampler.mark(&analysis::phase_label(STARTUP_PHASE, "end"))?;
     for phase in workload.phases {
+        if driven.invalid.is_some() {
+            break;
+        }
         let start = sampler.mark(&analysis::phase_label(phase.name, "start"))?;
         run_phase(
             context,
@@ -575,7 +581,10 @@ fn run_phase(
     driven: &mut Driven,
 ) -> Result<(), String> {
     match effective_action(context, phase) {
-        Action::Idle => thread::sleep(Duration::from_secs(u64::from(phase.seconds))),
+        Action::Idle => {
+            let length = Duration::from_secs(u64::from(phase.seconds));
+            hands_off(context, pid, phase.name, length, driven);
+        }
         Action::UntilQuiet {
             quiet_core_pct,
             quiet_seconds,
@@ -583,8 +592,10 @@ fn run_phase(
         } => {
             let started = Instant::now();
             let window_ns = u64::from(quiet_seconds) * 1_000_000_000;
-            while started.elapsed() < Duration::from_secs(u64::from(max_seconds)) {
-                thread::sleep(Duration::from_secs(1));
+            while started.elapsed() < Duration::from_secs(u64::from(max_seconds))
+                && still_visible(context, pid, phase.name, driven)
+            {
+                thread::sleep(VISIBILITY_POLL);
                 let data = sampler.snapshot();
                 let Some(timebase) = data.timebase else {
                     continue;
@@ -598,6 +609,43 @@ fn run_phase(
         action => run_input_phase(context, phase, action, pid, trial_dir, driven)?,
     }
     Ok(())
+}
+
+/// Records the first visibility failure as the reason the trial is invalid
+/// and returns whether the trial can still be measured.
+fn still_visible(context: &Context<'_>, pid: i32, phase: &str, driven: &mut Driven) -> bool {
+    if driven.invalid.is_some() {
+        return false;
+    }
+    match check_visible(context.helpers, pid) {
+        Ok(_) => true,
+        Err(reason) => {
+            driven.invalid = Some(format!("{phase}: {reason}"));
+            false
+        }
+    }
+}
+
+/// Waits `length` hands-off, checking the window once a second; stops early
+/// once the trial is invalid.
+fn hands_off(
+    context: &Context<'_>,
+    pid: i32,
+    phase: &str,
+    length: Duration,
+    driven: &mut Driven,
+) -> bool {
+    let deadline = Instant::now() + length;
+    loop {
+        if !still_visible(context, pid, phase, driven) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        thread::sleep((deadline - now).min(VISIBILITY_POLL));
+    }
 }
 
 /// The phase's action with the run's key spacing, when one was given.
@@ -618,6 +666,9 @@ fn run_input_phase(
     trial_dir: &Path,
     driven: &mut Driven,
 ) -> Result<(), String> {
+    if !still_visible(context, pid, phase.name, driven) {
+        return Ok(());
+    }
     let window = check_visible(context.helpers, pid)?;
     if let Some(setup) = phase.setup {
         let log = trial_dir.join(format!("setup-{}.stderr.log", phase.name));
@@ -647,10 +698,36 @@ fn run_input_phase(
     let mut capture = context.helpers.spawn_capture(&capture_args, &capture_log)?;
     capture.wait_ready(Duration::from_secs(5))?;
     let input_log = trial_dir.join(format!("input-{}.stderr.log", phase.name));
-    let posted = context
+    let mut input = context
         .helpers
-        .run_input(&input_args(action, pid, &window), &input_log)?;
-    thread::sleep(Duration::from_secs(u64::from(phase.seconds)));
+        .spawn_input(&input_args(action, pid, &window), &input_log)?;
+    let mut checked = Instant::now();
+    let posted = loop {
+        match input.finished() {
+            Some(InputOutcome::Done(events)) => break events,
+            Some(InputOutcome::LostForeground(reason)) => {
+                driven
+                    .invalid
+                    .get_or_insert(format!("{}: {reason}", phase.name));
+                break Vec::new();
+            }
+            Some(InputOutcome::Failed(error)) => return Err(error),
+            None => {}
+        }
+        if checked.elapsed() >= VISIBILITY_POLL {
+            checked = Instant::now();
+            if !still_visible(context, pid, phase.name, driven) {
+                input.stop();
+                break Vec::new();
+            }
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let tail = Duration::from_secs(u64::from(phase.seconds));
+    if driven.invalid.is_some() || !hands_off(context, pid, phase.name, tail, driven) {
+        // Dropping the capture stops it; an invalid trial keeps no frames.
+        return Ok(());
+    }
     let frames = capture.finish(Duration::from_millis(duration_ms + 10_000))?;
     driven.events.extend(
         posted

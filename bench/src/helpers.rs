@@ -418,34 +418,119 @@ impl Helpers {
 
     /// Runs an input script to completion; events carry mach post times.
     pub fn run_input(&self, args: &[String], log: &Path) -> Result<Vec<InputEvent>, String> {
-        let stderr = File::create(log).map_err(|error| format!("{}: {error}", log.display()))?;
-        let output = Command::new(self.path(INPUT))
-            .args(args)
-            .stdin(Stdio::null())
-            .stderr(stderr)
-            .output()
-            .map_err(|error| format!("{INPUT}: {error}"))?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        match output.status.code() {
-            Some(0) => parse_input_events(&text),
-            Some(EXIT_PERMISSION) => Err(format!(
-                "{INPUT} needs Accessibility for this terminal; see {}",
-                log.display()
-            )),
-            Some(EXIT_ABORTED) => Err(format!(
-                "{INPUT} stopped: the target lost the foreground; see {}",
-                log.display()
-            )),
-            _ => Err(format!(
-                "{INPUT} failed ({}); see {}",
-                output.status,
-                log.display()
-            )),
+        let mut input = self.spawn_input(args, log)?;
+        loop {
+            match input.finished() {
+                None => thread::sleep(Duration::from_millis(20)),
+                Some(InputOutcome::Done(events)) => return Ok(events),
+                Some(InputOutcome::LostForeground(message) | InputOutcome::Failed(message)) => {
+                    return Err(message);
+                }
+            }
         }
+    }
+
+    /// Starts an input script so the caller can watch the window meanwhile.
+    pub fn spawn_input(&self, args: &[String], log: &Path) -> Result<InputRun, String> {
+        InputRun::spawn(&self.path(INPUT), args, log)
     }
 
     pub fn spawn_capture(&self, args: &[String], log: &Path) -> Result<Capture, String> {
         Capture::spawn(&self.path(CAPTURE), args, log)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputOutcome {
+    Done(Vec<InputEvent>),
+    /// The helper stopped because the target was no longer frontmost.
+    LostForeground(String),
+    Failed(String),
+}
+
+/// A running `bench-input` script. Its stdout is drained by a thread, since
+/// a long scroll script prints more than a pipe holds.
+pub struct InputRun {
+    child: Child,
+    lines: Arc<Mutex<Vec<String>>>,
+    reader: Option<JoinHandle<()>>,
+    log: PathBuf,
+}
+
+impl InputRun {
+    fn spawn(program: &Path, args: &[String], log: &Path) -> Result<Self, String> {
+        let stderr = File::create(log).map_err(|error| format!("{}: {error}", log.display()))?;
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(stderr)
+            .spawn()
+            .map_err(|error| format!("{INPUT}: {error}"))?;
+        let stdout = child.stdout.take().ok_or("input has no stdout")?;
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::clone(&lines);
+        let reader = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                shared
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(line);
+            }
+        });
+        Ok(Self {
+            child,
+            lines,
+            reader: Some(reader),
+            log: log.to_path_buf(),
+        })
+    }
+
+    /// `None` while the script runs, then how it ended.
+    pub fn finished(&mut self) -> Option<InputOutcome> {
+        let status = match self.child.try_wait() {
+            Ok(None) => return None,
+            Ok(Some(status)) => status,
+            Err(error) => return Some(InputOutcome::Failed(format!("{INPUT}: {error}"))),
+        };
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        let log = self.log.display();
+        Some(match status.code() {
+            Some(0) => {
+                let lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+                match parse_input_events(&lines.join("\n")) {
+                    Ok(events) => InputOutcome::Done(events),
+                    Err(error) => InputOutcome::Failed(error),
+                }
+            }
+            Some(EXIT_PERMISSION) => InputOutcome::Failed(format!(
+                "{INPUT} needs Accessibility for this terminal; see {log}"
+            )),
+            Some(EXIT_ABORTED) => InputOutcome::LostForeground(format!(
+                "{INPUT} stopped: the target lost the foreground; see {log}"
+            )),
+            _ => InputOutcome::Failed(format!("{INPUT} failed ({status}); see {log}")),
+        })
+    }
+
+    /// Stops posting at once.
+    pub fn stop(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+impl Drop for InputRun {
+    fn drop(&mut self) {
+        if self.reader.is_some() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 }
 

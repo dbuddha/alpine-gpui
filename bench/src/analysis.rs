@@ -992,6 +992,32 @@ mod tests {
     }
 
     #[test]
+    fn notification_banners_and_other_overlays_count_as_cover() {
+        let target = window(2, 7, 0, (276.0, 221.0, 960.0, 568.0));
+        let mut banner = window(0, 400, 23, (1100.0, 40.0, 380.0, 300.0));
+        banner.owner = "NotificationCenter".to_owned();
+        let covered = list(7, vec![banner.clone(), target.clone()]);
+        let Visibility::Occluded { by, .. } = visibility(&covered, 7, 100.0) else {
+            unreachable!("a banner over the window is cover");
+        };
+        assert_eq!(by[0].layer, 23);
+        let mut clear = banner.clone();
+        clear.alpha = 0.0;
+        let transparent = list(7, vec![clear, target.clone()]);
+        assert!(matches!(
+            visibility(&transparent, 7, 100.0),
+            Visibility::Visible(_)
+        ));
+        let mut aside = banner;
+        aside.x = 1240.0;
+        let apart = list(7, vec![aside, target]);
+        assert!(matches!(
+            visibility(&apart, 7, 100.0),
+            Visibility::Visible(_)
+        ));
+    }
+
+    #[test]
     fn quiet_detection_needs_a_full_quiet_window() {
         let ms = 1_000_000;
         let points: Vec<(u64, u64)> = vec![
