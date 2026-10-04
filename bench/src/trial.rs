@@ -150,16 +150,17 @@ struct Context<'a> {
 }
 
 impl Context<'_> {
-    /// Waits at the gate before a trial; a run without `--wait-idle` never
-    /// waits. The owner may have used the app meanwhile, so the baseline
-    /// starts again once the gate opens.
+    /// Waits at the gate before a trial (never, without `--wait-idle`). After
+    /// a wait the owner may have used the app, so the baseline starts again;
+    /// a gate that opens at once keeps it and the bench's late writes show.
     fn wait_at_gate(&self) -> Result<(), String> {
         let Some(gate) = &self.gate else {
             return Ok(());
         };
         let setup = (self.paths, self.helpers, self.request);
-        wait_for_gate(self.effects, setup, gate, false)?;
-        self.retake_baseline();
+        if wait_for_gate(self.effects, setup, gate, false)? {
+            self.retake_baseline();
+        }
         Ok(())
     }
 
@@ -897,14 +898,15 @@ fn launch_failure(trial_dir: &Path, error: &str) -> String {
     }
 }
 
-/// Waits at the `--wait-idle` gate. `first` is the run's first gate, which
-/// reports itself open even when it did not have to wait.
+/// Waits at the `--wait-idle` gate, and returns whether it had to wait.
+/// `first` is the run's first gate, which reports itself open even when it
+/// did not have to wait.
 fn wait_for_gate(
     effects: &dyn Effects,
     (paths, helpers, request): (&BenchPaths, &Helpers, &RunRequest),
     gate: &Gate,
     first: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let binary = app_binary(paths, request.app)
         .to_string_lossy()
         .into_owned();

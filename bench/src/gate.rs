@@ -194,16 +194,16 @@ fn open_text(gate: &Gate, sample: &Sample) -> String {
     )
 }
 
-/// Polls `sample` until a trial may start. `say` gets a line when waiting
-/// begins, the state every `HEARTBEAT_POLLS` polls, and a line when the
-/// gate opens, though the run's first trial says so even without waiting.
+/// Polls `sample` until a trial may start; true if it had to wait. `say` gets
+/// a line when waiting begins, the state every `HEARTBEAT_POLLS` polls and a
+/// line when the gate opens (the run's first gate says so even unwaited).
 pub fn wait_to_start(
     gate: &Gate,
     first: bool,
     sample: &mut dyn FnMut() -> Result<Sample, String>,
     pause: &mut dyn FnMut(),
     say: &mut dyn FnMut(&str),
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut polls: u32 = 0;
     loop {
         // One failed read is retried a poll later; two end the run.
@@ -220,7 +220,7 @@ pub fn wait_to_start(
                 if polls > 0 || first {
                     say(&format!("gate open: {}", open_text(gate, &reading)));
                 }
-                return Ok(());
+                return Ok(polls > 0);
             }
             Step::Wait(blockers) => {
                 if polls == 0 {
@@ -511,7 +511,7 @@ mod tests {
     fn waited(
         first: bool,
         script: Vec<Result<Sample, String>>,
-    ) -> (Result<(), String>, Vec<String>, usize) {
+    ) -> (Result<bool, String>, Vec<String>, usize) {
         let mut script = VecDeque::from(script);
         let mut lines = Vec::new();
         let mut pauses = 0;
@@ -539,7 +539,7 @@ mod tests {
                 Ok(sample(601.0, Power::Ac, &[])),
             ],
         );
-        assert_eq!(outcome, Ok(()));
+        assert_eq!(outcome, Ok(true));
         assert_eq!(pauses, 2);
         assert_eq!(
             lines,
@@ -560,7 +560,7 @@ mod tests {
                 Ok(sample(3800.0, Power::Ac, &[])),
             ],
         );
-        assert_eq!(outcome, Ok(()));
+        assert_eq!(outcome, Ok(true));
         assert_eq!(pauses, 2);
         assert_eq!(
             lines,
@@ -575,9 +575,9 @@ mod tests {
     fn an_open_gate_is_silent_except_for_the_first_trial() {
         let open = || vec![Ok(sample(4000.0, Power::Ac, &[]))];
         let (outcome, later, pauses) = waited(false, open());
-        assert_eq!((outcome, later.len(), pauses), (Ok(()), 0, 0));
+        assert_eq!((outcome, later.len(), pauses), (Ok(false), 0, 0));
         let (outcome, first, pauses) = waited(true, open());
-        assert_eq!((outcome, pauses), (Ok(()), 0));
+        assert_eq!((outcome, pauses), (Ok(false), 0));
         assert_eq!(
             first,
             ["gate open: owner idle 66m40s of 10m, AC power, screen unlocked, zed not running"]
@@ -592,7 +592,7 @@ mod tests {
         script.extend((1..=60).map(|_| Ok(sample(700.0, Power::Ac, &[812]))));
         script.push(Ok(sample(700.0, Power::Ac, &[])));
         let (outcome, lines, pauses) = waited(false, script);
-        assert_eq!(outcome, Ok(()));
+        assert_eq!(outcome, Ok(true));
         assert_eq!(pauses, 61);
         assert_eq!(
             lines,
@@ -641,13 +641,13 @@ mod tests {
         };
         // A later trial's gate says only that it retried: it did not wait.
         let (outcome, lines, pauses) = waited(false, retry());
-        assert_eq!((outcome, pauses), (Ok(()), 1));
+        assert_eq!((outcome, pauses), (Ok(false), 1));
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("ps failed"), "{lines:?}");
         assert!(lines[0].contains("trying once more"), "{lines:?}");
         // The run's first gate also says it opened.
         let (outcome, lines, pauses) = waited(true, retry());
-        assert_eq!((outcome, pauses), (Ok(()), 1));
+        assert_eq!((outcome, pauses), (Ok(false), 1));
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines[1].starts_with("gate open: "), "{lines:?}");
         // After a failure in mid-wait the heartbeat count is undisturbed.
@@ -660,7 +660,7 @@ mod tests {
                 Ok(sample(900.0, Power::Ac, &[])),
             ],
         );
-        assert_eq!((outcome, pauses), (Ok(()), 3));
+        assert_eq!((outcome, pauses), (Ok(true), 3));
         assert_eq!(lines.len(), 3, "{lines:?}");
     }
 
@@ -682,7 +682,7 @@ mod tests {
                 Ok(sample(604.0, Power::Ac, &[])),
             ],
         );
-        assert_eq!(outcome, Ok(()));
+        assert_eq!(outcome, Ok(true));
         assert_eq!(pauses, 3);
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("gate waiting for owner idle (0m04s"));

@@ -578,6 +578,30 @@ fn a_late_write_after_the_last_gate_still_fails_a_gated_run() -> Result<(), Stri
     Ok(())
 }
 
+/// A gate that opens at once leaves the baseline alone, so a write in the
+/// cooldown between gated trials (the bench's own late write, say) still
+/// fails the run, as it does without a gate.
+#[test]
+fn a_write_between_gated_trials_still_fails_when_every_gate_opens_at_once() -> Result<(), String> {
+    let rig = Rig::new("baseline-gap-write", 2, Some(1))?;
+    rig.idle(&[(4000.0, false)])?;
+    let touched = preferences(&rig);
+    write(&touched, "state before the run", 0o644)?;
+    // Sleeps: the banner, then the cooldown between the trials.
+    let between = on_nth_sleep(2, move || {
+        let _ = fs::write(&touched, "a write between the trials");
+    });
+    let fake = Fake::new(&rig).on_sleep(between);
+    let failure = run_with(&rig.paths, &rig.helpers, &rig.request, &fake)
+        .err()
+        .ok_or("a write between the trials went unnoticed")?;
+    assert!(
+        failure.contains("REAL appkit STATE CHANGED during the run"),
+        "{failure}"
+    );
+    Ok(())
+}
+
 /// State the run never touches passes, so the baseline has to exist from the
 /// start: without a gate nothing else would take it.
 #[test]
