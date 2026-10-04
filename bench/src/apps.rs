@@ -209,6 +209,9 @@ pub fn zed_settings(rust_analyzer: Option<&Path>) -> String {
         "  \"show_completions_on_input\": false".to_owned(),
         "  \"git\": { \"inline_blame\": { \"enabled\": false }, \"git_gutter\": \"hide\" }"
             .to_owned(),
+        // Otherwise a fresh profile opens Restricted Mode's trust dialog, which
+        // takes keyboard focus and blocks language servers.
+        "  \"session\": { \"trust_all_worktrees\": true }".to_owned(),
     ];
     if let Some(binary) = rust_analyzer {
         lines.push(format!(
@@ -610,6 +613,7 @@ mod tests {
         let plain = zed_settings(None);
         assert!(plain.starts_with("{\n") && plain.ends_with("}\n"));
         assert!(!plain.contains("lsp"));
+        assert!(plain.contains("\"session\": { \"trust_all_worktrees\": true }"));
         let with_ra = zed_settings(Some(Path::new("/odd \"dir\"/rust-analyzer")));
         assert!(with_ra.contains("\"path\": \"/odd \\\"dir\\\"/rust-analyzer\""));
         assert_eq!(with_ra.matches('{').count(), with_ra.matches('}').count());
