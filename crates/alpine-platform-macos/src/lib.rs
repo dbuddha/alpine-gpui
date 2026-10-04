@@ -3700,6 +3700,7 @@ impl NativeSurface {
     /// Requests the frame `build` makes, once, on the main thread, before any
     /// event and before `show` (`Ok(None)` if none). The thread-local recorder
     /// keeps stages signposted as event 0 only; no latency evidence is given.
+    /// A newer frame that replaces it before it draws leaves a superseded row.
     /// # Errors
     /// Returns the errors of [`Self::request_frame`].
     pub fn request_startup_frame<F>(

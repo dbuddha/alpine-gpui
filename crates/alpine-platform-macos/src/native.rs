@@ -487,9 +487,31 @@ struct FrameCounters {
 }
 
 struct PendingFrame {
+    revision: u64,
     scene: Scene,
     clear: LinearRgba,
     event_timing: Option<EventFrameTiming>,
+}
+
+impl PendingFrame {
+    // A newer request replaced this frame before any callback drew it. An
+    // event frame keeps a row: its stages, no submission or presentation.
+    fn record_superseded(&self) {
+        let Some(event) = self.event_timing else {
+            return;
+        };
+        let timing = AttemptTiming {
+            event: Some(event),
+            ..AttemptTiming::default()
+        };
+        let (frame, base) = timing.recorder_frame(
+            self.revision,
+            PresentationOutcome::Superseded,
+            0,
+            Instant::now(),
+        );
+        recorder::record_frame(frame, base, 0);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1293,11 +1315,15 @@ impl PresentationDriver {
         let PresentationEvent::Invalidated(revision) = transition.event() else {
             return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
-        self.pending = Some(PendingFrame {
+        let frame = PendingFrame {
+            revision: revision.get(),
             scene,
             clear,
             event_timing,
-        });
+        };
+        if let Some(replaced) = self.pending.replace(frame) {
+            replaced.record_superseded();
+        }
         let directive = self.reconcile_link(prior_link)?;
         Ok((revision, directive))
     }
@@ -7441,6 +7467,195 @@ mod tests {
         assert_eq!(driver.state.outcome(), PresentationOutcome::Cancelled);
         assert_eq!(counters.cancelled.load(Ordering::Relaxed), 1);
         assert!(driver.last_cancelled.is_some());
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(miri)))]
+mod superseded_frame_tests {
+    use std::{collections::BTreeMap, error::Error};
+
+    use super::*;
+    use crate::{EditorSignpost, EditorSignpostStage, RecorderSnapshot};
+
+    type Row = BTreeMap<String, String>;
+
+    fn blank_scene(revision: u64) -> Result<Scene, Box<dyn Error>> {
+        let viewport = alpine_core::Size::new(64.0, 64.0).ok_or("viewport")?;
+        let scene_revision = alpine_scene::SceneRevision::new(revision);
+        Ok(alpine_scene::SceneBuilder::new(scene_revision, viewport).finish())
+    }
+
+    fn clear() -> Result<LinearRgba, Box<dyn Error>> {
+        Ok(LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear color")?)
+    }
+
+    // The cold first build as the editor reports it: event 0, with stages.
+    fn startup_timing() -> EventFrameTiming {
+        let build = || {
+            for stage in [
+                EditorSignpostStage::FrameBuildBegin,
+                EditorSignpostStage::FrameBuildComplete,
+            ] {
+                recorder::record_stage(EditorSignpost::new(stage, 0, 1, 1, 1, [0; 3]));
+            }
+        };
+        startup_frame_timing(EventReceipt::now(), build).1
+    }
+
+    fn frame_rows() -> Result<Vec<Row>, Box<dyn Error>> {
+        let mut tsv = Vec::new();
+        RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
+        let text = String::from_utf8(tsv)?;
+        let mut lines = text.lines().map(|line| line.split('\t').map(str::to_owned));
+        let header: Vec<String> = lines.next().ok_or("frames.tsv header")?.collect();
+        Ok(lines
+            .map(|fields| header.iter().cloned().zip(fields).collect())
+            .collect())
+    }
+
+    fn field<'a>(row: &'a Row, name: &str) -> &'a str {
+        row.get(name).map_or("<no column>", String::as_str)
+    }
+
+    fn identity(row: &Row) -> [&str; 3] {
+        ["event", "revision", "outcome"].map(|name| field(row, name))
+    }
+
+    // A startup frame replaced before it drew: no event, both build columns,
+    // and none of the submission or presentation columns.
+    fn assert_superseded_startup_row(row: &Row, revision: &str) -> Result<(), Box<dyn Error>> {
+        let column = |name: &str| field(row, name);
+        assert_eq!(identity(row), ["", revision, "superseded"], "{row:?}");
+        let begin: u64 = column("build_begin_ns").parse()?;
+        let end: u64 = column("build_end_ns").parse()?;
+        assert!(end >= begin, "{row:?}");
+        assert!(!column("handler_end_ns").is_empty(), "{row:?}");
+        assert!(!column("recorded_ns").is_empty(), "{row:?}");
+        for name in [
+            "submit_begin_ns",
+            "submit_end_ns",
+            "gpu_observed_ns",
+            "target_ns",
+            "target_present_ns",
+            "presented_ns",
+        ] {
+            assert_eq!(column(name), "", "{name}: {row:?}");
+        }
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn idle_driver() -> Result<PresentationDriver, SurfaceError> {
+        let device = require_device(MTLCreateSystemDefaultDevice())?;
+        let backend = platform_spi::new_validation_backend_with_device(device)?;
+        let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?;
+        let lifecycle = Arc::new(AtomicU8::new(SURFACE_LIVE));
+        PresentationDriver::new(backend, configuration, lifecycle)
+    }
+
+    #[test]
+    fn a_replaced_event_frame_leaves_a_superseded_row_but_a_plain_one_does_not()
+    -> Result<(), Box<dyn Error>> {
+        recorder::start(Instant::now(), 100.0);
+        let plain = PendingFrame {
+            revision: 1,
+            scene: blank_scene(1)?,
+            clear: clear()?,
+            event_timing: None,
+        };
+        plain.record_superseded();
+        assert!(frame_rows()?.is_empty());
+
+        let startup = startup_timing();
+        let startup_frame = PendingFrame {
+            revision: 2,
+            event_timing: Some(startup),
+            ..plain
+        };
+        startup_frame.record_superseded();
+        let input = EventFrameTiming {
+            timestamp: EventTimestamp::new(7),
+            ..startup
+        };
+        let input_frame = PendingFrame {
+            revision: 3,
+            event_timing: Some(input),
+            ..startup_frame
+        };
+        input_frame.record_superseded();
+
+        let rows = frame_rows()?;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_superseded_startup_row(&rows[0], "2")?;
+        assert_eq!(identity(&rows[1]), ["7", "3", "superseded"]);
+
+        // A burst of replaced frames wraps the recorder's 4,096 rows.
+        for _ in 0..5_000 {
+            input_frame.record_superseded();
+        }
+        assert_eq!(RecorderSnapshot::capture().frame_count(), 4_096);
+        Ok(())
+    }
+
+    // A launch event asks for a frame before the first display-link callback.
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn a_launch_event_frame_leaves_a_row_for_the_startup_frame_it_replaces()
+    -> Result<(), Box<dyn Error>> {
+        recorder::start(Instant::now(), 100.0);
+        let mut driver = idle_driver()?;
+        let startup = startup_timing();
+        let (first, _) =
+            driver.request_frame_with_event(blank_scene(1)?, clear()?, Some(startup))?;
+        assert_eq!(first.get(), 1);
+        assert!(frame_rows()?.is_empty());
+
+        let launch = EventFrameTiming {
+            timestamp: EventTimestamp::new(2),
+            stages: recorder::NO_STAGES,
+            ..startup
+        };
+        let (second, _) =
+            driver.request_frame_with_event(blank_scene(2)?, clear()?, Some(launch))?;
+        assert_eq!(second.get(), 2);
+
+        let rows = frame_rows()?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_superseded_startup_row(&rows[0], "1")?;
+        // Latest wins: the newer frame waits for a callback, and none ran.
+        let pending = driver.pending.as_ref().ok_or("no pending frame")?;
+        assert_eq!(pending.scene.revision().get(), 2);
+        assert_eq!(
+            pending.event_timing.map(|timing| timing.timestamp),
+            Some(EventTimestamp::new(2))
+        );
+        assert!(driver.active.is_none());
+        assert!(driver.last_terminal.is_none() && driver.last_superseded.is_none());
+        assert_eq!(driver.state.requested_revision().get(), 2);
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn a_replaced_frame_leaves_a_row_only_if_an_event_made_it() -> Result<(), Box<dyn Error>> {
+        recorder::start(Instant::now(), 100.0);
+        let mut driver = idle_driver()?;
+        driver.request_frame(blank_scene(1)?, clear()?)?;
+        let input = EventFrameTiming {
+            timestamp: EventTimestamp::new(5),
+            ..startup_timing()
+        };
+        driver.request_frame_with_event(blank_scene(2)?, clear()?, Some(input))?;
+        assert!(frame_rows()?.is_empty());
+
+        // The event frame's row carries its own revision, not the newest.
+        driver.request_frame(blank_scene(3)?, clear()?)?;
+        let rows = frame_rows()?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(identity(&rows[0]), ["5", "2", "superseded"]);
+        let pending = driver.pending.as_ref().ok_or("no pending frame")?;
+        assert!(pending.event_timing.is_none());
         Ok(())
     }
 }

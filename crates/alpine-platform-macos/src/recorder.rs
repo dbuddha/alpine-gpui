@@ -80,7 +80,8 @@ const fn editor_column(stage: EditorSignpostStage) -> Option<usize> {
     }
 }
 
-/// One frame attempt, from its event's receipt to its terminal record.
+/// One frame attempt, or an event frame replaced before one, from its
+/// event's receipt to its terminal record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameRecord {
     event: u64,
@@ -475,7 +476,8 @@ impl RecorderSnapshot {
         self.work
     }
 
-    /// Writes a header and one TSV row per frame attempt.
+    /// Writes a header and one TSV row per frame attempt, and one per event
+    /// frame that a newer request replaced before any attempt.
     /// # Errors
     /// Returns the first error from `out`.
     pub fn write_frames_tsv(&self, out: &mut impl Write) -> io::Result<()> {
