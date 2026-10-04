@@ -14,6 +14,7 @@ use std::path::PathBuf;
 pub const USAGE: &str = "usage:
   bench run <workload> --app alpine|zed|appkit [--trials N] [--warmup N]
             [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH] [--dry-run]
+            [--wait-idle MINUTES]
   bench baseline <run-dir> --milestone ID [--note TEXT]
   bench workloads | stamp | fixtures | permissions
   bench zed-isolation [--seconds N] [--allow-window] [--open-fixture]
@@ -35,6 +36,8 @@ pub struct RunArgs {
     pub key_interval_ms: Option<u64>,
     /// Prints the launches and input a run would make, starting nothing.
     pub dry_run: bool,
+    /// Minutes of owner idle to wait for before every trial.
+    pub wait_idle: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +140,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     "warmup",
                     "rust-analyzer",
                     "key-interval-ms",
+                    "wait-idle",
                 ],
                 &["keep-homes", "dry-run"],
             )?;
@@ -147,6 +151,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     "--key-interval-ms must be at least {MIN_KEY_INTERVAL_MS}"
                 ));
             }
+            let wait_idle: Option<u32> = parsed.number("wait-idle")?;
+            if wait_idle == Some(0) {
+                return Err("--wait-idle must be at least 1 minute".to_owned());
+            }
             Ok(Command::Run(RunArgs {
                 workload: parsed.positional[0].clone(),
                 app: parsed.value("app").ok_or("--app is required")?.to_owned(),
@@ -156,6 +164,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 rust_analyzer: parsed.value("rust-analyzer").map(PathBuf::from),
                 key_interval_ms,
                 dry_run: parsed.flag("dry-run"),
+                wait_idle,
             }))
         }
         "baseline" => {
@@ -214,15 +223,7 @@ pub fn execute(command: Command) -> Result<(), String> {
         }
         Command::Run(args) => {
             let paths = BenchPaths::discover()?;
-            let request = RunRequest {
-                workload: workload::find(&args.workload)?,
-                app: App::parse(&args.app)?,
-                trials: args.trials,
-                warmup: args.warmup,
-                keep_homes: args.keep_homes,
-                rust_analyzer: args.rust_analyzer,
-                key_interval_ms: args.key_interval_ms,
-            };
+            let request = request_for(&args)?;
             if args.dry_run {
                 trial::dry_run(&paths, &request)
             } else {
@@ -273,6 +274,19 @@ pub fn execute(command: Command) -> Result<(), String> {
     }
 }
 
+fn request_for(args: &RunArgs) -> Result<RunRequest, String> {
+    Ok(RunRequest {
+        workload: workload::find(&args.workload)?,
+        app: App::parse(&args.app)?,
+        trials: args.trials,
+        warmup: args.warmup,
+        keep_homes: args.keep_homes,
+        rust_analyzer: args.rust_analyzer.clone(),
+        key_interval_ms: args.key_interval_ms,
+        wait_idle: args.wait_idle,
+    })
+}
+
 fn print_stamp(paths: &BenchPaths) {
     let displays = Helpers::locate(&paths.helpers_dir)
         .and_then(|helpers| helpers.displays())
@@ -311,7 +325,7 @@ fn zed_isolation(
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, RunArgs, parse};
+    use super::{Command, RunArgs, parse, request_for};
     use std::path::PathBuf;
 
     fn args(text: &str) -> Vec<String> {
@@ -331,8 +345,44 @@ mod tests {
                 rust_analyzer: None,
                 key_interval_ms: None,
                 dry_run: false,
+                wait_idle: None,
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn wait_idle_is_off_unless_given_and_takes_whole_minutes() -> Result<(), String> {
+        let wait = |text: &str| match parse(&args(text))? {
+            Command::Run(run) => Ok(run.wait_idle),
+            other => Err(format!("not a run: {other:?}")),
+        };
+        assert_eq!(wait("run idle --app zed")?, None);
+        assert_eq!(wait("run idle --app zed --wait-idle 10")?, Some(10));
+        assert_eq!(wait("run idle --app zed --wait-idle 1 --dry-run")?, Some(1));
+        for bad in [
+            "run idle --app zed --wait-idle 0",
+            "run idle --app zed --wait-idle",
+            "run idle --app zed --wait-idle soon",
+            "run idle --app zed --wait-idle 2.5",
+            "run idle --app zed --wait-idle -3",
+            "run idle --app zed --wait-idle 5 --wait-idle 6",
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_flag_reaches_the_run_request() -> Result<(), String> {
+        let request = |text: &str| match parse(&args(text))? {
+            Command::Run(run) => request_for(&run),
+            other => Err(format!("not a run: {other:?}")),
+        };
+        assert_eq!(request("run idle --app zed")?.wait_idle, None);
+        let gated = request("run idle --app zed --wait-idle 10 --trials 3")?;
+        assert_eq!((gated.wait_idle, gated.trials), (Some(10), 3));
+        assert!(request("run nothing --app zed --wait-idle 10").is_err());
         Ok(())
     }
 

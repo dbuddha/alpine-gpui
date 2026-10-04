@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-// bench-window: window list, activation, display mode and permission state.
+// bench-window: window list, activation, displays, idle time and permissions.
 // Needs no permission: PID, owner name, layer and bounds are readable
 // without Screen Recording, and nothing here requests access.
 
@@ -142,6 +142,31 @@ func displays() throws {
     }
 }
 
+// Seconds since the last hardware keyboard, mouse or tablet event. That table
+// counts hardware only, so PID-targeted events from a private source should
+// not reset it; only a live run shows that.
+func checkedIdle(_ seconds: Double) throws -> Double {
+    guard seconds.isFinite, seconds >= 0 else {
+        throw HelperFailure.runtime("no idle time is available (\(seconds))")
+    }
+    return seconds
+}
+
+func idleSeconds() throws -> Double {
+    // kCGAnyInputEventType is the macro ((CGEventType)(~0)), which Swift
+    // cannot import; ~0 is a CGEventType raw value.
+    guard let anyInput = CGEventType(rawValue: ~0) else {
+        throw HelperFailure.runtime("cannot form kCGAnyInputEventType")
+    }
+    return try checkedIdle(
+        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: anyInput)
+    )
+}
+
+func idleRecord(_ seconds: Double) -> [String] {
+    ["idle", String(format: "%.3f", seconds)]
+}
+
 func permissions() {
     // Preflight calls only report state; none of them shows a prompt.
     Output.emit(["permission", "accessibility", AXIsProcessTrusted() ? "1" : "0"])
@@ -158,6 +183,12 @@ func windowSelfTest() throws {
     try check(qualifies(record, pid: 7, minimumSide: 100), "qualifying window")
     try check(!qualifies(record, pid: 8, minimumSide: 100), "other pid")
     try check(!qualifies(record, pid: 7, minimumSide: 150), "too small")
+    try check(try checkedIdle(2.5) == 2.5, "idle seconds pass")
+    for bad in [-1.0, Double.nan, Double.infinity] {
+        try check((try? checkedIdle(bad)) == nil, "idle \(bad) refused")
+    }
+    try check(idleRecord(2603.3234) == ["idle", "2603.323"], "idle record")
+    try check(try idleSeconds() >= 0, "idle time is readable")
     Output.emit(["self-test", "ok"])
 }
 
@@ -184,11 +215,14 @@ struct WindowMain {
             case "permissions":
                 try options.finish()
                 permissions()
+            case "idle":
+                try options.finish()
+                Output.emit(idleRecord(try idleSeconds()))
             case "self-test": try windowSelfTest()
             default:
                 throw HelperFailure.usage(
                     "unknown command \(options.command); expected list, wait, "
-                        + "activate, display, now, permissions or self-test"
+                        + "activate, display, now, idle, permissions or self-test"
                 )
             }
         }

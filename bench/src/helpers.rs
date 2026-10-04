@@ -128,6 +128,21 @@ pub fn parse_now(text: &str) -> Result<(u64, Timebase), String> {
     ))
 }
 
+/// `idle\t<seconds>` from `bench-window idle`: time since the owner's last
+/// hardware keyboard or mouse event.
+pub fn parse_idle(text: &str) -> Result<f64, String> {
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("idle\t"))
+        .ok_or_else(|| format!("no idle line in {text:?}"))?;
+    let seconds: f64 = number(&tsv::split(line)?, 1, line)?;
+    if seconds.is_finite() && seconds >= 0.0 {
+        Ok(seconds)
+    } else {
+        Err(format!("bad idle time in helper line {line:?}"))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Appeared {
     pub mach: u64,
@@ -405,6 +420,16 @@ impl Helpers {
 
     pub fn displays(&self) -> Result<Vec<Display>, String> {
         parse_displays(&self.window(&["display"])?)
+    }
+
+    /// Seconds since the owner's last hardware keyboard or mouse event. A
+    /// helper built before `idle` existed fails here, so the error says how
+    /// to fix it.
+    pub fn idle_seconds(&self) -> Result<f64, String> {
+        let text = self
+            .window(&["idle"])
+            .map_err(|error| format!("{error}; rebuild the helpers with bench/helpers/build.sh"))?;
+        parse_idle(&text)
     }
 
     /// Preflight only: these calls never show a permission prompt.
@@ -841,8 +866,8 @@ impl Drop for Capture {
 mod tests {
     use super::{
         InputOutcome, InputRun, SamplerData, SamplerLine, SetKind, Timebase, failure_message,
-        parse_appeared, parse_displays, parse_frame, parse_input_events, parse_permissions,
-        parse_sampler_line, parse_window_list,
+        parse_appeared, parse_displays, parse_frame, parse_idle, parse_input_events,
+        parse_permissions, parse_sampler_line, parse_window_list,
     };
     use std::path::Path;
     use std::thread;
@@ -890,6 +915,27 @@ mod tests {
         assert!(!permissions.accessibility && permissions.post_events);
         assert!(!permissions.screen_recording);
         assert!(parse_permissions("permission\tcamera\t1\n").is_err());
+        Ok(())
+    }
+
+    /// The first line is `bench-window idle` as the dev Mac printed it, while
+    /// `ioreg` read `HIDIdleTime` 2603.44 s.
+    #[test]
+    fn idle_seconds_parse_and_bad_readings_are_refused() -> Result<(), String> {
+        let idle = parse_idle("idle\t2603.323\n")?;
+        assert!((idle - 2603.323).abs() < 1e-9);
+        assert!(parse_idle("idle\t0.000\n")?.abs() < f64::EPSILON);
+        for bad in [
+            "",
+            "front\t1\tx\n",
+            "idle\n",
+            "idle\tsoon\n",
+            "idle\t-1.000\n",
+            "idle\tNaN\n",
+            "idle\tinf\n",
+        ] {
+            assert!(parse_idle(bad).is_err(), "{bad:?}");
+        }
         Ok(())
     }
 

@@ -5,6 +5,7 @@
 use crate::analysis::{self, Metric, Visibility};
 use crate::apps::{self, App, Identity, LaunchInputs, RustAnalyzer};
 use crate::fixtures::{self, FixtureFile};
+use crate::gate::{self, Gate, Sample};
 use crate::helpers::{
     self, Appeared, Frame, Helpers, InputEvent, InputOutcome, ProcRow, SampleSet, Sampler,
     SamplerData, SetKind, Timebase, WindowInfo,
@@ -34,6 +35,8 @@ pub struct RunRequest {
     pub rust_analyzer: Option<PathBuf>,
     /// Overrides the workload's spacing of timed keys.
     pub key_interval_ms: Option<u64>,
+    /// Minutes of owner idle each trial waits for and then keeps.
+    pub wait_idle: Option<u32>,
 }
 
 const MIN_WINDOW_SIDE: f64 = 100.0;
@@ -137,6 +140,8 @@ struct Context<'a> {
     refresh_hz: u32,
     /// The owner's real state for this app, compared around every trial.
     state_roots: Vec<PathBuf>,
+    /// Set by `--wait-idle`: where every trial waits, and what voids it.
+    gate: Option<Gate>,
 }
 
 /// What one launch opens. A language group's subject names its metrics.
@@ -212,9 +217,12 @@ pub fn run(paths: &BenchPaths, request: &RunRequest) -> Result<PathBuf, String> 
         rust_analyzer,
         refresh_hz,
         state_roots: apps::real_state_paths(request.app, &paths.real_home, &paths.zed_app),
+        gate: gate_for(request),
     };
     write_run_table(&context, &stamp, &fixtures)?;
     let before_run = isolation::snapshot(&context.state_roots);
+    // Held to the end of the run; `caffeinate -w` ends it if the bench dies.
+    let _awake = context.gate.map(|_| gate::KeepAwake::start()).transpose()?;
     run_trials(&context)?;
     // A late cfprefsd write after the last trial still fails the run.
     thread::sleep(COOLDOWN);
@@ -252,6 +260,9 @@ fn plan(
         warmup + request.trials,
         subjects.len()
     )];
+    if let Some(gate) = gate_for(request) {
+        lines.extend(gate::plan_lines(&gate, &app_binary(paths, request.app)));
+    }
     for file in fixtures {
         lines.push(format!(
             "fixture\t{}\t{} bytes\tfnv64={}",
@@ -367,6 +378,13 @@ fn run_trials(context: &Context<'_>) -> Result<(), String> {
         let warm = round < warmup;
         for subject in &context.subjects {
             number += 1;
+            if let Err(error) = wait_for_gate(context, number) {
+                write_summary(context, &kept)?;
+                return Err(format!(
+                    "before trial {number}: {error}\nresults so far: {}",
+                    context.run_dir.display()
+                ));
+            }
             match run_trial(context, subject, number, warm) {
                 Ok(outcome) => {
                     record(context, &outcome)?;
@@ -396,12 +414,24 @@ fn run_trials(context: &Context<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn preflight(paths: &BenchPaths, helpers: &Helpers, request: &RunRequest) -> Result<(), String> {
-    let binary = match request.app {
+/// The executable a trial of `app` launches.
+fn app_binary(paths: &BenchPaths, app: App) -> PathBuf {
+    match app {
         App::Alpine => paths.alpine_bundle.join("Contents/MacOS/alpine-editor"),
         App::Zed => paths.zed_app.join("Contents/MacOS/zed"),
-        App::AppKit => helpers.path(helpers::REFERENCE),
-    };
+        App::AppKit => paths.helpers_dir.join(helpers::REFERENCE),
+    }
+}
+
+fn gate_for(request: &RunRequest) -> Option<Gate> {
+    request.wait_idle.map(|minutes| Gate {
+        minutes,
+        app: request.app.name(),
+    })
+}
+
+fn preflight(paths: &BenchPaths, helpers: &Helpers, request: &RunRequest) -> Result<(), String> {
+    let binary = app_binary(paths, request.app);
     if !binary.is_file() {
         return Err(format!("{} is missing", binary.display()));
     }
@@ -695,7 +725,7 @@ fn drive(
     let appeared = helpers
         .wait_for_window(app.pid(), WINDOW_TIMEOUT_MS)
         .map_err(|error| launch_failure(trial_dir, &error))?;
-    ensure_visible(helpers, app.pid())?;
+    let visible = ensure_visible(helpers, app.pid());
     let mut driven = Driven {
         appeared,
         invalid: None,
@@ -704,6 +734,9 @@ fn drive(
         footprint_tool: None,
         first_build_ns: None,
     };
+    if let Err(refusal) = visible {
+        driven.invalid = Some(refusal_or_owner(refusal, owner_input(context))?);
+    }
     let settle = Duration::from_secs(u64::from(workload.settle_seconds));
     hands_off(context, app.pid(), STARTUP_PHASE, settle, &mut driven);
     sampler.mark(&analysis::phase_label(STARTUP_PHASE, "end"))?;
@@ -726,11 +759,9 @@ fn drive(
         if app.exited() {
             return Err(format!("the app exited during {}", phase.name));
         }
-        if driven.invalid.is_none() {
-            match check_visible(helpers, app.pid()) {
-                Ok(window) => last_window = Some(window),
-                Err(reason) => driven.invalid = Some(format!("{}: {reason}", phase.name)),
-            }
+        // The last poll can be a second old; this look is at the phase's end.
+        if let Some(window) = check_trial(context, app.pid(), phase.name, &mut driven) {
+            last_window = Some(window);
         }
     }
     settle_trial_frame(&mut driven, last_window);
@@ -767,6 +798,53 @@ fn launch_failure(trial_dir: &Path, error: &str) -> String {
         let tail: Vec<&str> = tail.into_iter().rev().collect();
         format!("{error}; app stderr ends: {}", tail.join(" | "))
     }
+}
+
+/// Waits at the `--wait-idle` gate before a trial; a run without the flag
+/// never waits.
+fn wait_for_gate(context: &Context<'_>, number: u32) -> Result<(), String> {
+    let Some(gate) = &context.gate else {
+        return Ok(());
+    };
+    let binary = app_binary(context.paths, context.request.app)
+        .to_string_lossy()
+        .into_owned();
+    gate::wait_to_start(
+        gate,
+        number == 1,
+        &mut || {
+            Ok(Sample {
+                idle_seconds: context.helpers.idle_seconds()?,
+                power: gate::power()?,
+                running: procs::running(&procs::ps()?, &binary)
+                    .iter()
+                    .map(|row| row.pid)
+                    .collect(),
+            })
+        },
+        &mut || thread::sleep(gate::POLL),
+        &mut log_line,
+    )
+}
+
+/// A progress line with its UTC time, for runs nobody is watching.
+fn log_line(line: &str) {
+    eprintln!("bench: {} {line}", stamp::utc(stamp::now_seconds()).0);
+}
+
+/// Why a gated trial is void now: the owner touched the keyboard or mouse.
+/// A run without `--wait-idle` reads nothing and is never void.
+fn owner_input(context: &Context<'_>) -> Option<String> {
+    let gate = context.gate.as_ref()?;
+    gate::voided_by(gate, context.helpers.idle_seconds())
+}
+
+/// A refusal to measure stops the run, unless the owner caused it: then the
+/// trial is void and the run goes on.
+fn refusal_or_owner(refusal: String, owner: Option<String>) -> Result<String, String> {
+    owner.map_or(Err(refusal), |reason| {
+        Ok(format!("{STARTUP_PHASE}: {reason}"))
+    })
 }
 
 fn check_visible(helpers: &Helpers, pid: i32) -> Result<WindowInfo, String> {
@@ -842,19 +920,34 @@ fn run_phase(
     Ok(())
 }
 
-/// Records the first visibility failure as the reason the trial is invalid
-/// and returns whether the trial can still be measured.
-fn still_visible(context: &Context<'_>, pid: i32, phase: &str, driven: &mut Driven) -> bool {
+/// Records the first reason the trial is void (owner input, then a window
+/// that is not frontmost and bare) and returns the window while it stands.
+fn check_trial(
+    context: &Context<'_>,
+    pid: i32,
+    phase: &str,
+    driven: &mut Driven,
+) -> Option<WindowInfo> {
     if driven.invalid.is_some() {
-        return false;
+        return None;
+    }
+    if let Some(reason) = owner_input(context) {
+        log_line(&format!("{phase}: {reason}; stopping the trial"));
+        driven.invalid = Some(format!("{phase}: {reason}"));
+        return None;
     }
     match check_visible(context.helpers, pid) {
-        Ok(_) => true,
+        Ok(window) => Some(window),
         Err(reason) => {
             driven.invalid = Some(format!("{phase}: {reason}"));
-            false
+            None
         }
     }
+}
+
+/// Whether the trial can still be measured, as `check_trial` finds it.
+fn still_visible(context: &Context<'_>, pid: i32, phase: &str, driven: &mut Driven) -> bool {
+    check_trial(context, pid, phase, driven).is_some()
 }
 
 /// Waits `length` hands-off, checking the window once a second; stops early
@@ -1474,13 +1567,17 @@ fn outcome_line(outcome: &TrialOutcome, total: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Driven, RunRequest, Subject, input_args, plan, refuse_idle_input, removable,
-        settle_trial_frame, trial_row,
+        Context, Driven, RunRequest, Subject, app_binary, check_trial, gate_for, input_args, plan,
+        refusal_or_owner, refuse_idle_input, removable, settle_trial_frame, still_visible,
+        trial_row,
     };
     use crate::apps::{App, DOCK_PATH};
-    use crate::helpers::{Appeared, Frame, InputEvent, Timebase, WindowInfo};
+    use crate::gate::Gate;
+    use crate::helpers::{Appeared, Frame, Helpers, InputEvent, Timebase, WindowInfo};
     use crate::paths::BenchPaths;
     use crate::workload::{Action, Language, find};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::path::{Path, PathBuf};
 
     fn bench_paths() -> BenchPaths {
@@ -1505,6 +1602,7 @@ mod tests {
             keep_homes: false,
             rust_analyzer: None,
             key_interval_ms: None,
+            wait_idle: None,
         })
     }
 
@@ -1551,6 +1649,216 @@ mod tests {
             "{lines:?}"
         );
         assert!(!lines.iter().any(|line| line.starts_with("guard")));
+        Ok(())
+    }
+
+    /// The only difference `--wait-idle` makes to a dry run is the gate lines.
+    #[test]
+    fn the_dry_run_prints_the_gate_only_with_wait_idle() -> Result<(), String> {
+        let idle = Subject {
+            language: None,
+            documents: vec![PathBuf::from("/f/idle-200.txt")],
+        };
+        let subjects = [idle];
+        let plain = plan(&bench_paths(), &request("idle")?, &subjects, &[], None)?;
+        assert!(
+            !plain.iter().any(|line| line.starts_with("gate")),
+            "{plain:?}"
+        );
+        let mut gated_request = request("idle")?;
+        gated_request.wait_idle = Some(10);
+        let gated = plan(&bench_paths(), &gated_request, &subjects, &[], None)?;
+        let (gate_lines, rest): (Vec<_>, Vec<_>) = gated
+            .iter()
+            .cloned()
+            .partition(|line| line.starts_with("gate\t"));
+        assert_eq!(rest, plain);
+        let text = gate_lines.join("\n");
+        assert!(text.contains("for 10 min"), "{text}");
+        assert!(text.contains("on AC power"), "{text}");
+        assert!(
+            text.contains("Alpine Editor.app/Contents/MacOS/alpine-editor"),
+            "{text}"
+        );
+        assert!(text.contains("owner input"), "{text}");
+        assert!(text.contains("caffeinate -d -i -w <bench pid>"), "{text}");
+        assert!(!text.contains(" -u"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_gate_exists_only_for_a_run_that_asks() -> Result<(), String> {
+        assert_eq!(gate_for(&request("idle")?), None);
+        let mut asked = request("idle")?;
+        asked.wait_idle = Some(15);
+        let gate = gate_for(&asked).ok_or("no gate for --wait-idle 15")?;
+        assert_eq!((gate.minutes, gate.app), (15, "alpine"));
+        Ok(())
+    }
+
+    #[test]
+    fn each_app_has_the_binary_the_gate_looks_for() {
+        let paths = bench_paths();
+        assert_eq!(
+            app_binary(&paths, App::Alpine),
+            Path::new("/Users/me/Applications/Alpine Editor.app/Contents/MacOS/alpine-editor")
+        );
+        assert_eq!(
+            app_binary(&paths, App::Zed),
+            Path::new("/Applications/Zed.app/Contents/MacOS/zed")
+        );
+        assert_eq!(
+            app_binary(&paths, App::AppKit),
+            Path::new("/repo/bench/target/helpers/bench-reference-appkit")
+        );
+    }
+
+    /// A refusal to measure stops the run; the owner's doing only voids it.
+    #[test]
+    fn a_refusal_the_owner_caused_voids_the_trial_and_any_other_stops_the_run() {
+        let refusal = "refusing to measure: Mail is frontmost".to_owned();
+        assert_eq!(
+            refusal_or_owner(refusal.clone(), None),
+            Err(refusal.clone())
+        );
+        assert_eq!(
+            refusal_or_owner(refusal, Some("owner input".to_owned())),
+            Ok("startup: owner input".to_owned())
+        );
+    }
+
+    /// A helpers directory of shell stand-ins, so nothing GUI runs. Its
+    /// `bench-window` logs each subcommand and prints the `idle` and `list`
+    /// files beside it; `idle` is the `bench-window idle` output, if any.
+    fn stand_ins(name: &str, idle: Option<&str>) -> Result<(Helpers, PathBuf), String> {
+        let dir = crate::test_dir(name)?;
+        let write = |file: &str, text: &str, mode: u32| -> Result<(), String> {
+            let path = dir.join(file);
+            fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        };
+        let window = "#!/bin/sh\necho \"$1\" >> \"$0.calls\"\n\
+                      case \"$1\" in idle) cat \"$0.idle\";; list) cat \"$0.list\";; esac\n";
+        write("bench-window", window, 0o755)?;
+        for other in [
+            "bench-sample",
+            "bench-input",
+            "bench-capture",
+            "bench-reference-appkit",
+        ] {
+            write(other, "#!/bin/sh\nexit 0\n", 0o755)?;
+        }
+        let list = "front\t4242\tapp\nwindow\t0\t77\t4242\tapp\t0\t1\t276\t128\t960\t572\n";
+        write("bench-window.list", list, 0o644)?;
+        if let Some(idle) = idle {
+            write("bench-window.idle", idle, 0o644)?;
+        }
+        Ok((Helpers::locate(&dir)?, dir))
+    }
+
+    /// The `bench-window` subcommands run so far, in order.
+    fn calls(dir: &Path) -> Vec<String> {
+        fs::read_to_string(dir.join("bench-window.calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn context<'a>(
+        paths: &'a BenchPaths,
+        helpers: &'a Helpers,
+        request: &'a RunRequest,
+        gate: Option<Gate>,
+    ) -> Context<'a> {
+        Context {
+            paths,
+            helpers,
+            request,
+            run_id: "r".to_owned(),
+            tag: "t".to_owned(),
+            run_dir: PathBuf::new(),
+            subjects: Vec::new(),
+            identity: crate::paths::identity(),
+            rust_analyzer: None,
+            refresh_hz: 120,
+            state_roots: Vec::new(),
+            gate,
+        }
+    }
+
+    const TEN_MINUTES: Option<Gate> = Some(Gate {
+        minutes: 10,
+        app: "alpine",
+    });
+
+    /// The idle clock is read at every check of a gated trial and never in a
+    /// run without `--wait-idle`, whose trials stand as they always did.
+    #[test]
+    fn owner_input_voids_a_gated_trial_at_once_and_a_plain_run_never_reads_it() -> Result<(), String>
+    {
+        let (paths, request) = (bench_paths(), request("typing")?);
+        // The owner moved the mouse 3 s ago.
+        let (helpers, dir) = stand_ins("owner-input", Some("idle\t3.000\n"))?;
+        let mut trial = driven();
+        let gated = context(&paths, &helpers, &request, TEN_MINUTES);
+        assert!(check_trial(&gated, 4242, "typing", &mut trial).is_none());
+        assert_eq!(trial.invalid.as_deref(), Some("typing: owner input"));
+        // The trial is void, so the window is not even listed.
+        assert_eq!(calls(&dir), ["idle"]);
+        let mut trial = driven();
+        let plain = context(&paths, &helpers, &request, None);
+        assert!(check_trial(&plain, 4242, "typing", &mut trial).is_some());
+        assert_eq!(trial.invalid, None);
+        assert_eq!(calls(&dir), ["idle", "list"]);
+        // The 1 Hz poll reaches the same verdicts.
+        assert!(still_visible(&plain, 4242, "typing", &mut trial));
+        assert!(!still_visible(&gated, 4242, "typing", &mut driven()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_gated_trial_stands_while_the_owner_is_away_and_the_window_is_bare() -> Result<(), String> {
+        let (paths, request) = (bench_paths(), request("typing")?);
+        let (helpers, dir) = stand_ins("owner-away", Some("idle\t640.250\n"))?;
+        let gated = context(&paths, &helpers, &request, TEN_MINUTES);
+        let mut trial = driven();
+        let window = check_trial(&gated, 4242, "typing", &mut trial);
+        assert_eq!(window.map(|window| window.id), Some(77));
+        assert_eq!(trial.invalid, None);
+        assert_eq!(calls(&dir), ["idle", "list"]);
+        // A window that is not frontmost still voids it, with its own reason.
+        let mut elsewhere = driven();
+        assert!(check_trial(&gated, 99, "typing", &mut elsewhere).is_none());
+        let reason = elsewhere.invalid.unwrap_or_default();
+        assert!(reason.starts_with("typing: "), "{reason}");
+        assert!(!reason.contains("owner input"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_unreadable_clock_voids_a_gated_trial_and_the_first_reason_stands() -> Result<(), String> {
+        let (paths, request) = (bench_paths(), request("typing")?);
+        let (helpers, dir) = stand_ins("no-clock", None)?;
+        let gated = context(&paths, &helpers, &request, TEN_MINUTES);
+        let mut trial = driven();
+        assert!(check_trial(&gated, 4242, "typing", &mut trial).is_none());
+        let reason = trial.invalid.clone().unwrap_or_default();
+        assert!(
+            reason.starts_with("typing: cannot read the idle time"),
+            "{reason}"
+        );
+        // A helper built before `idle` existed says how to fix itself.
+        assert!(reason.contains("bench/helpers/build.sh"), "{reason}");
+        // A trial already void is not looked at again.
+        trial.invalid = Some("typing: lost the foreground".to_owned());
+        assert!(check_trial(&gated, 4242, "typing", &mut trial).is_none());
+        assert_eq!(
+            trial.invalid.as_deref(),
+            Some("typing: lost the foreground")
+        );
+        assert_eq!(calls(&dir), ["idle"]);
         Ok(())
     }
 
