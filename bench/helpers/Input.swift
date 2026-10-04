@@ -21,7 +21,7 @@ let ansiKeycodes: [Character: CGKeyCode] = [
 ]
 
 let keyHoldNanos: UInt64 = 8_000_000
-// About 30 times the slowest sender check WindowServer was seen to take.
+// WindowServer's sender checks were measured at 7 to 18 ms.
 let exitLingerMs = 200
 let guardIntervalNanos: UInt64 = 50_000_000
 

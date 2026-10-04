@@ -1049,8 +1049,9 @@ fn save_recorder_log(
         }
         if started.elapsed() >= SAVE_TIMEOUT {
             return Err(format!(
-                "the palette saved no performance log in {} within {} s; if WindowServer's \
-                 log says \"prohibited from synthesizing events\", it dropped the input",
+                "the palette saved no performance log in {} within {} s; if `/usr/bin/log show \
+                 --last 5m --predicate 'process == \"WindowServer\" AND eventMessage CONTAINS \
+                 \"prohibited\"'` lists any event, WindowServer dropped the input",
                 dir.display(),
                 SAVE_TIMEOUT.as_secs()
             ));
