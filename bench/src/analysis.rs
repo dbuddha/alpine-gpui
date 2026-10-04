@@ -6,7 +6,7 @@ use crate::helpers::{
     Appeared, Frame, InputEvent, Mark, SampleSet, SetKind, Timebase, WindowInfo, WindowList,
 };
 use crate::stats::{self, Summary, to_f64};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Metric {
@@ -415,6 +415,98 @@ pub fn frame_intervals(frames: &[Frame], start: u64, end: u64, timebase: Timebas
         .collect()
 }
 
+/// How many different region hashes the frames shown in `start..=end` have.
+/// Scrolling text changes the band on nearly every frame; a scroll that never
+/// landed left 2 to 10 states on 2026-10-03, against thousands for a real one.
+pub fn distinct_frames(frames: &[Frame], start: u64, end: u64) -> usize {
+    frames
+        .iter()
+        .filter(|frame| frame.display_mach >= start && frame.display_mach <= end)
+        .map(|frame| frame.hash)
+        .collect::<BTreeSet<u64>>()
+        .len()
+}
+
+/// The scroll phase's frame metrics for the frames shown in `span`: intervals
+/// between changed frames, and how many distinct window states there were.
+pub fn scroll_metrics(
+    phase: &str,
+    frames: &[Frame],
+    span: (u64, u64),
+    (timebase, refresh_hz): (Timebase, u32),
+) -> Vec<Metric> {
+    let intervals = frame_intervals(frames, span.0, span.1, timebase);
+    let mut metrics = interval_metrics(phase, &intervals, refresh_hz);
+    let distinct = distinct_frames(frames, span.0, span.1);
+    metrics.push(Metric::new(
+        phase,
+        "frame_distinct",
+        to_f64(distinct as u64),
+        "count",
+    ));
+    metrics
+}
+
+/// The span a scroll's frames are judged over, in mach ticks: from its first
+/// posted event to 100 ms after its last. Frames outside it are not its own.
+pub fn scroll_span(events: &[InputEvent], timebase: Timebase) -> Option<(u64, u64)> {
+    let (first, last) = (events.first()?, events.last()?);
+    Some((first.mach, last.mach + timebase.ticks(100_000_000)))
+}
+
+/// The fewest distinct window states a scroll of `events` wheel events may
+/// leave: one per 50 events, at least 20, and never more than the events.
+pub fn min_scroll_states(events: usize) -> usize {
+    (events / 50).max(20).min(events)
+}
+
+/// Why a scroll did not scroll: it posted nothing, or its span shows too few
+/// distinct states. The count is the one `scroll_metrics` reports.
+pub fn scroll_refusal(
+    events: &[InputEvent],
+    frames: &[Frame],
+    timebase: Timebase,
+) -> Option<String> {
+    let Some(span) = scroll_span(events, timebase) else {
+        return Some("the helper posted no scroll events; the scroll did not land".to_owned());
+    };
+    let distinct = distinct_frames(frames, span.0, span.1);
+    let needed = min_scroll_states(events.len());
+    (distinct < needed).then(|| {
+        format!(
+            "{} scroll events left the window in {distinct} distinct states, \
+             fewer than the {needed} a working scroll leaves; the scroll did not land",
+            events.len()
+        )
+    })
+}
+
+/// The first sighting's time and id with the frame read after the last phase,
+/// since the first sighting can land in the window-open animation. The reason
+/// names a frame more than a point from the requested one.
+pub fn settle_frame(
+    first: Appeared,
+    window: &WindowInfo,
+    want: (u32, u32),
+) -> (Appeared, Option<String>) {
+    let settled = Appeared {
+        x: window.x,
+        y: window.y,
+        width: window.width,
+        height: window.height,
+        ..first
+    };
+    let off = (window.width - f64::from(want.0)).abs() > 1.0
+        || (window.height - f64::from(want.1)).abs() > 1.0;
+    let reason = off.then(|| {
+        format!(
+            "the window is {}x{} pt, not the requested {}x{} pt",
+            window.width, window.height, want.0, want.1
+        )
+    });
+    (settled, reason)
+}
+
 pub fn latency_metrics(phase: &str, latencies: &KeyLatencies, sent: usize) -> Vec<Metric> {
     let mut metrics = vec![
         Metric::new(phase, "keys_sent", to_f64(sent as u64), "count"),
@@ -671,8 +763,9 @@ pub fn summarize_trials(trials: &[Vec<Metric>]) -> Vec<SummaryRow> {
 mod tests {
     use super::{
         KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, child_names,
-        child_process_evidence, cpu_points, frame_intervals, interval_metrics, key_latencies,
-        phase_label, phase_metrics, phase_windows, quiet_since, reaped_child_cpu_ns, summarize,
+        child_process_evidence, cpu_points, distinct_frames, frame_intervals, interval_metrics,
+        key_latencies, min_scroll_states, phase_label, phase_metrics, phase_windows, quiet_since,
+        reaped_child_cpu_ns, scroll_metrics, scroll_refusal, scroll_span, settle_frame, summarize,
         summarize_trials, trial_metrics, visibility,
     };
     use crate::helpers::{
@@ -1066,6 +1159,221 @@ mod tests {
         assert_eq!(value(&metrics, "frame_interval_max"), Some(25.0));
         assert_eq!(value(&metrics, "frame_late_pct"), Some(50.0));
         assert_eq!(value(&metrics, "frame_intervals"), Some(2.0));
+    }
+
+    /// `count` wheel events `step` ticks apart, the first at tick `first`.
+    fn scroll_events(count: u64, first: u64, step: u64) -> Vec<InputEvent> {
+        (0..count)
+            .map(|index| InputEvent {
+                seq: index + 1,
+                mach: first + index * step,
+                kind: "scroll".to_owned(),
+                label: "-66".to_owned(),
+            })
+            .collect()
+    }
+
+    /// Frames every `step` ticks from `from` to `until`, each hashed by time.
+    fn frames_between(from: u64, until: u64, step: u64, hash: impl Fn(u64) -> u64) -> Vec<Frame> {
+        (0..=(until - from) / step)
+            .map(|index| from + index * step)
+            .map(|display| frame(display / step, display, hash(display)))
+            .collect()
+    }
+
+    /// The 2026-10-03 workload: 3,334 wheel events 8 ms apart from t = 1 s.
+    fn the_scroll_workload() -> Vec<InputEvent> {
+        scroll_events(3_334, 1_000 * MS, 8 * MS)
+    }
+
+    /// The shape every 2026-10-03 scroll trial had: capture starts before the
+    /// first event, one state for a moment, a second for a second, then the
+    /// first again. Nothing moved.
+    fn frames_of_a_scroll_that_moved_nothing() -> Vec<Frame> {
+        frames_between(860 * MS, 30_000 * MS, 8 * MS, |time| {
+            u64::from((870 * MS..1_870 * MS).contains(&time))
+        })
+    }
+
+    #[test]
+    fn scroll_metrics_report_intervals_and_distinct_states() {
+        let frames = vec![
+            frame(1, 0, 1),
+            frame(2, 8 * MS, 2),
+            frame(3, 16 * MS, 3),
+            frame(4, 24 * MS, 3),
+            frame(5, 41 * MS, 4),
+            frame(6, 900 * MS, 5),
+        ];
+        let metrics = scroll_metrics("scroll", &frames, (5 * MS, 100 * MS), (UNIT, 120));
+        assert_eq!(value(&metrics, "frame_intervals"), Some(2.0));
+        assert_eq!(value(&metrics, "frame_distinct"), Some(3.0));
+    }
+
+    #[test]
+    fn the_scroll_span_runs_from_the_first_event_to_100_ms_after_the_last() {
+        let events = scroll_events(3, 5 * MS, 8 * MS);
+        assert_eq!(
+            scroll_span(&events, UNIT),
+            Some((5 * MS, 21 * MS + 100 * MS))
+        );
+        // The dev Mac's 24 MHz timebase: 100 ms is 2,400,000 ticks.
+        let mac = Timebase {
+            numer: 125,
+            denom: 3,
+        };
+        assert_eq!(
+            scroll_span(&events, mac),
+            Some((5 * MS, 21 * MS + 2_400_000))
+        );
+        assert_eq!(scroll_span(&[], UNIT), None);
+    }
+
+    #[test]
+    fn a_scroll_that_never_landed_is_refused_with_its_counts() {
+        let events = the_scroll_workload();
+        let frames = frames_of_a_scroll_that_moved_nothing();
+        let reason = scroll_refusal(&events, &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("3334 scroll events"), "{reason}");
+        assert!(reason.contains("2 distinct states"), "{reason}");
+        assert!(reason.contains("fewer than the 66"), "{reason}");
+    }
+
+    #[test]
+    fn idle_toggling_is_not_scrolling() {
+        // Zed's late alternation: ten states over the whole capture.
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |time| (time / (8 * MS)) % 10);
+        let reason = scroll_refusal(&the_scroll_workload(), &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("10 distinct states"), "{reason}");
+    }
+
+    #[test]
+    fn a_landed_scroll_is_not_refused() {
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |time| time / (8 * MS));
+        assert_eq!(scroll_refusal(&the_scroll_workload(), &frames, UNIT), None);
+    }
+
+    #[test]
+    fn only_frames_inside_the_scroll_span_count() {
+        let events = the_scroll_workload();
+        let (first, last) = scroll_span(&events, UNIT).unwrap_or_default();
+        // Two states during the scroll, and many before and after it.
+        let during = frames_between(first, last, 8 * MS, |time| (time / (8 * MS)) % 2);
+        let before = frames_between(0, first - MS, 5 * MS, |time| 10_000 + time / MS);
+        let after = frames_between(last + MS, last + 400 * MS, 5 * MS, |time| {
+            20_000 + time / MS
+        });
+        let frames = [before, during, after].concat();
+        assert_eq!(distinct_frames(&frames, 0, u64::MAX), 2 + 200 + 80);
+        let reason = scroll_refusal(&events, &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("2 distinct states"), "{reason}");
+        // Both ends of the span are inclusive.
+        let edges = [
+            frame(1, first - 1, 1),
+            frame(2, first, 2),
+            frame(3, last, 3),
+            frame(4, last + 1, 4),
+        ];
+        assert_eq!(distinct_frames(&edges, first, last), 2);
+    }
+
+    #[test]
+    fn the_refusal_and_the_metric_count_the_same_states() {
+        let events = the_scroll_workload();
+        let (first, last) = scroll_span(&events, UNIT).unwrap_or_default();
+        let during = frames_between(first, last, 8 * MS, |time| (time / (8 * MS)) % 3);
+        let after = frames_between(last + MS, last + 400 * MS, 5 * MS, |time| {
+            20_000 + time / MS
+        });
+        let frames = [during, after].concat();
+        let metrics = scroll_metrics("scroll", &frames, (first, last), (UNIT, 120));
+        let distinct = value(&metrics, "frame_distinct");
+        assert_eq!(distinct, Some(3.0));
+        let reason = scroll_refusal(&events, &frames, UNIT).unwrap_or_default();
+        let row = format!("{} distinct states", distinct.unwrap_or_default());
+        assert!(reason.contains(&row), "{reason} vs the row {row}");
+    }
+
+    #[test]
+    fn a_scroll_that_posted_nothing_is_refused() {
+        let frames = frames_between(0, 30_000 * MS, 8 * MS, |time| time / (8 * MS));
+        let reason = scroll_refusal(&[], &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("posted no scroll events"), "{reason}");
+    }
+
+    #[test]
+    fn the_scroll_minimum_scales_with_events_and_has_a_floor() {
+        assert_eq!(min_scroll_states(3_334), 66);
+        assert_eq!(min_scroll_states(1_000), 20);
+        assert_eq!(min_scroll_states(100), 20);
+        // The floor never asks for more states than there were events.
+        assert_eq!(min_scroll_states(20), 20);
+        assert_eq!(min_scroll_states(19), 19);
+        assert_eq!(min_scroll_states(5), 5);
+        assert_eq!(min_scroll_states(0), 0);
+        let workload = the_scroll_workload();
+        let states = |count: u64| {
+            frames_between(1_000 * MS, 30_000 * MS, 8 * MS, |t| (t / (8 * MS)) % count)
+        };
+        assert_eq!(scroll_refusal(&workload, &states(66), UNIT), None);
+        assert!(scroll_refusal(&workload, &states(65), UNIT).is_some());
+        // Five events can show five states: five pass and four do not.
+        let few = scroll_events(5, 10 * MS, MS);
+        let tiny = |count: u64| frames_between(10 * MS, 20 * MS, MS, |t| (t / MS) % count);
+        assert_eq!(scroll_refusal(&few, &tiny(5), UNIT), None);
+        assert!(scroll_refusal(&few, &tiny(4), UNIT).is_some());
+    }
+
+    fn opening_frame() -> Appeared {
+        // The reference editor's first sighting on 2026-10-03.
+        Appeared {
+            mach: 7,
+            id: 5,
+            x: 284.0,
+            y: 133.0,
+            width: 944.0,
+            height: 562.0,
+        }
+    }
+
+    #[test]
+    fn the_settled_frame_replaces_the_opening_frame_but_not_the_sighting() {
+        let settled_window = window(0, 9, 0, (276.0, 128.0, 960.0, 572.0));
+        let (settled, reason) = settle_frame(opening_frame(), &settled_window, (960, 572));
+        assert_eq!((settled.mach, settled.id), (7, 5));
+        assert_eq!(
+            (settled.x, settled.y, settled.width, settled.height),
+            (276.0, 128.0, 960.0, 572.0)
+        );
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn a_settled_frame_off_the_request_names_the_size_seen() {
+        let zed = window(0, 9, 0, (13.0, 41.0, 1486.0, 933.0));
+        let (settled, reason) = settle_frame(opening_frame(), &zed, (960, 572));
+        assert_eq!((settled.width, settled.height), (1486.0, 933.0));
+        let reason = reason.unwrap_or_default();
+        assert!(reason.contains("1486x933"), "{reason}");
+        assert!(reason.contains("requested 960x572"), "{reason}");
+        // The opening-animation frame would have failed the same gate.
+        let opening = window(0, 9, 0, (284.0, 133.0, 944.0, 562.0));
+        assert!(
+            settle_frame(opening_frame(), &opening, (960, 572))
+                .1
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_frame_gate_allows_a_point_of_rounding_and_no_more() {
+        let off_by = |dx: f64, dy: f64| {
+            let window = window(0, 9, 0, (0.0, 0.0, 960.0 + dx, 572.0 + dy));
+            settle_frame(opening_frame(), &window, (960, 572)).1
+        };
+        assert_eq!(off_by(1.0, -1.0), None);
+        assert!(off_by(2.0, 0.0).is_some());
+        assert!(off_by(0.0, -2.0).is_some());
     }
 
     fn window(order: usize, pid: i32, layer: i64, rect: (f64, f64, f64, f64)) -> WindowInfo {

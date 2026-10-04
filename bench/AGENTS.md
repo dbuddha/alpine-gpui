@@ -4,9 +4,9 @@ parent: ../AGENTS.md
 updated: 2026-10-03
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
-  - "PID-targeted scroll moved neither Alpine nor the reference editor on 2026-10-03"
-  - "Zed's and the reference editor's windows miss the requested 960x572 pt (1486x933, 944x562); Zed timed 0 to 3 of 100 keys"
-  - "unverified: the reference editor's caret blink suppression and highlight's palette keys"
+  - "Zed timed 0 to 3 of 100 keys in a 1486x933 window on 2026-10-03; unchecked at 960x572"
+  - "highlight: the palette chord opened nothing in the first live trial (run 20261004T033941Z); the query went into the document"
+  - "unverified: the reference editor's caret blink suppression"
 ---
 
 # Bench
@@ -32,10 +32,10 @@ input, starting nothing. Alpine is the installed
 
 ## Owner-present session
 
-1. Quit Zed, then run `bench zed-isolation --allow-window --open-fixture`;
-   it refuses while another Zed runs and must report no change.
+1. Quit Zed, then run `bench zed-isolation --allow-window --open-fixture`,
+   which must report no change.
 2. Grant Accessibility and Screen Recording to the terminal running `bench`;
-   `bench permissions` shows both, and helpers never prompt.
+   `bench permissions` shows both; helpers never prompt.
 3. Stay hands-off from each run's `Hands off` line until its directory
    prints.
 
@@ -43,7 +43,7 @@ input, starting nothing. Alpine is the installed
 
 - Quiet machine, AC power, Low Power Mode off, clean trees. `bench baseline`
   refuses anything else and needs ten valid measured trials; it skips rows
-  with fewer values, and a child absent from a trial counts as zero bytes.
+  with fewer values; a child absent from a trial counts as zero bytes.
 - Every workload runs one untimed warm-up, then fresh processes, each with a
   disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
   Dock's PATH. Quit the measured app first, or the bench refuses.
@@ -67,6 +67,10 @@ input, starting nothing. Alpine is the installed
 `bench-input` posts only to the measured app's PID (`CGEventPostToPid`),
 from a private event source, never to the HID stream, and refuses to run
 without a PID. Events carry no modifier flags but a `chord`'s named ones.
+Scrolls and mouse events carry the target pid, window number (private field
+51) and a window-local point (`CGEventSetWindowLocation`) so AppKit can route
+them; the helper reads them back and refuses another pid's window or a missing
+export.
 
 ## Metrics
 
@@ -77,26 +81,24 @@ without a PID. Events carry no modifier flags but a `chord`'s named ones.
   counts from process start. CPU and wakeups include reaped children;
   energy counts processes alive at the end.
 - Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
-  each timed to the display time of the first frame whose text band changed,
-  if that precedes the next key and the previous key's did too; else it is
-  late, or missed. The band skips the top 30%, the bottom 40 pt and 32 pt of
-  scroll bar.
+  each timed to the first changed frame of the text band, else late or missed
+  (rules in `analysis.rs`).
 - Frame interval while scrolling: display-time gaps between changed frames;
-  `frame_late_pct` counts gaps over 1.5 refresh periods.
+  `frame_late_pct` counts gaps over 1.5 refresh periods. A scroll posting
+  nothing, or leaving under `min(events, max(20, events/50))` distinct window
+  states, is invalid.
 - `highlight_first_frame_ms` (the 100 ms budget): `build_end_ns` minus
   `build_begin_ns` on the first row of Alpine's `perf-<s>-frames.tsv` with
-  both, which must be the startup build (event 0, empty `event`) that lexes
-  and lays out the first visible range cold; an event's row is warm, so the
-  trial is refused.
+  both; it must be the cold startup build (event 0), else the trial is refused.
 - Output: raw TSV in `results/<run>/`; `bench baseline` appends stamped
   milestone rows to the tracked `baseline.tsv`.
 
 ## Comparable and not
 
 Matched: fixture bytes (outside any git checkout), the requested window frame
-(960x572 pt, recorded per trial), Menlo 15 pt on 22 pt lines, a steady caret,
-environment, the rust-analyzer binary and its `CARGO_TARGET_DIR` under
-`bench/target`, and the capture path. Not matched:
+(960x572 pt, read after the last phase; over 1 pt off invalidates), Menlo 15 pt
+on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
+`CARGO_TARGET_DIR` under `bench/target`, and the capture path. Not matched:
 
 - Zed runs non-default settings: no updates, telemetry, AI, sign-in server,
   completion popups or git decorations; `cursor_blink` off; Menlo.
@@ -118,7 +120,6 @@ moves `NSHomeDirectory` and the user Library folders. Zed also gets
 `--user-data-dir`, seeded settings, `ZED_UPDATE_EXPLANATION` and a dead
 `ZED_SERVER_URL`. Only the reference editor gets `-ApplePersistenceIgnoreState
 YES` (why: `apps.rs`). cfprefsd still writes preferences to the real home, so
-each trial compares the app's real state (preferences, saved state, HTTP
-storage, caches, data, Zed.app) before and after and stops loudly on any
-change. Zed's Dock recents (`noteNewRecentDocumentURL`) need Full Disk Access
-to inspect and go unchecked.
+each trial compares the app's real state (`apps.rs` lists it) before and after
+and stops loudly on any change. Zed's Dock recents (`noteNewRecentDocumentURL`)
+need Full Disk Access to inspect and go unchecked.

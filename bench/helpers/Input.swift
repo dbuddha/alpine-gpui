@@ -60,19 +60,125 @@ struct ForegroundGuard {
     }
 }
 
+// The window a pointer event is for. AppKit reads it from field 51, which is
+// NSEvent.windowNumber, because nothing hit-tests a PID-targeted event.
+// CoreGraphics keeps fields 91 and 92 on mouse events only, not on scrolls.
+struct WindowRoute {
+    let pid: pid_t
+    let id: UInt32
+    let origin: CGPoint
+
+    func local(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x - origin.x, y: point.y - origin.y)
+    }
+}
+
+let windowNumberField = CGEventField(rawValue: 51)!
+
+// The window-local point is set and read through private CoreGraphics exports.
+struct WindowLocationAccess {
+    let set: @convention(c) (CGEvent, CGPoint) -> Void
+    let get: @convention(c) (CGEvent) -> CGPoint
+}
+
+func loadWindowLocationAccess(set: String, get: String) -> WindowLocationAccess? {
+    typealias Setter = @convention(c) (CGEvent, CGPoint) -> Void
+    typealias Getter = @convention(c) (CGEvent) -> CGPoint
+    let everywhere = UnsafeMutableRawPointer(bitPattern: -2)  // RTLD_DEFAULT
+    guard let setter = dlsym(everywhere, set), let getter = dlsym(everywhere, get) else {
+        return nil
+    }
+    return WindowLocationAccess(
+        set: unsafeBitCast(setter, to: Setter.self),
+        get: unsafeBitCast(getter, to: Getter.self)
+    )
+}
+
+let windowLocationAccess = loadWindowLocationAccess(
+    set: "CGEventSetWindowLocation", get: "CGEventGetWindowLocation"
+)
+
+// A missing export fails the helper before anything is posted.
+func requireWindowLocation(
+    _ access: WindowLocationAccess? = windowLocationAccess
+) throws -> WindowLocationAccess {
+    guard let access else {
+        throw HelperFailure.runtime(
+            "CGEventSetWindowLocation or CGEventGetWindowLocation is missing on this macOS"
+        )
+    }
+    return access
+}
+
+// Reads each field back after stamping it, so a field the system drops fails
+// here and not as a scroll that silently moves nothing.
+func applyRoute(_ event: CGEvent, route: WindowRoute, at point: CGPoint) throws {
+    let access = try requireWindowLocation()
+    let local = route.local(point)
+    event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(route.pid))
+    event.setIntegerValueField(windowNumberField, value: Int64(route.id))
+    access.set(event, local)
+    let pid = event.getIntegerValueField(.eventTargetUnixProcessID)
+    let window = event.getIntegerValueField(windowNumberField)
+    let seen = access.get(event)
+    guard pid == Int64(route.pid), window == Int64(route.id),
+          abs(seen.x - local.x) <= 0.001, abs(seen.y - local.y) <= 0.001 else {
+        throw HelperFailure.runtime(
+            "routing fields did not stick: pid \(pid), window \(window), point \(seen)"
+        )
+    }
+}
+
+// Refuses a window another process owns, so a wrong --window-id cannot aim
+// events at another app. Entries are CGWindowListCopyWindowInfo's.
+func windowRoute(
+    in entries: [[String: Any]], id: UInt32, ownedBy pid: pid_t
+) throws -> WindowRoute {
+    guard let entry = entries.first(where: {
+        ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id
+    }) else {
+        throw HelperFailure.usage("window \(id) does not exist")
+    }
+    let owner = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+    guard owner == pid else {
+        throw HelperFailure.usage("window \(id) belongs to process \(owner), not \(pid)")
+    }
+    guard let boundsEntry = entry[kCGWindowBounds as String] as? NSDictionary,
+          let bounds = CGRect(dictionaryRepresentation: boundsEntry as CFDictionary) else {
+        throw HelperFailure.runtime("window \(id) has no readable bounds")
+    }
+    return WindowRoute(pid: pid, id: id, origin: bounds.origin)
+}
+
+func locate(window id: UInt32, ownedBy pid: pid_t) throws -> WindowRoute {
+    let entries = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(id))
+        as? [[String: Any]] ?? []
+    return try windowRoute(in: entries, id: id, ownedBy: pid)
+}
+
 // Every event leaves through deliver(), which posts to the target PID only.
 // There is no HID-tap path, so a focus change cannot redirect input.
 final class Poster {
     private let pid: pid_t
-    private let windowID: UInt32?
+    private let route: WindowRoute?
     private let source: CGEventSource?
 
-    init(pid: pid_t, windowID: UInt32?) throws {
+    convenience init(pid: pid_t, windowID: UInt32?) throws {
+        try self.init(pid: pid, route: try windowID.map { try locate(window: $0, ownedBy: pid) })
+    }
+
+    init(pid: pid_t, route: WindowRoute?) throws {
         guard pid > 0 else {
             throw HelperFailure.usage("input needs a target process id")
         }
+        if let route {
+            guard route.pid == pid else {
+                throw HelperFailure.usage("window \(route.id) is routed to process \(route.pid), not \(pid)")
+            }
+            _ = try requireWindowLocation()
+        }
         self.pid = pid
-        self.windowID = windowID
+        self.route = route
         // A private state source does not inherit keys held on the keyboard.
         source = CGEventSource(stateID: .privateState)
     }
@@ -84,15 +190,23 @@ final class Poster {
         event.postToPid(pid)
     }
 
-    // A PID-targeted mouse event has no window resolved from the cursor,
-    // so it names the measured window itself.
-    private func aim(_ event: CGEvent) {
-        guard let windowID else { return }
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(windowID))
+    // AppKit drops a pointer event that names no window, so none is built.
+    private func routed() throws -> WindowRoute {
+        guard let route else {
+            throw HelperFailure.usage("pointer events need --window-id")
+        }
+        return route
+    }
+
+    // A mouse event also keeps the public window fields, so it names them too.
+    private func aim(_ event: CGEvent, at point: CGPoint) throws {
+        let route = try routed()
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(route.id))
         event.setIntegerValueField(
             .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
-            value: Int64(windowID)
+            value: Int64(route.id)
         )
+        try applyRoute(event, route: route, at: point)
     }
 
     func key(_ code: CGKeyCode, text: String?, flags: CGEventFlags = []) throws -> UInt64 {
@@ -114,18 +228,22 @@ final class Poster {
         return stamp
     }
 
-    func move(to point: CGPoint) throws {
+    func moveEvent(to point: CGPoint) throws -> CGEvent {
         guard let event = CGEvent(
             mouseEventSource: source, mouseType: .mouseMoved,
             mouseCursorPosition: point, mouseButton: .left
         ) else {
             throw HelperFailure.runtime("cannot create a mouse move event")
         }
-        aim(event)
-        deliver(event)
+        try aim(event, at: point)
+        return event
     }
 
-    func click(at point: CGPoint) throws -> UInt64 {
+    func move(to point: CGPoint) throws {
+        deliver(try moveEvent(to: point))
+    }
+
+    func clickEvents(at point: CGPoint) throws -> (down: CGEvent, up: CGEvent) {
         guard let down = CGEvent(
             mouseEventSource: source, mouseType: .leftMouseDown,
             mouseCursorPosition: point, mouseButton: .left
@@ -135,8 +253,13 @@ final class Poster {
         ) else {
             throw HelperFailure.runtime("cannot create a click event")
         }
-        aim(down)
-        aim(up)
+        try aim(down, at: point)
+        try aim(up, at: point)
+        return (down, up)
+    }
+
+    func click(at point: CGPoint) throws -> UInt64 {
+        let (down, up) = try clickEvents(at: point)
         let stamp = Clock.now()
         deliver(down)
         Clock.wait(until: stamp + Clock.ticks(nanos: keyHoldNanos))
@@ -144,7 +267,10 @@ final class Poster {
         return stamp
     }
 
-    func scroll(pixels: Int32, at point: CGPoint) throws -> UInt64 {
+    // A scroll names its window through field 51 and the window-local point,
+    // never through the public fields, which a scroll event drops.
+    func scrollEvent(pixels: Int32, at point: CGPoint) throws -> CGEvent {
+        let route = try routed()
         guard let event = CGEvent(
             scrollWheelEvent2Source: source, units: .pixel,
             wheelCount: 1, wheel1: pixels, wheel2: 0, wheel3: 0
@@ -152,7 +278,12 @@ final class Poster {
             throw HelperFailure.runtime("cannot create a scroll event")
         }
         event.location = point
-        aim(event)
+        try applyRoute(event, route: route, at: point)
+        return event
+    }
+
+    func scroll(pixels: Int32, at point: CGPoint) throws -> UInt64 {
+        let event = try scrollEvent(pixels: pixels, at: point)
         let stamp = Clock.now()
         deliver(event)
         return stamp
@@ -262,6 +393,15 @@ func parseScript(_ options: inout Options) throws -> Script {
             "unknown command \(options.command); expected type, keys, chord, scroll, click or self-test"
         )
     }
+    // AppKit drops a PID-targeted pointer event that names no window.
+    switch action {
+    case .scroll, .click:
+        guard windowID != nil else {
+            throw HelperFailure.usage("\(options.command) needs --window-id")
+        }
+    case .type, .keys, .chord:
+        break
+    }
     try options.finish()
     return Script(pid: pid, windowID: windowID, intervalMs: intervalMs, action: action)
 }
@@ -329,7 +469,7 @@ func inputSelfTest() throws {
         ["keys", "--keycode", "125", "--count", "2"],
         ["chord", "--keycode", "35", "--modifiers", "command,shift"],
         ["scroll", "--at", "10,10", "--pixels", "-66", "--count", "2", "--window-id", "9"],
-        ["click", "--at", "10,10"],
+        ["click", "--at", "10,10", "--window-id", "9"],
     ]
     for arguments in scripts {
         var missing = try Options(arguments)
@@ -353,7 +493,71 @@ func inputSelfTest() throws {
     }
     try check((try? Poster(pid: 0, windowID: nil)) == nil, "poster refuses pid 0")
     try check((try? Poster(pid: -1, windowID: nil)) == nil, "poster refuses a negative pid")
+    for command in ["scroll", "click"] {
+        let rest = command == "scroll" ? ["--pixels", "-66", "--count", "2"] : []
+        var unrouted = try Options([command, "--at", "1,1", "--pid", "7"] + rest)
+        try check((try? parseScript(&unrouted)) == nil, "\(command) without --window-id refused")
+    }
+    try routingSelfTest()
     Output.emit(["self-test", "ok"])
+}
+
+// In memory only: builds the events a routed Poster would post and reads the
+// routing fields back. Nothing is posted and no window is needed.
+func routingSelfTest() throws {
+    let route = WindowRoute(pid: 4242, id: 9001, origin: CGPoint(x: 280, y: 130))
+    let poster = try Poster(pid: 4242, route: route)
+    let point = CGPoint(x: 480, y: 700)
+    let local = CGPoint(x: 200, y: 570)
+    try check(route.local(point) == local, "window-local point")
+    let access = try requireWindowLocation()
+    let clicks = try poster.clickEvents(at: point)
+    let events: [(String, CGEvent)] = [
+        ("scroll", try poster.scrollEvent(pixels: -66, at: point)),
+        ("mouse move", try poster.moveEvent(to: point)),
+        ("mouse down", clicks.down),
+        ("mouse up", clicks.up),
+    ]
+    for (name, event) in events {
+        try check(event.getIntegerValueField(windowNumberField) == 9001, "\(name) carries its window number")
+        try check(event.getIntegerValueField(.eventTargetUnixProcessID) == 4242, "\(name) carries its target pid")
+        try check(access.get(event) == local, "\(name) carries its window-local point")
+    }
+    // A mouse event also names the window in the public fields, which it keeps.
+    for (name, event) in events where name.hasPrefix("mouse") {
+        let under = event.getIntegerValueField(.mouseEventWindowUnderMousePointer)
+        let handler = event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent)
+        try check(under == 9001, "\(name) keeps field 91")
+        try check(handler == 9001, "\(name) keeps field 92")
+    }
+    // The measured window is the only one a poster may name.
+    try check((try? Poster(pid: 4243, route: route)) == nil, "a route for another pid is refused")
+    let unrouted = try Poster(pid: 4242, route: nil)
+    try check((try? unrouted.scrollEvent(pixels: -66, at: point)) == nil, "an unrouted scroll is refused")
+    try check((try? unrouted.moveEvent(to: point)) == nil, "an unrouted mouse move is refused")
+    // A missing private export fails the helper instead of dropping the point.
+    try check(
+        loadWindowLocationAccess(set: "CGEventNoSuchSetter", get: "CGEventGetWindowLocation") == nil,
+        "a missing setter is noticed"
+    )
+    try check((try? requireWindowLocation(nil)) == nil, "no window-location access is refused")
+    try windowOwnerSelfTest()
+}
+
+func windowOwnerSelfTest() throws {
+    let bounds = CGRect(x: 280, y: 130, width: 960, height: 572).dictionaryRepresentation as NSDictionary
+    let entry: [String: Any] = [
+        kCGWindowNumber as String: NSNumber(value: 9001),
+        kCGWindowOwnerPID as String: NSNumber(value: 4242),
+        kCGWindowBounds as String: bounds,
+    ]
+    let found = try windowRoute(in: [entry], id: 9001, ownedBy: 4242)
+    try check(found.origin == CGPoint(x: 280, y: 130), "the window origin is read")
+    try check((try? windowRoute(in: [entry], id: 9001, ownedBy: 4243)) == nil, "another process's window is refused")
+    try check((try? windowRoute(in: [entry], id: 9002, ownedBy: 4242)) == nil, "an unknown window is refused")
+    var unbounded = entry
+    unbounded[kCGWindowBounds as String] = nil
+    try check((try? windowRoute(in: [unbounded], id: 9001, ownedBy: 4242)) == nil, "a window without bounds is refused")
 }
 
 @main

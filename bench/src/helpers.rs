@@ -2,7 +2,7 @@
 //! processes that run them. Parsers are pure so they are tested without GUI.
 
 use crate::tsv;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -448,6 +448,28 @@ pub enum InputOutcome {
     Failed(String),
 }
 
+/// The helper's last non-empty stderr line, which says why it refused.
+fn last_line(text: &str) -> Option<&str> {
+    text.lines()
+        .map(str::trim)
+        .rev()
+        .find(|line| !line.is_empty())
+}
+
+/// How a `bench-input` that exited with an unlisted code is reported. It
+/// carries the reason the helper printed, since the trial's record keeps only
+/// this message and an owner, export or read-back refusal is told only there.
+fn failure_message(
+    status: impl std::fmt::Display,
+    stderr: &str,
+    log: impl std::fmt::Display,
+) -> String {
+    match last_line(stderr) {
+        Some(reason) => format!("{INPUT} failed ({status}): {reason}; see {log}"),
+        None => format!("{INPUT} failed ({status}); see {log}"),
+    }
+}
+
 /// A running `bench-input` script. Its stdout is drained by a thread, since
 /// a long scroll script prints more than a pipe holds.
 pub struct InputRun {
@@ -511,7 +533,10 @@ impl InputRun {
             Some(EXIT_ABORTED) => InputOutcome::LostForeground(format!(
                 "{INPUT} stopped: the target lost the foreground; see {log}"
             )),
-            _ => InputOutcome::Failed(format!("{INPUT} failed ({status}); see {log}")),
+            _ => {
+                let stderr = fs::read_to_string(&self.log).unwrap_or_default();
+                InputOutcome::Failed(failure_message(status, &stderr, log))
+            }
         })
     }
 
@@ -815,9 +840,13 @@ impl Drop for Capture {
 #[cfg(test)]
 mod tests {
     use super::{
-        SamplerData, SamplerLine, SetKind, Timebase, parse_appeared, parse_displays, parse_frame,
-        parse_input_events, parse_permissions, parse_sampler_line, parse_window_list,
+        InputOutcome, InputRun, SamplerData, SamplerLine, SetKind, Timebase, failure_message,
+        parse_appeared, parse_displays, parse_frame, parse_input_events, parse_permissions,
+        parse_sampler_line, parse_window_list,
     };
+    use std::path::Path;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn apple_silicon_ticks_convert_to_nanoseconds() {
@@ -922,6 +951,51 @@ mod tests {
         assert_eq!(frame.display_mach, 7000);
         assert_eq!(parse_frame("ready\t1")?, None);
         assert!(parse_frame("frame\t1\t2\t3\tzz").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_failure_carries_the_last_line_the_helper_printed() {
+        let stderr = "note: starting\nerror: window 9 belongs to process 7, not 4242\n\n";
+        assert_eq!(
+            failure_message("exit status: 2", stderr, "/r/input.log"),
+            "bench-input failed (exit status: 2): error: window 9 belongs to process 7, \
+             not 4242; see /r/input.log"
+        );
+        // A helper that printed nothing keeps the plain message.
+        assert_eq!(
+            failure_message("exit status: 2", " \n", "/r/input.log"),
+            "bench-input failed (exit status: 2); see /r/input.log"
+        );
+    }
+
+    /// A stand-in for `bench-input` that refuses as it does: it says why on
+    /// stderr and exits with the usage code. The shell is the only process run.
+    #[test]
+    fn a_helper_that_refuses_is_reported_with_its_reason() -> Result<(), String> {
+        let log = crate::test_dir("input-refusal")?.join("input.stderr.log");
+        let script = "echo 'error: window 9 belongs to process 7, not 4242' >&2; exit 2";
+        let args = ["-c".to_owned(), script.to_owned()];
+        let mut run = InputRun::spawn(Path::new("/bin/sh"), &args, &log)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let outcome = loop {
+            if let Some(outcome) = run.finished() {
+                break outcome;
+            }
+            if Instant::now() >= deadline {
+                return Err("the stand-in helper did not exit".to_owned());
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let InputOutcome::Failed(message) = outcome else {
+            return Err(format!("expected a failure, found {outcome:?}"));
+        };
+        assert!(
+            message.contains("error: window 9 belongs to process 7, not 4242"),
+            "{message}"
+        );
+        assert!(message.contains("exit status: 2"), "{message}");
+        assert!(message.contains(&log.display().to_string()), "{message}");
         Ok(())
     }
 }

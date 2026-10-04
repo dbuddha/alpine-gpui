@@ -7,7 +7,7 @@ use crate::apps::{self, App, Identity, LaunchInputs, RustAnalyzer};
 use crate::fixtures::{self, FixtureFile};
 use crate::helpers::{
     self, Appeared, Frame, Helpers, InputEvent, InputOutcome, ProcRow, SampleSet, Sampler,
-    SamplerData, SetKind, WindowInfo,
+    SamplerData, SetKind, Timebase, WindowInfo,
 };
 use crate::isolation::{self, Snapshot};
 use crate::paths::{self, BenchPaths};
@@ -707,6 +707,7 @@ fn drive(
     let settle = Duration::from_secs(u64::from(workload.settle_seconds));
     hands_off(context, app.pid(), STARTUP_PHASE, settle, &mut driven);
     sampler.mark(&analysis::phase_label(STARTUP_PHASE, "end"))?;
+    let mut last_window = None;
     for phase in workload.phases {
         if driven.invalid.is_some() {
             break;
@@ -725,16 +726,32 @@ fn drive(
         if app.exited() {
             return Err(format!("the app exited during {}", phase.name));
         }
-        if driven.invalid.is_none()
-            && let Err(reason) = check_visible(helpers, app.pid())
-        {
-            driven.invalid = Some(format!("{}: {reason}", phase.name));
+        if driven.invalid.is_none() {
+            match check_visible(helpers, app.pid()) {
+                Ok(window) => last_window = Some(window),
+                Err(reason) => driven.invalid = Some(format!("{}: {reason}", phase.name)),
+            }
         }
     }
+    settle_trial_frame(&mut driven, last_window);
     driven.footprint_tool = procs::footprint_bytes(app.pid())
         .map_err(|error| eprintln!("bench: footprint cross-check skipped: {error}"))
         .ok();
     Ok(driven)
+}
+
+/// Records the window as read after the last phase, since the first sighting
+/// can land in the window-open animation, and voids the trial if that frame
+/// is not the requested one.
+fn settle_trial_frame(driven: &mut Driven, last_window: Option<WindowInfo>) {
+    let Some(window) = last_window else {
+        return;
+    };
+    let (settled, off) = analysis::settle_frame(driven.appeared, &window, apps::REQUESTED_FRAME);
+    driven.appeared = settled;
+    if let Some(reason) = off {
+        driven.invalid.get_or_insert(reason);
+    }
 }
 
 fn launch_failure(trial_dir: &Path, error: &str) -> String {
@@ -814,7 +831,13 @@ fn run_phase(
             }
         }
         Action::SaveRecorderLog => save_recorder_log(context, phase, pid, dirs, driven)?,
-        action => run_input_phase(context, phase, action, pid, trial_dir, driven)?,
+        action => {
+            let timebase = sampler
+                .snapshot()
+                .timebase
+                .ok_or("the sampler reported no timebase")?;
+            run_input_phase(context, phase, action, pid, (trial_dir, timebase), driven)?;
+        }
     }
     Ok(())
 }
@@ -868,7 +891,7 @@ fn run_input_phase(
     phase: &Phase,
     action: Action,
     pid: i32,
-    trial_dir: &Path,
+    (trial_dir, timebase): (&Path, Timebase),
     driven: &mut Driven,
 ) -> Result<(), String> {
     if !still_visible(context, pid, phase.name, driven) {
@@ -934,6 +957,7 @@ fn run_input_phase(
         return Ok(());
     }
     let frames = capture.finish(Duration::from_millis(duration_ms + 10_000))?;
+    refuse_idle_input(driven, phase.name, action, (&posted, &frames), timebase);
     driven.events.extend(
         posted
             .into_iter()
@@ -945,6 +969,23 @@ fn run_input_phase(
             .map(|frame| (phase.name.to_owned(), frame)),
     );
     Ok(())
+}
+
+/// Voids the trial if a finished input phase did nothing where the captured
+/// frames can show it: a scroll must post events and leave the window in many
+/// distinct states. A scroll that moved nothing failed; it was not fast.
+fn refuse_idle_input(
+    driven: &mut Driven,
+    phase: &str,
+    action: Action,
+    (posted, frames): (&[InputEvent], &[Frame]),
+    timebase: Timebase,
+) {
+    if let Action::Scroll { .. } = action
+        && let Some(reason) = analysis::scroll_refusal(posted, frames, timebase)
+    {
+        driven.invalid.get_or_insert(format!("{phase}: {reason}"));
+    }
 }
 
 /// Runs one bench-input script to its end. False means the trial became
@@ -1152,15 +1193,13 @@ fn trial_metrics(
                 ));
             }
             Action::Scroll { .. } => {
-                let start = events.first().map_or(window.start_mach, |event| event.mach);
-                let end = events.last().map_or(window.end_mach, |event| {
-                    event.mach + timebase.ticks(100_000_000)
-                });
-                let intervals = analysis::frame_intervals(&frames, start, end, timebase);
-                metrics.extend(analysis::interval_metrics(
+                let span = analysis::scroll_span(&events, timebase)
+                    .unwrap_or((window.start_mach, window.end_mach));
+                metrics.extend(analysis::scroll_metrics(
                     phase.name,
-                    &intervals,
-                    context.refresh_hz,
+                    &frames,
+                    span,
+                    (timebase, context.refresh_hz),
                 ));
             }
             Action::SaveRecorderLog => {
@@ -1432,9 +1471,12 @@ fn outcome_line(outcome: &TrialOutcome, total: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunRequest, Subject, input_args, plan, removable, trial_row};
+    use super::{
+        Driven, RunRequest, Subject, input_args, plan, refuse_idle_input, removable,
+        settle_trial_frame, trial_row,
+    };
     use crate::apps::{App, DOCK_PATH};
-    use crate::helpers::{Appeared, WindowInfo};
+    use crate::helpers::{Appeared, Frame, InputEvent, Timebase, WindowInfo};
     use crate::paths::BenchPaths;
     use crate::workload::{Action, Language, find};
     use std::path::{Path, PathBuf};
@@ -1626,6 +1668,197 @@ mod tests {
         assert!(!removable(root, root, true));
         assert!(!removable(Path::new("/Users/me"), root, true));
         assert!(!removable(&root.join("a/b"), root, true));
+    }
+
+    fn posted(count: u64) -> Vec<InputEvent> {
+        (1..=count)
+            .map(|seq| InputEvent {
+                seq,
+                mach: 100 + seq,
+                kind: "scroll".to_owned(),
+                label: "-66".to_owned(),
+            })
+            .collect()
+    }
+
+    /// `count` frames from the first event on, cycling through `states` hashes.
+    fn frames_of(count: u64, states: u64) -> Vec<Frame> {
+        (0..count)
+            .map(|index| Frame {
+                seq: index,
+                display_mach: 100 + index,
+                arrival_mach: 100 + index,
+                hash: index % states,
+            })
+            .collect()
+    }
+
+    /// The reference editor's first sighting on 2026-10-03, mid-animation.
+    fn opening() -> Appeared {
+        Appeared {
+            mach: 9,
+            id: 5,
+            x: 284.0,
+            y: 133.0,
+            width: 944.0,
+            height: 562.0,
+        }
+    }
+
+    fn driven() -> Driven {
+        Driven {
+            appeared: opening(),
+            invalid: None,
+            events: Vec::new(),
+            frames: Vec::new(),
+            footprint_tool: None,
+            first_build_ns: None,
+        }
+    }
+
+    /// A tick is a nanosecond, so a scroll's span ends 100 ms after its last
+    /// event.
+    const UNIT: Timebase = Timebase { numer: 1, denom: 1 };
+
+    fn scroll() -> Action {
+        Action::Scroll {
+            pixels: -66,
+            count: 3_334,
+            interval_ms: 8,
+        }
+    }
+
+    fn keys() -> Action {
+        Action::Keys {
+            keycode: 125,
+            count: 3_334,
+            interval_ms: 8,
+        }
+    }
+
+    /// What the refusal leaves in `invalid` for a phase named "scroll".
+    fn verdict(action: Action, posted: &[InputEvent], frames: &[Frame]) -> Option<String> {
+        let mut trial = driven();
+        refuse_idle_input(&mut trial, "scroll", action, (posted, frames), UNIT);
+        trial.invalid
+    }
+
+    #[test]
+    fn a_scroll_that_left_the_window_unchanged_voids_the_trial() {
+        let events = posted(3_334);
+        // The 2026-10-03 shape: thousands of frames, two states.
+        let reason = verdict(scroll(), &events, &frames_of(3_300, 2)).unwrap_or_default();
+        assert!(reason.starts_with("scroll: "), "{reason}");
+        assert!(reason.contains("2 distinct states"), "{reason}");
+        assert!(reason.contains("did not land"), "{reason}");
+        // A scroll that changed the window on every frame passes.
+        assert_eq!(verdict(scroll(), &events, &frames_of(3_300, 3_300)), None);
+    }
+
+    #[test]
+    fn the_minimum_follows_the_events_posted_not_the_frames_shown() {
+        // 3,334 events need 66 states. 30 states in 500 frames are too few,
+        // though 500 frames alone would only ask for 20.
+        let reason = verdict(scroll(), &posted(3_334), &frames_of(500, 30)).unwrap_or_default();
+        assert!(reason.contains("30 distinct states"), "{reason}");
+        assert!(reason.contains("fewer than the 66"), "{reason}");
+    }
+
+    #[test]
+    fn a_state_before_the_first_event_does_not_count() {
+        let events = posted(3_334);
+        let before = Frame {
+            seq: 0,
+            display_mach: 50,
+            arrival_mach: 50,
+            hash: 9_999,
+        };
+        // The states shown from the first event on, plus one shown before it.
+        let with_extra = |states: u64| [vec![before], frames_of(3_300, states)].concat();
+        let reason = verdict(scroll(), &events, &with_extra(65)).unwrap_or_default();
+        assert!(reason.contains("65 distinct states"), "{reason}");
+        assert_eq!(verdict(scroll(), &events, &with_extra(66)), None);
+    }
+
+    #[test]
+    fn a_scroll_that_posted_nothing_voids_the_trial_but_a_key_run_does_not() {
+        let frames = frames_of(3_300, 3_300);
+        let reason = verdict(scroll(), &[], &frames).unwrap_or_default();
+        assert!(reason.starts_with("scroll: "), "{reason}");
+        assert!(reason.contains("posted no scroll events"), "{reason}");
+        // Frames that never changed say nothing about a key press.
+        assert_eq!(verdict(keys(), &posted(3_334), &frames_of(3_300, 2)), None);
+        assert_eq!(verdict(keys(), &[], &frames), None);
+    }
+
+    #[test]
+    fn the_first_reason_stands() {
+        let mut trial = driven();
+        trial.invalid = Some("scroll: lost the foreground".to_owned());
+        let still = frames_of(3_300, 2);
+        refuse_idle_input(
+            &mut trial,
+            "scroll",
+            scroll(),
+            (&posted(3_334), &still),
+            UNIT,
+        );
+        refuse_idle_input(&mut trial, "scroll", scroll(), (&[], &still), UNIT);
+        assert_eq!(
+            trial.invalid.as_deref(),
+            Some("scroll: lost the foreground")
+        );
+    }
+
+    #[test]
+    fn a_trial_records_its_settled_frame_and_a_wrong_one_voids_it() {
+        let frame_of = |x, y, width, height| WindowInfo {
+            x,
+            y,
+            width,
+            height,
+            ..window()
+        };
+        // The reference editor settles to the request after its opening frame.
+        let mut reference = driven();
+        settle_trial_frame(&mut reference, Some(frame_of(276.0, 128.0, 960.0, 572.0)));
+        assert_eq!(reference.invalid, None);
+        let row = trial_row("r", 1, false, None, 42, Some(&reference.appeared));
+        assert_eq!(row[7..11], ["276", "128", "960", "572"]);
+        // Zed at its default size is recorded as it is, and voids the trial.
+        let mut zed = driven();
+        settle_trial_frame(&mut zed, Some(frame_of(13.0, 41.0, 1486.0, 933.0)));
+        let reason = zed.invalid.clone().unwrap_or_default();
+        assert!(reason.contains("1486x933"), "{reason}");
+        let row = trial_row(
+            "r",
+            2,
+            false,
+            zed.invalid.as_deref(),
+            42,
+            Some(&zed.appeared),
+        );
+        assert_eq!(row[3], "0");
+        assert_eq!(row[7..11], ["13", "41", "1486", "933"]);
+        // The opening frame itself would have failed the same gate.
+        let mut mid_animation = driven();
+        settle_trial_frame(
+            &mut mid_animation,
+            Some(frame_of(284.0, 133.0, 944.0, 562.0)),
+        );
+        assert!(mid_animation.invalid.is_some());
+        // A trial that read no window keeps its first sighting.
+        let mut unread = driven();
+        settle_trial_frame(&mut unread, None);
+        assert_eq!((unread.appeared, unread.invalid), (opening(), None));
+        // The first reason stands.
+        let mut earlier = driven();
+        earlier.invalid = Some("scroll: lost the foreground".to_owned());
+        settle_trial_frame(&mut earlier, Some(frame_of(13.0, 41.0, 1486.0, 933.0)));
+        assert_eq!(
+            earlier.invalid.as_deref(),
+            Some("scroll: lost the foreground")
+        );
     }
 
     #[test]
