@@ -99,7 +99,8 @@ pub const FRAME_HEIGHT: u32 = 572;
 /// The frame every app is asked for, which a trial's settled frame must match.
 pub const REQUESTED_FRAME: (u32, u32) = (WINDOW_WIDTH, FRAME_HEIGHT);
 /// Zed ignores `ZED_WINDOW_SIZE` unless `ZED_WINDOW_POSITION` is set too.
-/// (276, 128) centers a 960x572 frame on the dev Mac's 1512x982 pt display.
+/// (276, 128) is where `NSWindow.center()` put the reference editor's frame
+/// on the dev Mac's 1512x982 pt display.
 pub const ZED_WINDOW_X: u32 = 276;
 pub const ZED_WINDOW_Y: u32 = 128;
 
