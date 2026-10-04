@@ -21,6 +21,7 @@ use crate::workload::{
     Action, Document, Fixture, Language, Phase, STARTUP_PHASE, Servers, TRIAL_PHASE, Workload,
     typed_text,
 };
+use std::cell::RefCell;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -142,18 +143,28 @@ struct Context<'a> {
     state_roots: Vec<PathBuf>,
     /// Set by `--wait-idle`: where every trial waits, and what voids it.
     gate: Option<Gate>,
+    /// The real state as the last gate opened, or as the run began with no
+    /// gate: what the end of the run is compared with.
+    baseline: RefCell<Snapshot>,
     effects: &'a dyn Effects,
 }
 
 impl Context<'_> {
     /// Waits at the gate before a trial; a run without `--wait-idle` never
-    /// waits.
+    /// waits. The owner may have used the app meanwhile, so the baseline
+    /// starts again once the gate opens.
     fn wait_at_gate(&self) -> Result<(), String> {
         let Some(gate) = &self.gate else {
             return Ok(());
         };
         let setup = (self.paths, self.helpers, self.request);
-        wait_for_gate(self.effects, setup, gate, false)
+        wait_for_gate(self.effects, setup, gate, false)?;
+        self.retake_baseline();
+        Ok(())
+    }
+
+    fn retake_baseline(&self) {
+        *self.baseline.borrow_mut() = isolation::snapshot(&self.state_roots);
     }
 }
 
@@ -303,14 +314,15 @@ fn run_with(
         refresh_hz,
         state_roots: apps::real_state_paths(request.app, &paths.real_home, &paths.zed_app),
         gate,
+        baseline: RefCell::new(Snapshot::new()),
         effects,
     };
     write_run_table(&context, &stamp, &fixtures)?;
-    let before_run = isolation::snapshot(&context.state_roots);
+    context.retake_baseline();
     run_trials(&context)?;
     // A late cfprefsd write after the last trial still fails the run.
     effects.sleep(COOLDOWN);
-    real_state_unchanged(&context, &before_run, "the run")?;
+    real_state_unchanged(&context, &context.baseline.borrow(), "the run")?;
     Ok(context.run_dir)
 }
 

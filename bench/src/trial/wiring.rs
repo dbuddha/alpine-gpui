@@ -9,6 +9,7 @@ use super::{
 use crate::apps::{App, LaunchSpec};
 use crate::gate::{Gate, KeepAwake, Power};
 use crate::helpers::{Appeared, Helpers, Sampler, SamplerData};
+use crate::isolation::Snapshot;
 use crate::paths::BenchPaths;
 use crate::procs::{LaunchedApp, PsRow};
 use crate::workload::{Action, Document, Fixture, Phase, Servers, Workload};
@@ -81,8 +82,8 @@ done
 printf 'end\t%s\t%s\tstdin-closed\n' "$n" "$n"
 "#;
 
-/// A `caffeinate` that records its pid and sleeps in its place.
-const AWAKE: &str = "#!/bin/sh\necho $$ > \"$0.pid\"\nexec /bin/sleep 600\n";
+/// A `caffeinate` that sleeps in its place.
+const AWAKE: &str = "#!/bin/sh\nexec /bin/sleep 600\n";
 
 fn write(path: &Path, text: &str, mode: u32) -> Result<(), String> {
     fs::write(path, text).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -230,6 +231,7 @@ impl Rig {
             refresh_hz: 120,
             state_roots: Vec::new(),
             gate,
+            baseline: RefCell::new(Snapshot::new()),
             effects,
         })
     }
@@ -255,6 +257,7 @@ struct Fake {
     running: RefCell<VecDeque<Vec<i32>>>,
     on_sleep: Box<dyn Fn()>,
     voided: Vec<(u32, String)>,
+    awake_pid: Cell<Option<u32>>,
 }
 
 impl Fake {
@@ -267,6 +270,7 @@ impl Fake {
             running: RefCell::new(VecDeque::from([Vec::new()])),
             on_sleep: Box::new(|| {}),
             voided: Vec::new(),
+            awake_pid: Cell::new(None),
         }
     }
 
@@ -304,8 +308,7 @@ impl Fake {
 
     /// The pid of the stand-in `caffeinate`, once one was started.
     fn awake_pid(&self) -> Option<String> {
-        let recorded = fs::read_to_string(format!("{}.pid", self.awake_script.display())).ok()?;
-        Some(recorded.trim().to_owned())
+        self.awake_pid.get().map(|pid| pid.to_string())
     }
 }
 
@@ -339,7 +342,9 @@ impl Effects for Fake {
 
     fn awake(&self) -> Result<KeepAwake, String> {
         self.note("awake");
-        KeepAwake::start_at(&self.awake_script)
+        let guard = KeepAwake::start_at(&self.awake_script)?;
+        self.awake_pid.set(Some(guard.pid()));
+        Ok(guard)
     }
 
     fn trial(
@@ -475,6 +480,24 @@ fn the_first_gate_says_it_is_open_and_the_display_is_held_for_every_trial() -> R
     Ok(())
 }
 
+/// The reference editor's preferences file, which the run guards.
+fn preferences(rig: &Rig) -> PathBuf {
+    rig.paths
+        .real_home
+        .join("Library/Preferences/bench-reference-appkit.plist")
+}
+
+/// A sleep hook that runs `action` on the `nth` sleep.
+fn on_nth_sleep(nth: u32, action: impl Fn() + 'static) -> impl Fn() + 'static {
+    let sleeps = Cell::new(0);
+    move || {
+        sleeps.set(sleeps.get() + 1);
+        if sleeps.get() == nth {
+            action();
+        }
+    }
+}
+
 fn stamp_text(hash: &str) -> String {
     format!(
         "swiftc\tApple Swift version 6.1 (swiftlang)\n\
@@ -488,10 +511,7 @@ fn stamp_text(hash: &str) -> String {
 fn a_long_wait_does_not_age_the_stamp_or_the_real_state_snapshot() -> Result<(), String> {
     let rig = Rig::new("stamp-after-gate", 1, Some(1))?;
     rig.idle(&[(3.0, false), (4.0, false), (4000.0, false)])?;
-    let preferences = rig
-        .paths
-        .real_home
-        .join("Library/Preferences/bench-reference-appkit.plist");
+    let preferences = preferences(&rig);
     let stamp = rig.paths.helpers_dir.join("stamp.tsv");
     write(&preferences, "state before the wait", 0o644)?;
     write(&stamp, &stamp_text("aaaaaaaaaaaa"), 0o644)?;
@@ -511,6 +531,84 @@ fn a_long_wait_does_not_age_the_stamp_or_the_real_state_snapshot() -> Result<(),
         fs::read_to_string(run_dir.join("run.tsv")).map_err(|error| format!("run.tsv: {error}"))?;
     assert!(table.contains("src-bbbbbbbbbbbb"), "{table}");
     assert!(!table.contains("src-aaaaaaaaaaaa"), "{table}");
+    Ok(())
+}
+
+/// The owner uses the app while trial 2's gate waits. Every trial is fine,
+/// so the run is too: the baseline starts again when a gate opens.
+#[test]
+fn owner_use_of_the_app_while_a_later_gate_waits_does_not_fail_the_run() -> Result<(), String> {
+    let rig = Rig::new("baseline-retaken", 2, Some(1))?;
+    // The first gates open at once; trial 2's finds the owner back.
+    rig.idle(&[
+        (4000.0, false),
+        (4000.0, false),
+        (3.0, false),
+        (4000.0, false),
+    ])?;
+    let used = preferences(&rig);
+    write(&used, "state before the run", 0o644)?;
+    // Sleeps: the banner, the cooldown after trial 1, trial 2's gate poll.
+    let owner = on_nth_sleep(3, move || {
+        let _ = fs::write(&used, "state after the owner used the app");
+    });
+    let fake = Fake::new(&rig).on_sleep(owner);
+    run_with(&rig.paths, &rig.helpers, &rig.request, &fake).map(drop)
+}
+
+/// A write after the last gate, here in the final cooldown, still fails.
+#[test]
+fn a_late_write_after_the_last_gate_still_fails_a_gated_run() -> Result<(), String> {
+    let rig = Rig::new("baseline-late-write", 2, Some(1))?;
+    rig.idle(&[(4000.0, false)])?;
+    let late = preferences(&rig);
+    write(&late, "state before the run", 0o644)?;
+    // Sleeps: the banner, the cooldown after trial 1, the final cooldown.
+    let write_late = on_nth_sleep(3, move || {
+        let _ = fs::write(&late, "a late write");
+    });
+    let fake = Fake::new(&rig).on_sleep(write_late);
+    let failure = run_with(&rig.paths, &rig.helpers, &rig.request, &fake)
+        .err()
+        .ok_or("a late write went unnoticed")?;
+    assert!(
+        failure.contains("REAL appkit STATE CHANGED during the run"),
+        "{failure}"
+    );
+    Ok(())
+}
+
+/// State the run never touches passes, so the baseline has to exist from the
+/// start: without a gate nothing else would take it.
+#[test]
+fn a_run_that_leaves_the_real_state_alone_passes_with_and_without_a_gate() -> Result<(), String> {
+    for (name, wait_idle) in [("state-alone-plain", None), ("state-alone-gated", Some(1))] {
+        let rig = Rig::new(name, 2, wait_idle)?;
+        rig.idle(&[(4000.0, false)])?;
+        write(&preferences(&rig), "state before the run", 0o644)?;
+        run_with(&rig.paths, &rig.helpers, &rig.request, &Fake::new(&rig))?;
+    }
+    Ok(())
+}
+
+/// With no gate there is one baseline, taken as the run began.
+#[test]
+fn a_run_without_wait_idle_keeps_its_one_baseline() -> Result<(), String> {
+    let rig = Rig::new("baseline-ungated", 2, None)?;
+    let touched = preferences(&rig);
+    write(&touched, "state before the run", 0o644)?;
+    // Sleeps: the banner, then the cooldown between the trials.
+    let between = on_nth_sleep(2, move || {
+        let _ = fs::write(&touched, "a write between the trials");
+    });
+    let fake = Fake::new(&rig).on_sleep(between);
+    let failure = run_with(&rig.paths, &rig.helpers, &rig.request, &fake)
+        .err()
+        .ok_or("a write between the trials went unnoticed")?;
+    assert!(
+        failure.contains("REAL appkit STATE CHANGED during the run"),
+        "{failure}"
+    );
     Ok(())
 }
 

@@ -312,6 +312,13 @@ impl KeepAwake {
     }
 }
 
+#[cfg(test)]
+impl KeepAwake {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
 impl Drop for KeepAwake {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -764,18 +771,31 @@ mod tests {
         Ok(())
     }
 
-    /// A stand-in `caffeinate` records its arguments, then sleeps as one.
+    /// A stand-in `caffeinate` records its arguments, then sleeps as one. It
+    /// writes them in one rename and the test waits for them: the guard only
+    /// knows the process is alive, not that its script has run.
     #[test]
     fn the_awake_guard_watches_the_bench_and_nothing_else() -> Result<(), String> {
         let dir = crate::test_dir("awake-args")?;
         let script = dir.join("caffeinate");
-        let body = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\nexec /bin/sleep 600\n";
+        let body = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.tmp\" && mv \"$0.tmp\" \"$0.args\"\n\
+                    exec /bin/sleep 600\n";
         fs::write(&script, body).map_err(|error| format!("{}: {error}", script.display()))?;
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
             .map_err(|error| format!("{}: {error}", script.display()))?;
         let guard = KeepAwake::start_at(&script)?;
-        let recorded = fs::read_to_string(dir.join("caffeinate.args"))
-            .map_err(|error| format!("no arguments were recorded: {error}"))?;
+        // A starved machine can leave the script unscheduled for seconds, so
+        // the wait is long; a passing run never uses it.
+        let deadline = std::time::Instant::now() + Duration::from_mins(2);
+        let recorded = loop {
+            if let Ok(text) = fs::read_to_string(dir.join("caffeinate.args")) {
+                break text;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("the stand-in recorded no arguments within 120 s".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
         let own_pid = std::process::id().to_string();
         assert_eq!(
             recorded.lines().collect::<Vec<_>>(),
