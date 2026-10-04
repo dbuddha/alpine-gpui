@@ -96,6 +96,12 @@ pub const WINDOW_HEIGHT: u32 = 540;
 /// Alpine's measured frame height (content plus a 32 pt title bar). Zed
 /// draws its title bar inside its content, so it gets the whole frame.
 pub const FRAME_HEIGHT: u32 = 572;
+/// The frame every app is asked for, which a trial's settled frame must match.
+pub const REQUESTED_FRAME: (u32, u32) = (WINDOW_WIDTH, FRAME_HEIGHT);
+/// Zed ignores `ZED_WINDOW_SIZE` unless `ZED_WINDOW_POSITION` is set too.
+/// (276, 128) centers a 960x572 frame on the dev Mac's 1512x982 pt display.
+pub const ZED_WINDOW_X: u32 = 276;
+pub const ZED_WINDOW_Y: u32 = 128;
 
 /// macOS caps a Unix socket path at 104 bytes. Zed binds its crash-handler
 /// socket at `$HOME/Library/Caches/Zed/zed-crash-handler-<pid>`.
@@ -286,6 +292,10 @@ pub fn launch_spec(inputs: &LaunchInputs<'_>) -> Result<LaunchSpec, String> {
                 "ZED_WINDOW_SIZE".to_owned(),
                 OsString::from(format!("{WINDOW_WIDTH},{FRAME_HEIGHT}")),
             ));
+            env.push((
+                "ZED_WINDOW_POSITION".to_owned(),
+                OsString::from(format!("{ZED_WINDOW_X},{ZED_WINDOW_Y}")),
+            ));
             let data = zed_data_dir(inputs.home);
             seed_files.push((
                 data.join("config/settings.json"),
@@ -331,8 +341,9 @@ pub fn launch_spec(inputs: &LaunchInputs<'_>) -> Result<LaunchSpec, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, DOCK_PATH, Identity, LaunchInputs, LaunchSpec, RustAnalyzer, appkit_state_paths,
-        check_zed_home, launch_spec, real_state_paths, zed_settings,
+        App, DOCK_PATH, Identity, LaunchInputs, LaunchSpec, REQUESTED_FRAME, RustAnalyzer,
+        ZED_WINDOW_X, ZED_WINDOW_Y, appkit_state_paths, check_zed_home, launch_spec,
+        real_state_paths, zed_settings,
     };
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
@@ -504,6 +515,10 @@ mod tests {
             env_value(&spec, "ZED_WINDOW_SIZE"),
             Some(&OsString::from("960,572"))
         );
+        assert_eq!(
+            env_value(&spec, "ZED_WINDOW_POSITION"),
+            Some(&OsString::from("276,128"))
+        );
         let (path, settings) = spec.seed_files.first().ok_or("no settings seeded")?;
         assert_eq!(
             path,
@@ -513,6 +528,25 @@ mod tests {
         assert!(settings.contains("\"cursor_blink\": false"));
         assert!(settings.contains("\"show_completions_on_input\": false"));
         assert!(settings.contains("\"git_gutter\": \"hide\""));
+        Ok(())
+    }
+
+    /// Zed builds its window override from both variables, so one alone leaves
+    /// the window at its default size (1486x933 on 2026-10-03).
+    #[test]
+    fn zed_gets_a_window_position_whenever_it_gets_a_window_size() -> Result<(), String> {
+        for app in [App::Alpine, App::Zed, App::AppKit] {
+            let spec = spec(app, &[PathBuf::from("/f.txt")], None)?;
+            let size = env_value(&spec, "ZED_WINDOW_SIZE");
+            let position = env_value(&spec, "ZED_WINDOW_POSITION");
+            assert_eq!(size.is_some(), app == App::Zed, "{}", app.name());
+            assert_eq!(position.is_some(), size.is_some(), "{}", app.name());
+        }
+        assert_eq!(REQUESTED_FRAME, (960, 572));
+        let (x, y) = (f64::from(ZED_WINDOW_X), f64::from(ZED_WINDOW_Y));
+        let (width, height) = (f64::from(REQUESTED_FRAME.0), f64::from(REQUESTED_FRAME.1));
+        // The 1512x982 pt dev display holds the whole requested frame.
+        assert!(x + width <= 1512.0 && y + height <= 982.0);
         Ok(())
     }
 
