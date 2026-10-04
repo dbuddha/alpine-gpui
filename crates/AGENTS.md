@@ -1,8 +1,9 @@
 ---
 scope: framework crates under crates/
 parent: ../AGENTS.md
-updated: 2026-10-02
-known_defects: []
+updated: 2026-10-03
+known_defects:
+  - "hosted CI: a resumed display link may never call back, so a pending frame never starts (0 submissions); the M0e.1 progress timer covers only frames in flight (run 37150303820, editor native_process)"
 ---
 
 # Framework internals

@@ -144,6 +144,41 @@ fn child_maxima<'a>(sets: &[&'a SampleSet]) -> BTreeMap<&'a str, u64> {
     maxima
 }
 
+/// Every child process name any sample saw under the app, first seen first;
+/// a no-server trial needs this empty.
+pub fn child_names(sets: &[SampleSet]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for row in sets.iter().flat_map(|set| &set.rows) {
+        if row.depth > 0 && !names.contains(&row.name) {
+            names.push(row.name.clone());
+        }
+    }
+    names
+}
+
+/// CPU the app reaped from exited children, from its last sample, so a child
+/// that started and exited between 1 Hz samples still shows.
+pub fn reaped_child_cpu_ns(sets: &[SampleSet]) -> u64 {
+    sets.iter()
+        .rev()
+        .flat_map(|set| &set.rows)
+        .find(|row| row.depth == 0)
+        .map_or(0, |row| {
+            row.child_user_ns.saturating_add(row.child_system_ns)
+        })
+}
+
+/// Why a no-server trial is void: a child some sample saw, or child CPU the
+/// app reaped between samples. `None` means no child process ran.
+pub fn child_process_evidence(sets: &[SampleSet]) -> Option<String> {
+    let names = child_names(sets);
+    if !names.is_empty() {
+        return Some(format!("the app started {}", names.join(", ")));
+    }
+    let reaped = reaped_child_cpu_ns(sets);
+    (reaped > 0).then(|| format!("the app reaped {reaped} ns of CPU from exited children"))
+}
+
 fn set_by_seq(sets: &[SampleSet], seq: u64) -> Result<&SampleSet, String> {
     sets.iter()
         .find(|set| set.seq == seq)
@@ -635,9 +670,10 @@ pub fn summarize_trials(trials: &[Vec<Metric>]) -> Vec<SummaryRow> {
 #[cfg(test)]
 mod tests {
     use super::{
-        KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, cpu_points, frame_intervals,
-        interval_metrics, key_latencies, phase_label, phase_metrics, phase_windows, quiet_since,
-        summarize, summarize_trials, trial_metrics, visibility,
+        KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, child_names,
+        child_process_evidence, cpu_points, frame_intervals, interval_metrics, key_latencies,
+        phase_label, phase_metrics, phase_windows, quiet_since, reaped_child_cpu_ns, summarize,
+        summarize_trials, trial_metrics, visibility,
     };
     use crate::helpers::{
         Appeared, Frame, InputEvent, Mark, ProcRow, SampleSet, SetKind, Timebase, WindowInfo,
@@ -694,6 +730,63 @@ mod tests {
             .iter()
             .find(|metric| metric.name == name)
             .map(|metric| metric.value)
+    }
+
+    #[test]
+    fn child_names_list_each_child_any_sample_saw_once() {
+        let alone = [set(
+            1,
+            SetKind::Tick,
+            10,
+            vec![row(600, 0, "alpine-editor", 1, 1)],
+        )];
+        assert!(child_names(&alone).is_empty());
+        let with_server = [
+            alone[0].clone(),
+            set(
+                2,
+                SetKind::Tick,
+                20,
+                vec![
+                    row(600, 0, "alpine-editor", 1, 1),
+                    row(700, 1, "clangd", 1, 1),
+                    row(701, 2, "clangd", 1, 1),
+                ],
+            ),
+            set(3, SetKind::Mark, 30, vec![row(702, 1, "xcrun", 1, 1)]),
+        ];
+        assert_eq!(child_names(&with_server), ["clangd", "xcrun"]);
+    }
+
+    #[test]
+    fn a_child_that_came_and_went_between_samples_still_voids() {
+        let quiet = [set(
+            1,
+            SetKind::Tick,
+            10,
+            vec![row(600, 0, "alpine-editor", 1, 1)],
+        )];
+        assert_eq!(reaped_child_cpu_ns(&quiet), 0);
+        assert_eq!(child_process_evidence(&quiet), None);
+        let mut reaped = row(600, 0, "alpine-editor", 1, 1);
+        reaped.child_user_ns = 2_000_000;
+        let between = [quiet[0].clone(), set(2, SetKind::Mark, 20, vec![reaped])];
+        assert_eq!(reaped_child_cpu_ns(&between), 2_000_000);
+        let evidence = child_process_evidence(&between).unwrap_or_default();
+        assert!(evidence.contains("reaped 2000000 ns"), "{evidence}");
+        let seen = [set(
+            1,
+            SetKind::Tick,
+            10,
+            vec![
+                row(600, 0, "alpine-editor", 1, 1),
+                row(700, 1, "clangd", 1, 1),
+            ],
+        )];
+        assert_eq!(
+            child_process_evidence(&seen).as_deref(),
+            Some("the app started clangd")
+        );
     }
 
     #[test]

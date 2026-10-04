@@ -19,7 +19,8 @@ mod validation {
     use alpine_metal::RenderError;
     use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
-        NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceResponse,
+        EditorSignpost, EditorSignpostStage, EditorSignposts, NativeSurface, RecorderSnapshot,
+        SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame, SurfaceResponse,
         SurfaceSnapshot, SurfaceWakeAdmission, native_validation,
     };
     use alpine_scene::{Primitive, SceneBuilder, SceneRevision};
@@ -29,6 +30,7 @@ mod validation {
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = hosted_direct_mode()?;
+        validate_startup_frame(hosted_direct)?;
         let descriptor = SurfaceDescriptor::new("Alpine presented frame", 96.0, 64.0, 1.0)?;
         let surface = Rc::new(native_validation::new_surface(&descriptor)?);
         assert_eq!(
@@ -132,6 +134,66 @@ mod validation {
         assert_eq!(requested, owner);
         // Command status and signal publication may race. Only ownership and
         // non-consumption are asserted while the GPU is in flight.
+        Ok(())
+    }
+
+    // Runs first, so the process recorder holds no other frame. The startup
+    // frame keeps its event-0 build stages and gives no latency evidence; a
+    // build that makes no frame requests and records nothing.
+    fn validate_startup_frame(hosted_direct: bool) -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine startup frame", 96.0, 64.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        let empty = RecorderSnapshot::capture();
+        assert_eq!(surface.request_startup_frame(|| None)?, None);
+        assert_eq!(RecorderSnapshot::capture(), empty);
+        let viewport = Size::new(96.0, 64.0).ok_or("valid viewport")?;
+        let bounds = Rect::new(
+            Point::new(8.0, 8.0).ok_or("valid origin")?,
+            Size::new(80.0, 48.0).ok_or("valid quad size")?,
+        );
+        let color = LinearRgba::new(0.25, 0.5, 0.75, 1.0).ok_or("valid color")?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("valid clear")?;
+        let signposts = EditorSignposts::new();
+        let revision = surface.request_startup_frame(|| {
+            for stage in [
+                EditorSignpostStage::FrameBuildBegin,
+                EditorSignpostStage::FrameBuildComplete,
+            ] {
+                let _ = signposts.emit(EditorSignpost::new(stage, 0, 1, 1, 1, [0; 3]));
+            }
+            Some(SurfaceFrame::new(scene(1, viewport, bounds, color), clear))
+        })?;
+        assert_eq!(revision.map(|revision| revision.get()), Some(1));
+        surface.show()?;
+        if hosted_direct {
+            native_validation::inject_surface_configuration(&surface, 96.0, 64.0, 1.0, 0, true)?;
+        }
+        native_validation::run_until_frame_terminal(&surface, Duration::from_secs(5));
+        assert_eq!(surface.take_error()?, None);
+        let snapshot = surface.snapshot();
+        let terminal = snapshot
+            .last_terminal()
+            .ok_or("the startup frame never reached a terminal outcome")?;
+        assert_eq!(terminal.frame_revision().get(), 1, "{snapshot:?}");
+        assert_eq!(terminal.latency(), None, "{snapshot:?}");
+
+        let mut tsv = Vec::new();
+        RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
+        let text = String::from_utf8(tsv)?;
+        let rows: Vec<Vec<&str>> = text
+            .lines()
+            .map(|line| line.split('\t').collect())
+            .collect();
+        let header = rows.first().ok_or("frames.tsv has no header")?;
+        let column =
+            |name: &'static str| header.iter().position(|field| *field == name).ok_or(name);
+        let first = rows.get(1).ok_or("frames.tsv has no startup row")?;
+        assert_eq!(first[column("revision")?], "1", "{text}");
+        assert_eq!(first[column("event")?], "", "{text}");
+        let begin: u64 = first[column("build_begin_ns")?].parse()?;
+        let end: u64 = first[column("build_end_ns")?].parse()?;
+        assert!(end >= begin, "{text}");
+        surface.close();
         Ok(())
     }
 

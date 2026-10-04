@@ -147,6 +147,7 @@ fn launch(
         documents: &documents,
         identity: &identity,
         rust_analyzer: None,
+        path: None,
         alpine_bundle: &paths.alpine_bundle,
         zed_app: &paths.zed_app,
         reference_binary: Path::new("/nonexistent"),

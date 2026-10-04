@@ -7,6 +7,11 @@ import Foundation
 // CGEventPostToPid, never to the HID stream, so no other app can get them.
 // Needs Accessibility (post-event access) for the terminal that runs bench.
 
+let modifierNames: [String: CGEventFlags] = [
+    "command": .maskCommand, "shift": .maskShift,
+    "option": .maskAlternate, "control": .maskControl,
+]
+
 let ansiKeycodes: [Character: CGKeyCode] = [
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8,
     "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
@@ -72,10 +77,10 @@ final class Poster {
         source = CGEventSource(stateID: .privateState)
     }
 
-    // Flags are cleared on every event, so no held or system modifier rides
-    // along (Option turns a scroll into a fast scroll in Zed).
-    private func deliver(_ event: CGEvent) {
-        event.flags = []
+    // Each event carries only the flags its script names, none but a chord's,
+    // so no held or system modifier rides along (Option fast-scrolls Zed).
+    private func deliver(_ event: CGEvent, flags: CGEventFlags = []) {
+        event.flags = flags
         event.postToPid(pid)
     }
 
@@ -90,7 +95,7 @@ final class Poster {
         )
     }
 
-    func key(_ code: CGKeyCode, text: String?) throws -> UInt64 {
+    func key(_ code: CGKeyCode, text: String?, flags: CGEventFlags = []) throws -> UInt64 {
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
             throw HelperFailure.runtime("cannot create a key event")
@@ -103,9 +108,9 @@ final class Poster {
             }
         }
         let stamp = Clock.now()
-        deliver(down)
+        deliver(down, flags: flags)
         Clock.wait(until: stamp + Clock.ticks(nanos: keyHoldNanos))
-        deliver(up)
+        deliver(up, flags: flags)
         return stamp
     }
 
@@ -163,6 +168,18 @@ func keycodes(for text: String) throws -> [(CGKeyCode, String)] {
     }
 }
 
+// "command,shift" to the flags of one chord; a chord names at least one.
+func modifierFlags(_ text: String) throws -> CGEventFlags {
+    var flags: CGEventFlags = []
+    for name in text.split(separator: ",", omittingEmptySubsequences: false) {
+        guard let flag = modifierNames[String(name)] else {
+            throw HelperFailure.usage("unknown modifier \(name); use command, shift, option or control")
+        }
+        flags.insert(flag)
+    }
+    return flags
+}
+
 func requirePostEventAccess() throws {
     guard CGPreflightPostEventAccess() else {
         throw HelperFailure.permission(
@@ -189,6 +206,7 @@ func paced(count: Int, intervalMs: Int, step: (Int) throws -> Void) throws {
 enum ScriptAction {
     case type([(CGKeyCode, String)])
     case keys(CGKeyCode, Int)
+    case chord(CGKeyCode, CGEventFlags)
     case scroll(CGPoint, Int32, Int)
     case click(CGPoint)
 }
@@ -223,6 +241,12 @@ func parseScript(_ options: inout Options) throws -> Script {
             throw HelperFailure.usage("--keycode must fit a key code and --count must be positive")
         }
         action = .keys(code, count)
+    case "chord":
+        let keycode = try options.int("keycode")
+        guard let code = CGKeyCode(exactly: keycode) else {
+            throw HelperFailure.usage("--keycode must fit a key code")
+        }
+        action = .chord(code, try modifierFlags(try options.string("modifiers")))
     case "scroll":
         let point = try options.point("at")
         let pixels = try options.int("pixels")
@@ -235,7 +259,7 @@ func parseScript(_ options: inout Options) throws -> Script {
         action = .click(try options.point("at"))
     default:
         throw HelperFailure.usage(
-            "unknown command \(options.command); expected type, keys, scroll, click or self-test"
+            "unknown command \(options.command); expected type, keys, chord, scroll, click or self-test"
         )
     }
     try options.finish()
@@ -265,6 +289,11 @@ func run(_ script: Script) throws {
             Output.emit(["event", String(index + 1), String(stamp), "key", "keycode-\(code)"])
             posted += 1
         }
+    case .chord(let code, let flags):
+        try guardian.verify(force: true)
+        let stamp = try poster.key(code, text: nil, flags: flags)
+        Output.emit(["event", "1", String(stamp), "chord", "keycode-\(code)"])
+        posted = 1
     case .scroll(let point, let delta, let count):
         try guardian.verify(force: true)
         try poster.move(to: point)
@@ -298,6 +327,7 @@ func inputSelfTest() throws {
     let scripts: [[String]] = [
         ["type", "--text", "ab"],
         ["keys", "--keycode", "125", "--count", "2"],
+        ["chord", "--keycode", "35", "--modifiers", "command,shift"],
         ["scroll", "--at", "10,10", "--pixels", "-66", "--count", "2", "--window-id", "9"],
         ["click", "--at", "10,10"],
     ]
@@ -312,6 +342,15 @@ func inputSelfTest() throws {
     }
     var bad = try Options(["click", "--at", "1,1", "--pid", "7", "--window-id", "0"])
     try check((try? parseScript(&bad)) == nil, "window 0 refused")
+    var palette = try Options(["chord", "--pid", "7", "--keycode", "35", "--modifiers", "command,shift"])
+    guard case .chord(35, let flags) = try parseScript(&palette).action else {
+        throw HelperFailure.runtime("self-test failed: chord parses as keycode 35")
+    }
+    try check(flags == [.maskCommand, .maskShift], "chord keeps exactly command and shift")
+    for modifiers in ["", "command,", "hyper", "command,,shift"] {
+        var odd = try Options(["chord", "--pid", "7", "--keycode", "35", "--modifiers", modifiers])
+        try check((try? parseScript(&odd)) == nil, "chord modifiers \(modifiers) refused")
+    }
     try check((try? Poster(pid: 0, windowID: nil)) == nil, "poster refuses pid 0")
     try check((try? Poster(pid: -1, windowID: nil)) == nil, "poster refuses a negative pid")
     Output.emit(["self-test", "ok"])

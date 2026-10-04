@@ -65,6 +65,20 @@ impl NativeSurface {
         clippy::unused_self,
         reason = "the unsupported implementation mirrors the native owner contract"
     )]
+    pub(crate) fn request_startup_frame<F>(
+        &self,
+        _build: F,
+    ) -> Result<Option<PresentationRevision>, SurfaceError>
+    where
+        F: FnOnce() -> Option<crate::SurfaceFrame>,
+    {
+        Err(SurfaceError::UnsupportedPlatform)
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "the unsupported implementation mirrors the native owner contract"
+    )]
     pub(crate) const fn take_error(&self) -> Result<Option<SurfaceError>, SurfaceError> {
         Err(SurfaceError::UnsupportedPlatform)
     }

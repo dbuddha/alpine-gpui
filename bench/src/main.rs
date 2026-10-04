@@ -11,6 +11,7 @@ mod helpers;
 mod isolation;
 mod paths;
 mod procs;
+mod recorder_log;
 mod stamp;
 mod stats;
 mod trial;

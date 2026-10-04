@@ -6,15 +6,14 @@ gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D 
 known_defects:
   - "PID-targeted scroll moved neither Alpine nor the reference editor on 2026-10-03"
   - "Zed's and the reference editor's windows miss the requested 960x572 pt (1486x933, 944x562); Zed timed 0 to 3 of 100 keys"
-  - "unverified: the reference editor's caret blink suppression"
+  - "unverified: the reference editor's caret blink suppression and highlight's palette keys"
 ---
 
 # Bench
 
 `bench/` measures Alpine Editor, Zed and an AppKit reference editor the same
-way, from outside the process, so performance claims reproduce with one
-command: a std-only Cargo workspace, excluded from the root, plus Swift
-helpers built with `xcrun swiftc` (Command Line Tools).
+way, from outside: a std-only Cargo workspace outside the root one, plus
+Swift helpers built with `xcrun swiftc`.
 
 ## Commands
 
@@ -22,22 +21,23 @@ helpers built with `xcrun swiftc` (Command Line Tools).
 bench/helpers/build.sh          # helpers, reference editor, self-tests
 cd bench && cargo build --release
 target/release/bench workloads | stamp | permissions | fixtures
-target/release/bench run <workload> --app alpine|zed|appkit [--trials 10]
+target/release/bench run <workload> --app alpine|zed|appkit [--trials 10] [--dry-run]
 target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
 
-Workloads live in `src/workload.rs`. Alpine is the installed
-`~/Applications/Alpine Editor.app`, built from a clean tree.
+Workloads live in `src/workload.rs`; `--dry-run` prints a run's launches and
+input, starting nothing. Alpine is the installed
+`~/Applications/Alpine Editor.app`, built clean.
 
 ## Owner-present session
 
-1. Quit Zed, then run `bench zed-isolation --allow-window --open-fixture`.
-   It refuses while another Zed runs, and must report no change.
-2. Grant Accessibility and Screen Recording to the terminal that runs
-   `bench`; `bench permissions` shows both, and helpers never prompt.
-3. Run each workload, hands-off from the `Hands off` line until the run
-   directory prints.
+1. Quit Zed, then run `bench zed-isolation --allow-window --open-fixture`;
+   it refuses while another Zed runs and must report no change.
+2. Grant Accessibility and Screen Recording to the terminal running `bench`;
+   `bench permissions` shows both, and helpers never prompt.
+3. Stay hands-off from each run's `Hands off` line until its directory
+   prints.
 
 ## Protocol
 
@@ -47,25 +47,26 @@ Workloads live in `src/workload.rs`. Alpine is the installed
 - Every workload runs one untimed warm-up, then fresh processes, each with a
   disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
   Dock's PATH. Quit the measured app first, or the bench refuses.
-- Before measuring and every second of every phase, the app must be
-  frontmost with no other app's visible window over it, at any layer but
-  the pointer's. A failure before measuring stops the run; later, it
-  invalidates the trial.
+- `highlight` (criterion 2.1) is an Alpine-only budget row, not a comparison.
+  Each round opens a 20,000-line file per language group with an empty PATH
+  directory; a child process voids the trial. `--trials` counts per group;
+  other rows pool the groups.
+- From before measuring, every second, the app must be frontmost and
+  uncovered by other apps' visible windows at any layer but the pointer's; a
+  failure stops the run before measuring and invalidates the trial after.
 - Report 95% Student t intervals of per-trial values.
 
 ## Permissions
 
-| Helper | Permission | Used for |
-| --- | --- | --- |
-| `bench-window` | none | visibility, activation, displays |
-| `bench-sample` | none (same-user `proc_pid_rusage`) | footprint, CPU, wakeups |
-| `bench-input` | Accessibility (post events) | `typing`, `caret`, `scroll` |
-| `bench-capture` | Screen Recording | `typing`, `caret`, `scroll` |
+- `bench-window`: none; visibility, activation, displays.
+- `bench-sample`: none (same-user `proc_pid_rusage`); footprint, CPU, wakeups.
+- `bench-input`: Accessibility (post events); `typing`, `caret`, `scroll`,
+  `highlight`.
+- `bench-capture`: Screen Recording; `typing`, `caret`, `scroll`.
 
-`bench-input` posts every event to the measured app's PID
-(`CGEventPostToPid`) from a private event source with no modifier flags,
-never to the HID stream, so no other process can receive it. It refuses to
-run without a PID.
+`bench-input` posts only to the measured app's PID (`CGEventPostToPid`),
+from a private event source, never to the HID stream, and refuses to run
+without a PID. Events carry no modifier flags but a `chord`'s named ones.
 
 ## Metrics
 
@@ -75,13 +76,18 @@ run without a PID.
 - CPU, wakeups and energy: deltas between phase boundary samples; startup
   counts from process start. CPU and wakeups include reaped children;
   energy counts processes alive at the end.
-- Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`), after the
-  caret moves to line 11. A key is timed to the display time of the first
-  frame whose text band changed, if that comes before the next key and the
-  previous key's did too; otherwise it counts as late, or missed. The band
-  skips the top 30%, the bottom 40 pt and 32 pt of scroll bar.
+- Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
+  each timed to the display time of the first frame whose text band changed,
+  if that precedes the next key and the previous key's did too; else it is
+  late, or missed. The band skips the top 30%, the bottom 40 pt and 32 pt of
+  scroll bar.
 - Frame interval while scrolling: display-time gaps between changed frames;
   `frame_late_pct` counts gaps over 1.5 refresh periods.
+- `highlight_first_frame_ms` (the 100 ms budget): `build_end_ns` minus
+  `build_begin_ns` on the first row of Alpine's `perf-<s>-frames.tsv` with
+  both, which must be the startup build (event 0, empty `event`) that lexes
+  and lays out the first visible range cold; an event's row is warm, so the
+  trial is refused.
 - Output: raw TSV in `results/<run>/`; `bench baseline` appends stamped
   milestone rows to the tracked `baseline.tsv`.
 
@@ -100,9 +106,9 @@ environment, the rust-analyzer binary and its `CARGO_TARGET_DIR` under
 - Chrome differs: tab, status and title bars.
 - `open-repo` gives Alpine and the reference editor the file; Zed gets the
   folder and the file.
-- Latency ends at ScreenCaptureKit's display time, so capture delivery is
-  excluded (`frames.tsv` keeps arrival times), and PID-targeted input skips
-  HID routing. Both apply to every app.
+- For every app, latency ends at ScreenCaptureKit's display time, without
+  capture delivery (`frames.tsv` keeps arrival times), and PID-targeted input
+  skips HID routing.
 - The reference editor has no language features.
 
 ## Isolation
@@ -111,11 +117,8 @@ Trials set HOME and `CFFIXED_USER_HOME` to the disposable home; the latter
 moves `NSHomeDirectory` and the user Library folders. Zed also gets
 `--user-data-dir`, seeded settings, `ZED_UPDATE_EXPLANATION` and a dead
 `ZED_SERVER_URL`. Only the reference editor gets `-ApplePersistenceIgnoreState
-YES`: Alpine exits on extra arguments and Zed's parser is untested with them.
-Preferences still reach the real home through cfprefsd, so each trial
-compares the app's real preferences, saved state, HTTP storage, caches, data
-and Zed.app before and after, and the run stops loudly on any change. Zed's
-Dock recents (`noteNewRecentDocumentURL`) need Full Disk Access to inspect
-and go unchecked. On 2026-10-02 a windowless probe, with the owner's Zed
-running, migrated its databases in the disposable home, exited at the
-single-instance check after 409 ms and changed nothing real.
+YES` (why: `apps.rs`). cfprefsd still writes preferences to the real home, so
+each trial compares the app's real state (preferences, saved state, HTTP
+storage, caches, data, Zed.app) before and after and stops loudly on any
+change. Zed's Dock recents (`noteNewRecentDocumentURL`) need Full Disk Access
+to inspect and go unchecked.

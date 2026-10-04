@@ -12,10 +12,14 @@ use crate::helpers::{
 use crate::isolation::{self, Snapshot};
 use crate::paths::{self, BenchPaths};
 use crate::procs::{self, LaunchedApp};
+use crate::recorder_log::{self, FirstBuild};
 use crate::stamp::{self, Stamp, StampInputs};
-use crate::stats::format_value;
+use crate::stats::{format_value, to_f64};
 use crate::tsv::{self, MISSING};
-use crate::workload::{Action, Document, Phase, STARTUP_PHASE, TRIAL_PHASE, Workload, typed_text};
+use crate::workload::{
+    Action, Document, Fixture, Language, Phase, STARTUP_PHASE, Servers, TRIAL_PHASE, Workload,
+    typed_text,
+};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -43,6 +47,12 @@ const STATE_SETTLE: Duration = Duration::from_secs(2);
 /// How often every phase re-checks that the window is frontmost and bare.
 const VISIBILITY_POLL: Duration = Duration::from_secs(1);
 const HOME_MARKER: &str = ".alpine-bench-home";
+/// Time for the palette to open, and to filter once the query is typed.
+const PALETTE_PAUSE: Duration = Duration::from_millis(400);
+/// Saving two small TSV files takes milliseconds.
+const SAVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The metric criterion 2.1's 100 ms budget applies to.
+pub const FIRST_FRAME_METRIC: &str = "highlight_first_frame_ms";
 
 pub const TRIALS_HEADER: &[&str] = &[
     "run_id",
@@ -121,12 +131,30 @@ struct Context<'a> {
     run_id: String,
     tag: String,
     run_dir: PathBuf,
-    documents: Vec<PathBuf>,
+    subjects: Vec<Subject>,
     identity: Identity,
     rust_analyzer: Option<RustAnalyzer>,
     refresh_hz: u32,
     /// The owner's real state for this app, compared around every trial.
     state_roots: Vec<PathBuf>,
+}
+
+/// What one launch opens. A language group's subject names its metrics.
+struct Subject {
+    language: Option<Language>,
+    documents: Vec<PathBuf>,
+}
+
+impl Subject {
+    fn label(&self) -> Option<&'static str> {
+        self.language.map(Language::id)
+    }
+
+    /// Prefixes the group, so a refusal names the fixture it happened on.
+    fn named(&self, text: &str) -> String {
+        self.label()
+            .map_or_else(|| text.to_owned(), |label| format!("{label}: {text}"))
+    }
 }
 
 struct Driven {
@@ -135,11 +163,14 @@ struct Driven {
     events: Vec<(String, InputEvent)>,
     frames: Vec<(String, Frame)>,
     footprint_tool: Option<u64>,
+    /// The startup build's duration from Alpine's recorder.
+    first_build_ns: Option<u64>,
 }
 
 struct TrialOutcome {
     number: u32,
     warmup: bool,
+    label: Option<&'static str>,
     pid: i32,
     driven: Driven,
     metrics: Vec<Metric>,
@@ -147,16 +178,10 @@ struct TrialOutcome {
 }
 
 pub fn run(paths: &BenchPaths, request: &RunRequest) -> Result<PathBuf, String> {
+    request.workload.check_app(request.app)?;
     let helpers = Helpers::locate(&paths.helpers_dir)?;
     preflight(paths, &helpers, request)?;
-    let rust_analyzer = if request.workload.rust_analyzer {
-        Some(paths::rust_analyzer(
-            paths,
-            request.rust_analyzer.as_deref(),
-        )?)
-    } else {
-        None
-    };
+    let rust_analyzer = rust_analyzer(paths, request)?;
     let displays = helpers.displays()?;
     let refresh_hz = displays
         .iter()
@@ -174,7 +199,7 @@ pub fn run(paths: &BenchPaths, request: &RunRequest) -> Result<PathBuf, String> 
     let run_dir = paths.results.join(&run_id);
     fs::create_dir_all(&run_dir)
         .map_err(|error| format!("create {}: {error}", run_dir.display()))?;
-    let (documents, fixture) = documents(paths, request.workload)?;
+    let (subjects, fixtures) = subjects(paths, request.workload)?;
     let context = Context {
         paths,
         helpers: &helpers,
@@ -182,19 +207,119 @@ pub fn run(paths: &BenchPaths, request: &RunRequest) -> Result<PathBuf, String> 
         run_id,
         tag,
         run_dir,
-        documents,
+        subjects,
         identity: paths::identity(),
         rust_analyzer,
         refresh_hz,
         state_roots: apps::real_state_paths(request.app, &paths.real_home, &paths.zed_app),
     };
-    write_run_table(&context, &stamp, fixture.as_ref())?;
+    write_run_table(&context, &stamp, &fixtures)?;
     let before_run = isolation::snapshot(&context.state_roots);
     run_trials(&context)?;
     // A late cfprefsd write after the last trial still fails the run.
     thread::sleep(COOLDOWN);
     real_state_unchanged(&context, &before_run, "the run")?;
     Ok(context.run_dir)
+}
+
+/// Prints what `run` would open, launch and post. It writes the fixtures but
+/// starts no app, helper or input, so it needs no permission or window.
+pub fn dry_run(paths: &BenchPaths, request: &RunRequest) -> Result<(), String> {
+    request.workload.check_app(request.app)?;
+    let rust_analyzer = rust_analyzer(paths, request)?;
+    let (subjects, fixtures) = subjects(paths, request.workload)?;
+    for line in plan(paths, request, &subjects, &fixtures, rust_analyzer.as_ref())? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The dry run's lines; `<pid>` and the `<tag>-<trial>` home stand for
+/// values that only a real trial has.
+fn plan(
+    paths: &BenchPaths,
+    request: &RunRequest,
+    subjects: &[Subject],
+    fixtures: &[FixtureFile],
+    rust_analyzer: Option<&RustAnalyzer>,
+) -> Result<Vec<String>, String> {
+    let workload = request.workload;
+    let warmup = request.warmup.unwrap_or(workload.warmup_trials);
+    let mut lines = vec![format!(
+        "dry run\t{} on {}: {} round(s) of {} launch(es), {warmup} warm-up; nothing starts",
+        workload.name,
+        request.app.name(),
+        warmup + request.trials,
+        subjects.len()
+    )];
+    for file in fixtures {
+        lines.push(format!(
+            "fixture\t{}\t{} bytes\tfnv64={}",
+            file.path.display(),
+            file.bytes,
+            file.fnv64
+        ));
+    }
+    let root = paths.home_root.join("<tag>-<trial>");
+    let (home, tmp, empty) = (root.join("home"), root.join("tmp"), root.join("empty-path"));
+    let identity = paths::identity();
+    let reference = paths.helpers_dir.join(helpers::REFERENCE);
+    for subject in subjects {
+        let spec = apps::launch_spec(&LaunchInputs {
+            app: request.app,
+            home: &home,
+            tmpdir: &tmp,
+            documents: &subject.documents,
+            identity: &identity,
+            rust_analyzer,
+            path: (workload.servers == Servers::None).then_some(empty.as_path()),
+            alpine_bundle: &paths.alpine_bundle,
+            zed_app: &paths.zed_app,
+            reference_binary: &reference,
+        })?;
+        let mut command = vec![spec.program.display().to_string()];
+        command.extend(
+            spec.args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned()),
+        );
+        let label = subject.label().unwrap_or("-");
+        lines.push(format!("launch\t{label}\t{}", command.join(" ")));
+        for (name, value) in &spec.env {
+            lines.push(format!("env\t{label}\t{name}={}", value.to_string_lossy()));
+        }
+    }
+    lines.push(format!(
+        "{STARTUP_PHASE}\tsettle {} s once the window is frontmost and uncovered",
+        workload.settle_seconds
+    ));
+    for phase in workload.phases {
+        match effective_action(request, phase) {
+            Action::SaveRecorderLog => {
+                for args in recorder_log::save_steps("<pid>") {
+                    lines.push(format!(
+                        "{}\t{}\t{}",
+                        phase.name,
+                        helpers::INPUT,
+                        args.join(" ")
+                    ));
+                }
+                lines.push(format!(
+                    "{}\twait for perf-<s>-samples.tsv in {}, then read perf-<s>-frames.tsv",
+                    phase.name,
+                    recorder_log::log_dir(&home).display()
+                ));
+            }
+            action => lines.push(format!(
+                "{}\t{action:?}, then {} s",
+                phase.name, phase.seconds
+            )),
+        }
+    }
+    if workload.servers == Servers::None {
+        lines.push("guard\ta child process of the app voids the trial".to_owned());
+    }
+    Ok(lines)
 }
 
 /// Fails loudly if the owner's real state for the app changed.
@@ -218,38 +343,52 @@ fn real_state_unchanged(
 fn run_trials(context: &Context<'_>) -> Result<(), String> {
     let request = context.request;
     let warmup = request.warmup.unwrap_or(request.workload.warmup_trials);
-    let total = warmup + request.trials;
+    let rounds = warmup + request.trials;
+    let per_round = u32::try_from(context.subjects.len()).unwrap_or(u32::MAX);
+    let total = rounds.saturating_mul(per_round);
+    let scope = if per_round > 1 {
+        format!(
+            "{rounds} rounds of {per_round} language groups ({total} trials), {warmup} warm-up round(s)"
+        )
+    } else {
+        format!("{total} trial(s), {warmup} warm-up")
+    };
     eprintln!(
-        "bench: {} on {}: {total} trial(s), {warmup} warm-up. Hands off the keyboard and mouse; \
+        "bench: {} on {}: {scope}. Hands off the keyboard and mouse; \
          a trial is refused if its window is not frontmost and uncovered.",
         request.workload.name,
         request.app.name()
     );
     thread::sleep(Duration::from_secs(3));
     let mut kept: Vec<Vec<Metric>> = Vec::new();
-    for index in 0..total {
-        let number = index + 1;
-        let warm = index < warmup;
-        match run_trial(context, number, warm) {
-            Ok(outcome) => {
-                record(context, &outcome)?;
-                eprintln!("bench: {}", outcome_line(&outcome, total));
-                if !outcome.warmup && outcome.driven.invalid.is_none() {
-                    kept.push(outcome.metrics);
+    let mut number = 0;
+    // Each round opens every group once, so drift reaches all groups alike.
+    for round in 0..rounds {
+        let warm = round < warmup;
+        for subject in &context.subjects {
+            number += 1;
+            match run_trial(context, subject, number, warm) {
+                Ok(outcome) => {
+                    record(context, &outcome)?;
+                    eprintln!("bench: {}", outcome_line(&outcome, total));
+                    if !outcome.warmup && outcome.driven.invalid.is_none() {
+                        kept.push(outcome.metrics);
+                    }
+                }
+                Err(error) => {
+                    let error = subject.named(&error);
+                    let row = trial_row(&context.run_id, number, warm, Some(&error), 0, None);
+                    tsv::append(&context.run_dir.join("trials.tsv"), TRIALS_HEADER, &[row])?;
+                    write_summary(context, &kept)?;
+                    return Err(format!(
+                        "trial {number}: {error}\nresults so far: {}",
+                        context.run_dir.display()
+                    ));
                 }
             }
-            Err(error) => {
-                let row = trial_row(&context.run_id, number, warm, Some(&error), 0, None);
-                tsv::append(&context.run_dir.join("trials.tsv"), TRIALS_HEADER, &[row])?;
-                write_summary(context, &kept)?;
-                return Err(format!(
-                    "trial {number}: {error}\nresults so far: {}",
-                    context.run_dir.display()
-                ));
+            if number < total {
+                thread::sleep(COOLDOWN);
             }
-        }
-        if number < total {
-            thread::sleep(COOLDOWN);
         }
     }
     write_summary(context, &kept)?;
@@ -295,29 +434,60 @@ fn preflight(paths: &BenchPaths, helpers: &Helpers, request: &RunRequest) -> Res
     Ok(())
 }
 
-fn documents(
+fn rust_analyzer(paths: &BenchPaths, request: &RunRequest) -> Result<Option<RustAnalyzer>, String> {
+    if request.workload.servers != Servers::RustAnalyzer {
+        return Ok(None);
+    }
+    paths::rust_analyzer(paths, request.rust_analyzer.as_deref()).map(Some)
+}
+
+/// One subject per launch in a round, and every fixture the run opens.
+fn subjects(
     paths: &BenchPaths,
     workload: &Workload,
-) -> Result<(Vec<PathBuf>, Option<FixtureFile>), String> {
+) -> Result<(Vec<Subject>, Vec<FixtureFile>), String> {
+    let fixture = |fixture, language| -> Result<(Subject, FixtureFile), String> {
+        let file = fixtures::ensure(&paths.fixtures_dir(), fixture)?;
+        let documents = vec![file.path.clone()];
+        Ok((
+            Subject {
+                language,
+                documents,
+            },
+            file,
+        ))
+    };
     match workload.document {
-        Document::Fixture(fixture) => {
-            let file = fixtures::ensure(&paths.fixtures_dir(), fixture)?;
-            Ok((vec![file.path.clone()], Some(file)))
+        Document::Fixture(file) => {
+            let (subject, file) = fixture(file, None)?;
+            Ok((vec![subject], vec![file]))
         }
         Document::RepositoryFile(relative) => {
             let file = paths.repo_root.join(relative);
             if !file.is_file() {
                 return Err(format!("{} is missing", file.display()));
             }
-            Ok((vec![paths.repo_root.clone(), file], None))
+            let documents = vec![paths.repo_root.clone(), file];
+            Ok((
+                vec![Subject {
+                    language: None,
+                    documents,
+                }],
+                Vec::new(),
+            ))
         }
+        Document::Languages(languages) => languages
+            .iter()
+            .map(|language| fixture(Fixture::Source(*language), Some(*language)))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|pairs| pairs.into_iter().unzip()),
     }
 }
 
 fn write_run_table(
     context: &Context<'_>,
     stamp: &Stamp,
-    fixture: Option<&FixtureFile>,
+    fixtures: &[FixtureFile],
 ) -> Result<(), String> {
     let request = context.request;
     let mut table = tsv::Table::new(&["key", "value"]);
@@ -332,12 +502,13 @@ fn write_run_table(
         push(key, value.clone())?;
     }
     let documents: Vec<String> = context
-        .documents
+        .subjects
         .iter()
+        .flat_map(|subject| &subject.documents)
         .map(|path| path.display().to_string())
         .collect();
     push("documents", documents.join(" "))?;
-    if let Some(file) = fixture {
+    for file in fixtures {
         let name = file.fixture.file_name();
         push(
             "fixture",
@@ -383,6 +554,13 @@ impl TrialHome {
         })
     }
 
+    /// An empty directory for PATH, so the app finds no language server.
+    fn empty_path(&self) -> Result<PathBuf, String> {
+        let dir = self.root.join("empty-path");
+        fs::create_dir(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
+        Ok(dir)
+    }
+
     /// Deletes only a directory this bench created: under the home root
     /// and still carrying the marker file.
     fn remove(self) -> Result<(), String> {
@@ -402,19 +580,33 @@ fn removable(root: &Path, home_root: &Path, marked: bool) -> bool {
     marked && root != home_root && root.starts_with(home_root) && root.parent() == Some(home_root)
 }
 
-fn run_trial(context: &Context<'_>, number: u32, warmup: bool) -> Result<TrialOutcome, String> {
-    let trial_dir = context.run_dir.join(format!("trial-{number:02}"));
+fn run_trial(
+    context: &Context<'_>,
+    subject: &Subject,
+    number: u32,
+    warmup: bool,
+) -> Result<TrialOutcome, String> {
+    let name = match subject.label() {
+        Some(label) => format!("trial-{number:02}-{label}"),
+        None => format!("trial-{number:02}"),
+    };
+    let trial_dir = context.run_dir.join(name);
     fs::create_dir_all(&trial_dir)
         .map_err(|error| format!("create {}: {error}", trial_dir.display()))?;
     let home = TrialHome::create(&context.paths.home_root, &context.tag, number)?;
+    let empty_path = match context.request.workload.servers {
+        Servers::None => Some(home.empty_path()?),
+        Servers::Discovered | Servers::RustAnalyzer => None,
+    };
     let reference = context.helpers.path(helpers::REFERENCE);
     let spec = apps::launch_spec(&LaunchInputs {
         app: context.request.app,
         home: &home.home,
         tmpdir: &home.tmp,
-        documents: &context.documents,
+        documents: &subject.documents,
         identity: &context.identity,
         rust_analyzer: context.rust_analyzer.as_ref(),
+        path: empty_path.as_deref(),
         alpine_bundle: &context.paths.alpine_bundle,
         zed_app: &context.paths.zed_app,
         reference_binary: &reference,
@@ -436,7 +628,7 @@ fn run_trial(context: &Context<'_>, number: u32, warmup: bool) -> Result<TrialOu
         .helpers
         .spawn_sampler(pid, &trial_dir.join("sampler.stderr.log"))?;
     let driven = match sampler.mark(&analysis::phase_label(STARTUP_PHASE, "start")) {
-        Ok(_) => drive(context, &mut app, &mut sampler, &trial_dir),
+        Ok(_) => drive(context, &mut app, &mut sampler, &trial_dir, &home.home),
         Err(error) if app.exited() => Err(launch_failure(
             &trial_dir,
             &format!("the app exited at launch ({error})"),
@@ -459,9 +651,19 @@ fn run_trial(context: &Context<'_>, number: u32, warmup: bool) -> Result<TrialOu
     }
     thread::sleep(STATE_SETTLE);
     real_state_unchanged(context, &before, &format!("trial {number}"))?;
-    let driven =
+    let mut driven =
         driven.map_err(|error| format!("{error} (home kept at {})", home.root.display()))?;
-    let metrics = trial_metrics(context, &data, &driven)?;
+    if context.request.workload.servers == Servers::None
+        && let Some(evidence) = analysis::child_process_evidence(&data.sets)
+    {
+        driven
+            .invalid
+            .get_or_insert(format!("{evidence}, but this workload runs with no server"));
+    }
+    if let Some(reason) = driven.invalid.take() {
+        driven.invalid = Some(subject.named(&reason));
+    }
+    let metrics = trial_metrics(context, subject, &data, &driven)?;
     if context.request.keep_homes {
         eprintln!(
             "bench: trial {number}: home kept at {}",
@@ -473,6 +675,7 @@ fn run_trial(context: &Context<'_>, number: u32, warmup: bool) -> Result<TrialOu
     Ok(TrialOutcome {
         number,
         warmup,
+        label: subject.label(),
         pid,
         driven,
         metrics,
@@ -485,6 +688,7 @@ fn drive(
     app: &mut LaunchedApp,
     sampler: &mut Sampler,
     trial_dir: &Path,
+    home: &Path,
 ) -> Result<Driven, String> {
     let helpers = context.helpers;
     let workload = context.request.workload;
@@ -498,6 +702,7 @@ fn drive(
         events: Vec::new(),
         frames: Vec::new(),
         footprint_tool: None,
+        first_build_ns: None,
     };
     let settle = Duration::from_secs(u64::from(workload.settle_seconds));
     hands_off(context, app.pid(), STARTUP_PHASE, settle, &mut driven);
@@ -513,7 +718,7 @@ fn drive(
             app.pid(),
             sampler,
             start.seq,
-            trial_dir,
+            (trial_dir, home),
             &mut driven,
         )?;
         sampler.mark(&analysis::phase_label(phase.name, "end"))?;
@@ -571,16 +776,18 @@ fn ensure_visible(helpers: &Helpers, pid: i32) -> Result<WindowInfo, String> {
     ))
 }
 
+/// `dirs` is the trial's output directory and the app's disposable HOME.
 fn run_phase(
     context: &Context<'_>,
     phase: &Phase,
     pid: i32,
     sampler: &Sampler,
     start_seq: u64,
-    trial_dir: &Path,
+    dirs: (&Path, &Path),
     driven: &mut Driven,
 ) -> Result<(), String> {
-    match effective_action(context, phase) {
+    let (trial_dir, _) = dirs;
+    match effective_action(context.request, phase) {
         Action::Idle => {
             let length = Duration::from_secs(u64::from(phase.seconds));
             hands_off(context, pid, phase.name, length, driven);
@@ -606,6 +813,7 @@ fn run_phase(
                 }
             }
         }
+        Action::SaveRecorderLog => save_recorder_log(context, phase, pid, dirs, driven)?,
         action => run_input_phase(context, phase, action, pid, trial_dir, driven)?,
     }
     Ok(())
@@ -649,13 +857,10 @@ fn hands_off(
 }
 
 /// The phase's action with the run's key spacing, when one was given.
-fn effective_action(context: &Context<'_>, phase: &Phase) -> Action {
-    context
-        .request
-        .key_interval_ms
-        .map_or(phase.action, |interval| {
-            phase.action.with_key_interval(interval)
-        })
+fn effective_action(request: &RunRequest, phase: &Phase) -> Action {
+    request.key_interval_ms.map_or(phase.action, |interval| {
+        phase.action.with_key_interval(interval)
+    })
 }
 
 fn run_input_phase(
@@ -742,6 +947,89 @@ fn run_input_phase(
     Ok(())
 }
 
+/// Runs one bench-input script to its end. False means the trial became
+/// invalid: the window lost the foreground or stopped being visible.
+fn run_step(
+    context: &Context<'_>,
+    phase: &str,
+    pid: i32,
+    args: &[String],
+    log: &Path,
+    driven: &mut Driven,
+) -> Result<bool, String> {
+    let mut input = context.helpers.spawn_input(args, log)?;
+    let mut checked = Instant::now();
+    loop {
+        match input.finished() {
+            Some(InputOutcome::Done(_)) => return Ok(true),
+            Some(InputOutcome::LostForeground(reason)) => {
+                driven.invalid.get_or_insert(format!("{phase}: {reason}"));
+                return Ok(false);
+            }
+            Some(InputOutcome::Failed(error)) => return Err(error),
+            None => {}
+        }
+        if checked.elapsed() >= VISIBILITY_POLL {
+            checked = Instant::now();
+            if !still_visible(context, pid, phase, driven) {
+                input.stop();
+                return Ok(false);
+            }
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Saves Alpine's recorder from the palette, keeps the frames file with the
+/// trial and reads the startup build from it.
+fn save_recorder_log(
+    context: &Context<'_>,
+    phase: &Phase,
+    pid: i32,
+    (trial_dir, home): (&Path, &Path),
+    driven: &mut Driven,
+) -> Result<(), String> {
+    let pid_text = pid.to_string();
+    for (index, args) in recorder_log::save_steps(&pid_text).iter().enumerate() {
+        if !still_visible(context, pid, phase.name, driven) {
+            return Ok(());
+        }
+        let log = trial_dir.join(format!("input-{}-{}.stderr.log", phase.name, index + 1));
+        if !run_step(context, phase.name, pid, args, &log, driven)? {
+            return Ok(());
+        }
+        thread::sleep(PALETTE_PAUSE);
+    }
+    let dir = recorder_log::log_dir(home);
+    let started = Instant::now();
+    let frames = loop {
+        if let Some(saved) = recorder_log::saved_frames(&dir)? {
+            break saved;
+        }
+        if started.elapsed() >= SAVE_TIMEOUT {
+            return Err(format!(
+                "the palette saved no performance log in {} within {} s; see the input logs",
+                dir.display(),
+                SAVE_TIMEOUT.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    fs::copy(&frames, trial_dir.join("recorder-frames.tsv"))
+        .map_err(|error| format!("copy {}: {error}", frames.display()))?;
+    let text = fs::read_to_string(&frames)
+        .map_err(|error| format!("read {}: {error}", frames.display()))?;
+    match recorder_log::first_build(&recorder_log::parse_frames(&text)?) {
+        FirstBuild::Startup { build_ns } => driven.first_build_ns = Some(build_ns),
+        FirstBuild::Refused(reason) => {
+            driven
+                .invalid
+                .get_or_insert(format!("{}: {reason}", phase.name));
+        }
+    }
+    Ok(())
+}
+
 /// Arguments for `bench-input`; scrolls aim at the window's center.
 fn input_args(action: Action, pid: i32, window: &WindowInfo) -> Vec<String> {
     let pid = pid.to_string();
@@ -800,13 +1088,14 @@ fn input_args(action: Action, pid: i32, window: &WindowInfo) -> Vec<String> {
                 interval_ms.to_string(),
             ]
         }
-        Action::Idle | Action::UntilQuiet { .. } => Vec::new(),
+        Action::Idle | Action::UntilQuiet { .. } | Action::SaveRecorderLog => Vec::new(),
     };
     args
 }
 
 fn trial_metrics(
     context: &Context<'_>,
+    subject: &Subject,
     data: &SamplerData,
     driven: &Driven,
 ) -> Result<Vec<Metric>, String> {
@@ -850,7 +1139,7 @@ fn trial_metrics(
             .filter(|(name, _)| name == phase.name)
             .map(|(_, frame)| *frame)
             .collect();
-        let action = effective_action(context, phase);
+        let action = effective_action(context.request, phase);
         match action {
             Action::Type { .. } | Action::Keys { .. } => {
                 let spacing_ms = action.key_interval_ms().unwrap_or_default();
@@ -873,6 +1162,17 @@ fn trial_metrics(
                     &intervals,
                     context.refresh_hz,
                 ));
+            }
+            Action::SaveRecorderLog => {
+                if let Some(ns) = driven.first_build_ns {
+                    let group = subject.label().unwrap_or(phase.name);
+                    metrics.push(Metric::new(
+                        group,
+                        FIRST_FRAME_METRIC,
+                        to_f64(ns) / 1e6,
+                        "ms",
+                    ));
+                }
             }
             Action::Idle | Action::UntilQuiet { .. } => {}
         }
@@ -1096,7 +1396,10 @@ fn outcome_line(outcome: &TrialOutcome, total: u32) -> String {
         .iter()
         .rev()
         .find(|metric| metric.name == "cpu_time");
-    let mut parts = vec![format!("trial {}/{total}", outcome.number)];
+    let mut parts = vec![match outcome.label {
+        Some(label) => format!("trial {}/{total} ({label})", outcome.number),
+        None => format!("trial {}/{total}", outcome.number),
+    }];
     if outcome.warmup {
         parts.push("warm-up".to_owned());
     }
@@ -1106,6 +1409,13 @@ fn outcome_line(outcome: &TrialOutcome, total: u32) -> String {
     });
     if let Some(launch) = find(TRIAL_PHASE, "launch_to_window") {
         parts.push(format!("window after {launch:.0} ms"));
+    }
+    if let Some(metric) = outcome
+        .metrics
+        .iter()
+        .find(|metric| metric.name == FIRST_FRAME_METRIC)
+    {
+        parts.push(format!("first frame built in {:.2} ms", metric.value));
     }
     if let Some(metric) = last_phase {
         let phase = metric.phase.as_str();
@@ -1122,10 +1432,97 @@ fn outcome_line(outcome: &TrialOutcome, total: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_args, removable, trial_row};
+    use super::{RunRequest, Subject, input_args, plan, removable, trial_row};
+    use crate::apps::{App, DOCK_PATH};
     use crate::helpers::{Appeared, WindowInfo};
-    use crate::workload::Action;
-    use std::path::Path;
+    use crate::paths::BenchPaths;
+    use crate::workload::{Action, Language, find};
+    use std::path::{Path, PathBuf};
+
+    fn bench_paths() -> BenchPaths {
+        BenchPaths {
+            repo_root: PathBuf::from("/repo"),
+            helpers_dir: PathBuf::from("/repo/bench/target/helpers"),
+            results: PathBuf::from("/repo/bench/results"),
+            baseline: PathBuf::from("/repo/bench/baseline.tsv"),
+            home_root: PathBuf::from("/tmp/alpine-bench"),
+            real_home: PathBuf::from("/Users/me"),
+            alpine_bundle: PathBuf::from("/Users/me/Applications/Alpine Editor.app"),
+            zed_app: PathBuf::from("/Applications/Zed.app"),
+        }
+    }
+
+    fn request(workload: &str) -> Result<RunRequest, String> {
+        Ok(RunRequest {
+            workload: find(workload)?,
+            app: App::Alpine,
+            trials: 10,
+            warmup: None,
+            keep_homes: false,
+            rust_analyzer: None,
+            key_interval_ms: None,
+        })
+    }
+
+    #[test]
+    fn the_highlight_dry_run_shows_an_empty_path_and_the_palette_keys() -> Result<(), String> {
+        let subjects = [Language::Cpp, Language::Java].map(|language| Subject {
+            language: Some(language),
+            documents: vec![PathBuf::from(format!(
+                "/f/highlight-20000.{}",
+                language.id()
+            ))],
+        });
+        let lines = plan(&bench_paths(), &request("highlight")?, &subjects, &[], None)?;
+        let has = |text: &str| lines.iter().any(|line| line == text);
+        assert!(
+            lines[0].contains("11 round(s) of 2 launch(es), 1 warm-up"),
+            "{lines:?}"
+        );
+        assert!(has(
+            "env\tcpp\tPATH=/tmp/alpine-bench/<tag>-<trial>/empty-path"
+        ));
+        assert!(has(
+            "env\tjava\tPATH=/tmp/alpine-bench/<tag>-<trial>/empty-path"
+        ));
+        assert!(lines.iter().any(|line| line.starts_with("launch\tjava\t")
+            && line.ends_with("alpine-editor /f/highlight-20000.java")));
+        assert!(has(
+            "save\tbench-input\tchord --pid <pid> --keycode 35 --modifiers command,shift"
+        ));
+        assert!(has(
+            "save\tbench-input\ttype --pid <pid> --text save performance log --interval-ms 60"
+        ));
+        assert!(has(
+            "save\tbench-input\tkeys --pid <pid> --keycode 36 --count 1"
+        ));
+        assert!(has("guard\ta child process of the app voids the trial"));
+        let idle = Subject {
+            language: None,
+            documents: vec![PathBuf::from("/f/idle-200.txt")],
+        };
+        let lines = plan(&bench_paths(), &request("idle")?, &[idle], &[], None)?;
+        assert!(
+            lines.contains(&format!("env\t-\tPATH={DOCK_PATH}")),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|line| line.starts_with("guard")));
+        Ok(())
+    }
+
+    #[test]
+    fn a_language_subject_names_its_group() {
+        let java = Subject {
+            language: Some(Language::Java),
+            documents: Vec::new(),
+        };
+        assert_eq!(java.named("refused"), "java: refused");
+        let plain = Subject {
+            language: None,
+            documents: Vec::new(),
+        };
+        assert_eq!(plain.named("refused"), "refused");
+    }
 
     fn window() -> WindowInfo {
         WindowInfo {
