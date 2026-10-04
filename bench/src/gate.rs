@@ -7,7 +7,7 @@ use crate::procs;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Why a trial is void when the owner touched the keyboard or mouse.
 pub const OWNER_INPUT: &str = "owner input";
@@ -21,6 +21,7 @@ const PMSET: &str = "/usr/bin/pmset";
 const CAFFEINATE: &str = "/usr/bin/caffeinate";
 /// A `caffeinate` that rejects its arguments exits within milliseconds.
 const AWAKE_CHECK: Duration = Duration::from_millis(200);
+const AWAKE_POLL: Duration = Duration::from_millis(10);
 
 /// What `--wait-idle` asks for, before every trial and while it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +291,11 @@ impl KeepAwake {
     }
 
     fn spawn(program: &Path, args: &[String]) -> Result<Self, String> {
+        Self::spawn_within(program, args, AWAKE_CHECK)
+    }
+
+    /// Spawns, and refuses a process that exits within `check`.
+    fn spawn_within(program: &Path, args: &[String], check: Duration) -> Result<Self, String> {
         let mut child = Command::new(program)
             .args(args)
             .stdin(Stdio::null())
@@ -297,16 +303,21 @@ impl KeepAwake {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| format!("{}: {error}", program.display()))?;
-        thread::sleep(AWAKE_CHECK);
-        match child.try_wait() {
-            Ok(None) => Ok(Self { child }),
-            Ok(Some(status)) => Err(format!(
-                "{} exited at once ({status}), so the display may sleep",
-                program.display()
-            )),
-            Err(error) => {
-                let _ = child.kill();
-                Err(format!("{}: {error}", program.display()))
+        let deadline = Instant::now() + check;
+        loop {
+            match child.try_wait() {
+                Ok(None) if Instant::now() < deadline => thread::sleep(AWAKE_POLL),
+                Ok(None) => return Ok(Self { child }),
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "{} exited at once ({status}), so the display may sleep",
+                        program.display()
+                    ));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    return Err(format!("{}: {error}", program.display()));
+                }
             }
         }
     }
@@ -338,7 +349,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     const TEN: Gate = Gate {
         minutes: 10,
@@ -763,11 +774,32 @@ mod tests {
         Ok(())
     }
 
+    /// The production check watches for its documented 200 ms. Load can only
+    /// make it take longer, so a lower bound cannot flake.
+    #[test]
+    fn the_production_check_watches_a_live_process_for_its_whole_window() -> Result<(), String> {
+        let started = Instant::now();
+        let sleeper = KeepAwake::spawn(Path::new("/bin/sleep"), &["600".to_owned()])?;
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(200), "{took:?}");
+        drop(sleeper);
+        Ok(())
+    }
+
+    /// The bound is generous and the check returns the moment the process
+    /// exits, so a starved machine cannot make this pass or fail by timing.
     #[test]
     fn a_caffeinate_that_exits_at_once_is_an_error() -> Result<(), String> {
-        let refused = KeepAwake::spawn(Path::new("/usr/bin/false"), &[]).err();
-        let message = refused.ok_or("a process that exits was accepted")?;
+        let refused =
+            KeepAwake::spawn_within(Path::new("/usr/bin/false"), &[], Duration::from_mins(1));
+        let message = refused.err().ok_or("a process that exits was accepted")?;
         assert!(message.contains("exited at once"), "{message}");
+        // An exit later than the production window is still seen inside a
+        // wider one, and its status is reported.
+        let slow = ["-c".to_owned(), "sleep 0.5; exit 3".to_owned()];
+        let late = KeepAwake::spawn_within(Path::new("/bin/sh"), &slow, Duration::from_mins(1));
+        let message = late.err().ok_or("a late exit was accepted")?;
+        assert!(message.contains("exit status: 3"), "{message}");
         Ok(())
     }
 
