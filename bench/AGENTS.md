@@ -4,8 +4,6 @@ parent: ../AGENTS.md
 updated: 2026-10-04
 gate: "in bench/: cargo build, test, clippy --all-targets -- -D warnings, fmt --check; then helpers/build.sh"
 known_defects:
-  - "Zed typing unmeasured: its first-launch trust dialog probably took the keys; trust now seeded, unverified"
-  - "highlight: a launch event replaces the pending startup frame before it draws, so no event-0 row exists (run 20261004T045057Z)"
   - "unverified: the reference editor's caret blink suppression"
 ---
 
@@ -87,6 +85,8 @@ reads them back and refuses another pid's window or a missing export.
   energy, processes alive at the end.
 - Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
   each timed to the first changed frame of the text band, else late or missed.
+  A typing or caret trial posting nothing, or leaving under
+  `min(keys, max(10, keys/2))` distinct band states, is invalid.
 - Frame interval while scrolling: display-time gaps between changed frames;
   `frame_late_pct` counts gaps over 1.5 refresh periods. A scroll posting
   nothing, or leaving under `min(events, max(20, events/50))` distinct window
