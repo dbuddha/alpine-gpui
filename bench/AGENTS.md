@@ -4,9 +4,9 @@ parent: ../AGENTS.md
 updated: 2026-10-03
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
-  - "PID-targeted scroll moved neither Alpine nor the reference editor on 2026-10-03"
-  - "Zed's and the reference editor's windows miss the requested 960x572 pt (1486x933, 944x562); Zed timed 0 to 3 of 100 keys"
-  - "unverified: the reference editor's caret blink suppression and highlight's palette keys"
+  - "Zed timed 0 to 3 of 100 keys in a 1486x933 window on 2026-10-03; unchecked at 960x572"
+  - "highlight: the palette chord opened nothing in the first live trial (run 20261004T033941Z); the query went into the document"
+  - "unverified: the reference editor's caret blink suppression"
 ---
 
 # Bench

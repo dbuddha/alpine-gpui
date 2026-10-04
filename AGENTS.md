@@ -38,8 +38,8 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M1.2b input follow-up in this PR; owner session next: one scroll trial each on appkit, alpine and zed, then Zed typing"
-  - "M1.4a highlight row (#651): one live trial at the next owner session"
+  - "M1.2b input follow-up in this PR: scroll lands in all three apps; Zed typing re-check next"
+  - "M1.4a highlight row (#651): the live palette chord opened nothing; fix, then one live trial"
   - "M1.4 ten-trial baseline against Zed and AppKit, budgets, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
