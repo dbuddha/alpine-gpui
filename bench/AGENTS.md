@@ -12,8 +12,8 @@ known_defects:
 # Bench
 
 `bench/` measures Alpine Editor, Zed and an AppKit reference editor the same
-way, from outside: a std-only Cargo workspace outside the root one, plus
-Swift helpers built with `xcrun swiftc`.
+way: a std-only Cargo workspace outside the root one, plus Swift helpers
+(`xcrun swiftc`).
 
 ## Commands
 
@@ -35,8 +35,8 @@ input, starting nothing. Alpine is the installed
 
 1. Quit Zed; `bench zed-isolation --allow-window --open-fixture` must report
    no change.
-2. Grant Accessibility and Screen Recording to the terminal running `bench`;
-   `bench permissions` shows both; helpers never prompt.
+2. Grant the terminal running `bench` Accessibility and Screen Recording
+   (`bench permissions` checks); helpers never prompt.
 3. Stay hands-off from each run's `Hands off` line until its directory
    prints.
 
@@ -46,17 +46,20 @@ input, starting nothing. Alpine is the installed
   refuses anything else, needs ten valid measured trials, skips rows with
   fewer values and counts a child absent from a trial as zero bytes.
 - Every workload runs one untimed warm-up, then fresh processes with a
-  disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
-  Dock's PATH. Quit the measured app first, or the bench refuses.
+  disposable HOME under `/tmp/alpine-bench` and the Dock's PATH. Quit the
+  measured app first, or the bench refuses.
 - `highlight` (criterion 2.1) is an Alpine-only budget row, not a comparison:
   each round opens a 20,000-line file per language group with an empty PATH
   directory, and a child process voids the trial. `--trials` counts per group;
   other rows pool them.
 - From before measuring, every second, the app must be frontmost and
   uncovered by other apps' visible windows at any layer but the pointer's; a
-  failure stops the run before measuring and invalidates the trial after.
-- `--wait-idle MIN`: before each trial wait for MIN minutes without keyboard or
-  mouse input on AC power; owner input voids a trial; the display stays awake.
+  failure stops the run before measuring (except under `--wait-idle`) and
+  invalidates the trial after.
+- `--wait-idle MIN`: each trial waits for MIN minutes without keyboard or mouse
+  input, on AC power, screen unlocked; owner input or a lock voids a trial,
+  even before measuring (not replaced: pass spare `--trials`); the display
+  stays awake once the gate first opens.
 - Report 95% Student t intervals of per-trial values.
 
 ## Permissions
@@ -76,11 +79,11 @@ reads them back and refuses another pid's window or a missing export.
 
 ## Metrics
 
-- Memory: phys_footprint of the app and its tree at 1 Hz, p50, p95 and max
-  per phase (below 20 samples, p95 is the max), and the largest per child
-  name. `footprint_tool_end` cross-checks Apple's `footprint`.
+- Memory: phys_footprint of the app and its tree at 1 Hz, p50, p95, max per
+  phase, and the largest per child name. `footprint_tool_end` cross-checks
+  Apple's `footprint`.
 - CPU, wakeups and energy: deltas between phase boundary samples; startup
-  counts from process start. CPU and wakeups include reaped children;
+  from process start. CPU and wakeups include reaped children;
   energy, processes alive at the end.
 - Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
   each timed to the first changed frame of the text band, else late or missed.
@@ -99,15 +102,14 @@ reads them back and refuses another pid's window or a missing export.
 Matched: fixture bytes (outside any git checkout), the requested window frame
 (960x572 pt, read after the last phase; over 1 pt off invalidates), Menlo 15 pt
 on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
-`CARGO_TARGET_DIR` under `bench/target`, and the capture path. Not matched:
+`CARGO_TARGET_DIR`, and the capture path. Not matched:
 
 - Zed runs non-default settings: no updates, telemetry, AI, sign-in server,
-  completion popups or git decorations; trusted worktrees; `cursor_blink` off;
-  Menlo.
+  completion popups or git decorations; trusted worktrees; `cursor_blink` off.
 - A fresh Zed profile runs database migrations at every launch.
 - `launch_to_window` is the first window, loaded or not; the reference
   editor reads its file after showing it.
-- Chrome differs: tab, status and title bars.
+- Chrome differs: tab, status, title bars.
 - `open-repo`: Zed gets the folder and the file, the others the file.
 - For every app, latency ends at ScreenCaptureKit's display time, without
   capture delivery (`frames.tsv` keeps arrival times), and PID-targeted input
