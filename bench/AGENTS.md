@@ -35,7 +35,7 @@ input, starting nothing. Alpine is the installed
 1. Quit Zed, then run `bench zed-isolation --allow-window --open-fixture`,
    which must report no change.
 2. Grant Accessibility and Screen Recording to the terminal running `bench`;
-   `bench permissions` shows both, and helpers never prompt.
+   `bench permissions` shows both; helpers never prompt.
 3. Stay hands-off from each run's `Hands off` line until its directory
    prints.
 
@@ -43,7 +43,7 @@ input, starting nothing. Alpine is the installed
 
 - Quiet machine, AC power, Low Power Mode off, clean trees. `bench baseline`
   refuses anything else and needs ten valid measured trials; it skips rows
-  with fewer values, and a child absent from a trial counts as zero bytes.
+  with fewer values; a child absent from a trial counts as zero bytes.
 - Every workload runs one untimed warm-up, then fresh processes, each with a
   disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
   Dock's PATH. Quit the measured app first, or the bench refuses.
@@ -82,10 +82,11 @@ export.
   energy counts processes alive at the end.
 - Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
   each timed to the first changed frame of the text band, else late or missed
-  (band and rules in `analysis.rs`).
+  (rules in `analysis.rs`).
 - Frame interval while scrolling: display-time gaps between changed frames;
-  `frame_late_pct` counts gaps over 1.5 refresh periods. A scroll leaving
-  under `max(20, events/50)` distinct window states is invalid.
+  `frame_late_pct` counts gaps over 1.5 refresh periods. A scroll posting
+  nothing, or leaving under `min(events, max(20, events/50))` distinct window
+  states, is invalid.
 - `highlight_first_frame_ms` (the 100 ms budget): `build_end_ns` minus
   `build_begin_ns` on the first row of Alpine's `perf-<s>-frames.tsv` with
   both; it must be the cold startup build (event 0), else the trial is refused.
