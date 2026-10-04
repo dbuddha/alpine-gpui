@@ -4,7 +4,7 @@ parent: ../AGENTS.md
 updated: 2026-10-03
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
-  - "Zed shows none of 100 typed keys in the band, at 960x572 too (run 20261004T044624Z); cause open"
+  - "Zed typing unmeasured: its first-launch trust dialog probably took the keys; trust now seeded, unverified"
   - "highlight: a launch event replaces the pending startup frame before it draws, so no event-0 row exists (run 20261004T045057Z)"
   - "unverified: the reference editor's caret blink suppression"
 ---
@@ -101,7 +101,8 @@ on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
 `CARGO_TARGET_DIR` under `bench/target`, and the capture path. Not matched:
 
 - Zed runs non-default settings: no updates, telemetry, AI, sign-in server,
-  completion popups or git decorations; `cursor_blink` off; Menlo.
+  completion popups or git decorations; trusted worktrees; `cursor_blink` off;
+  Menlo.
 - A fresh Zed profile runs its database migrations at every launch.
 - `launch_to_window` is the first window, loaded or not; the reference
   editor reads its file only after showing it.
