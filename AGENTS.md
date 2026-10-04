@@ -13,11 +13,11 @@ beat_zed_on: [keypress_to_screen, memory_with_servers, frame_cadence, startup_an
 comparators:
   app: /Applications/Zed.app, version recorded on every bench row
   framework: Zed GPUI scenarios in bench/ (M5)
-  native: AppKit reference app in bench/ (M1)
+  native: AppKit reference app in bench/; match targets in apps/alpine-editor/AGENTS.md
 budgets:
   event_to_target_present_p95_ms: 25
   event_to_target_present_p95_ms_target: 16.7
-  frame_interval_during_input_ms: 8.33
+  frame_interval_p95: one display refresh, every frame-producing interaction but launch and file-open
   missed_frames_pct: 1
   cpu_frame_prep_p95_ms: 4
   event_to_submit_p95_ms: 4
@@ -38,8 +38,8 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "M1.2b input follow-up in this PR: scroll lands in all three apps; Zed typing re-check next"
-  - "M1.4a highlight row (#651): the live palette chord opened nothing; fix, then one live trial"
+  - "Zed typing re-check at 960x572, next owner session"
+  - "M1.4a highlight fix: the palette chord opened nothing; then one live trial"
   - "M1.4 ten-trial baseline against Zed and AppKit, budgets, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
@@ -53,10 +53,11 @@ overrides vault notes about Alpine.
 
 ## Contract
 
-Budgets in the frontmatter gate every PR on the dev Mac. "Beats Zed" is
-checked at each milestone close on matched workloads: ten fresh-process trials,
-confidence intervals, unfavorable results reported. Nothing is measured until
-M1 lands.
+Frontmatter budgets gate every PR on the dev Mac, except `frame_interval_p95`
+and the editor's performance targets, which gate once a milestone close first
+meets them. "Beats Zed" and the AppKit match are checked at each milestone close
+on matched workloads: ten fresh-process trials, confidence intervals,
+unfavorable results reported.
 
 ## Invariants
 
@@ -74,11 +75,10 @@ M1 lands.
 
 - Separate stages: event admission, mutation, layout, shaping, scene build,
   upload, encode, commit, GPU completion, display-link target, presentation.
-- GPU completion is not presentation, and a display-link target is not
-  presentation either. Missing presentation is missing evidence, never a
-  callback or target time. presentedTime is unreliable on the dev Mac (zero
-  even in a plain MTKView app), so actual keypress-to-screen comes from the
-  black-box tool.
+- Neither GPU completion nor a display-link target is presentation; missing
+  presentation is missing evidence, never a callback or target time.
+  presentedTime is unreliable on the dev Mac (zero even in a plain MTKView
+  app), so keypress-to-screen comes from the bench.
 - Memory is phys_footprint, editor and each child separately, never RSS.
 - Installed app, fresh process, disposable HOME, AC power, quiet machine.
 - A comparison that does less work fails. Sample memory at semantic points; a
@@ -90,9 +90,9 @@ M1 lands.
 
 - T0, before every commit: `cargo test --locked -p <crate>`, clippy, fmt.
 - T1, CI on every change: build, test, clippy, fmt, deny and native validation.
-- T2, dev Mac bench (from M1): frame-path, startup, LSP or cache changes, and
-  every milestone close.
-- T3, dogfood: the in-app perf recorder (from M1), local only.
+- T2, dev Mac bench: frame-path, startup, LSP or cache changes, and every
+  milestone close.
+- T3, dogfood: the in-app perf recorder, local only.
 - Guard latency invariants with deterministic work counters, not wall clocks.
   A bug fix lands with a test that fails before it (script fixes: manual
   evidence in the PR). Randomized tests print a

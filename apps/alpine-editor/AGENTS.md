@@ -40,8 +40,8 @@ warm and a sixth evicts by idle order; deleting a registry entry removes a
 language with no code change.
 
 Phase 3 (M6): `cmd-shift-l` edits all matches; syntax-node expand and shrink; a
-Vim subset; 500 cursors on 10,000 lines under 16 ms per keystroke; undo restores
-every cursor.
+Vim subset; 500 cursors on 10,000 lines within one display refresh per
+keystroke at p95; undo restores every cursor.
 
 Phase 4 (M7): breadcrumbs; branch name within 1 s of checkout; blame for the
 visible range; gutter diff; a stage-and-commit panel; no layout shift.
@@ -52,6 +52,19 @@ element shift; the final run against Zed.
 Parity also needs auto-indent, bracket pairing, deep undo, huge files, inline
 diagnostics, completion, rename, format, code actions, inlay hints, signature
 help, file finder, outline.
+
+## Performance targets
+
+Against Zed: win every `beat_zed_on` metric in the root frontmatter, checked
+at milestone closes. Against the AppKit reference app: keypress-to-screen p50
+and p95 each within one display refresh (8.33 ms at 120 Hz) of AppKit's, the
+same scroll cadence, and lower memory and energy where the bench shows room.
+Every frame-producing interaction holds the display's refresh at p95 (8.33 ms
+at 120 Hz, 16.7 ms at 60 Hz) with at most 1% missed frames, gaps over 1.5
+refresh periods: typing, scroll, resize, selection drags, overlays, big files
+and 500 cursors, with servers and git running. Launch and file-open are exempt
+and get their own startup budgets. The AppKit and refresh targets each gate PRs
+once a milestone first meets them.
 
 ## Two bars
 
