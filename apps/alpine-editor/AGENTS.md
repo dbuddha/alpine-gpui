@@ -60,8 +60,8 @@ at milestone closes. Against the AppKit reference app: keypress-to-screen p50
 and p95 each within one display refresh (8.33 ms at 120 Hz) of AppKit's, the
 same scroll cadence, and lower memory and energy where the bench shows room.
 Every frame-producing interaction holds the display's refresh at p95 (8.33 ms
-at 120 Hz, 16.7 ms at 60 Hz) with at most 1% missed frames, gaps over 1.5
-refresh periods: typing, scroll, resize, selection drags, overlays, big files
+at 120 Hz, 16.7 ms at 60 Hz) with at most 1% missed frames (gaps over 1.5
+refresh periods): typing, scroll, resize, selection drags, overlays, big files
 and 500 cursors, with servers and git running. Launch and file-open are exempt
 and get their own startup budgets. The AppKit and refresh targets each gate PRs
 once a milestone first meets them.
