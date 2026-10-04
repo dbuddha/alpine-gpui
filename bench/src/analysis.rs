@@ -447,9 +447,9 @@ pub fn scroll_metrics(
     metrics
 }
 
-/// The span a scroll's frames are judged over, in mach ticks: from its first
-/// posted event to 100 ms after its last. Frames outside it are not its own.
-pub fn scroll_span(events: &[InputEvent], timebase: Timebase) -> Option<(u64, u64)> {
+/// The span an input phase is judged over, in mach ticks: its first posted
+/// event to 100 ms after its last. Frames outside it are not its own.
+pub fn input_span(events: &[InputEvent], timebase: Timebase) -> Option<(u64, u64)> {
     let (first, last) = (events.first()?, events.last()?);
     Some((first.mach, last.mach + timebase.ticks(100_000_000)))
 }
@@ -467,7 +467,7 @@ pub fn scroll_refusal(
     frames: &[Frame],
     timebase: Timebase,
 ) -> Option<String> {
-    let Some(span) = scroll_span(events, timebase) else {
+    let Some(span) = input_span(events, timebase) else {
         return Some("the helper posted no scroll events; the scroll did not land".to_owned());
     };
     let distinct = distinct_frames(frames, span.0, span.1);
@@ -476,6 +476,30 @@ pub fn scroll_refusal(
         format!(
             "{} scroll events left the window in {distinct} distinct states, \
              fewer than the {needed} a working scroll leaves; the scroll did not land",
+            events.len()
+        )
+    })
+}
+
+/// The fewest distinct band states `keys` presses may leave: half, at least 10,
+/// never more than the keys. A late key still changes the band, so slow passes.
+pub fn min_key_states(keys: usize) -> usize {
+    (keys / 2).max(10).min(keys)
+}
+
+/// Why typing or a caret run did not land: it posted no keys, or its span shows
+/// too few distinct band states.
+pub fn key_refusal(events: &[InputEvent], frames: &[Frame], timebase: Timebase) -> Option<String> {
+    let Some(span) = input_span(events, timebase) else {
+        return Some("the helper posted no keys; the keys did not land".to_owned());
+    };
+    let distinct = distinct_frames(frames, span.0, span.1);
+    let needed = min_key_states(events.len());
+    let plural = if distinct == 1 { "" } else { "s" };
+    (distinct < needed).then(|| {
+        format!(
+            "{} keys left the band in {distinct} distinct state{plural}, \
+             fewer than the {needed} required",
             events.len()
         )
     })
@@ -763,14 +787,15 @@ pub fn summarize_trials(trials: &[Vec<Metric>]) -> Vec<SummaryRow> {
 mod tests {
     use super::{
         KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, child_names,
-        child_process_evidence, cpu_points, distinct_frames, frame_intervals, interval_metrics,
-        key_latencies, min_scroll_states, phase_label, phase_metrics, phase_windows, quiet_since,
-        reaped_child_cpu_ns, scroll_metrics, scroll_refusal, scroll_span, settle_frame, summarize,
-        summarize_trials, trial_metrics, visibility,
+        child_process_evidence, cpu_points, distinct_frames, frame_intervals, input_span,
+        interval_metrics, key_latencies, key_refusal, min_key_states, min_scroll_states,
+        phase_label, phase_metrics, phase_windows, quiet_since, reaped_child_cpu_ns,
+        scroll_metrics, scroll_refusal, settle_frame, summarize, summarize_trials, trial_metrics,
+        visibility,
     };
     use crate::helpers::{
         Appeared, Frame, InputEvent, Mark, ProcRow, SampleSet, SetKind, Timebase, WindowInfo,
-        WindowList,
+        WindowList, parse_frame, parse_input_events,
     };
 
     /// One tick per nanosecond keeps the arithmetic readable.
@@ -1211,10 +1236,10 @@ mod tests {
     }
 
     #[test]
-    fn the_scroll_span_runs_from_the_first_event_to_100_ms_after_the_last() {
+    fn the_input_span_runs_from_the_first_event_to_100_ms_after_the_last() {
         let events = scroll_events(3, 5 * MS, 8 * MS);
         assert_eq!(
-            scroll_span(&events, UNIT),
+            input_span(&events, UNIT),
             Some((5 * MS, 21 * MS + 100 * MS))
         );
         // The dev Mac's 24 MHz timebase: 100 ms is 2,400,000 ticks.
@@ -1223,10 +1248,10 @@ mod tests {
             denom: 3,
         };
         assert_eq!(
-            scroll_span(&events, mac),
+            input_span(&events, mac),
             Some((5 * MS, 21 * MS + 2_400_000))
         );
-        assert_eq!(scroll_span(&[], UNIT), None);
+        assert_eq!(input_span(&[], UNIT), None);
     }
 
     #[test]
@@ -1256,7 +1281,7 @@ mod tests {
     #[test]
     fn only_frames_inside_the_scroll_span_count() {
         let events = the_scroll_workload();
-        let (first, last) = scroll_span(&events, UNIT).unwrap_or_default();
+        let (first, last) = input_span(&events, UNIT).unwrap_or_default();
         // Two states during the scroll, and many before and after it.
         let during = frames_between(first, last, 8 * MS, |time| (time / (8 * MS)) % 2);
         let before = frames_between(0, first - MS, 5 * MS, |time| 10_000 + time / MS);
@@ -1280,7 +1305,7 @@ mod tests {
     #[test]
     fn the_refusal_and_the_metric_count_the_same_states() {
         let events = the_scroll_workload();
-        let (first, last) = scroll_span(&events, UNIT).unwrap_or_default();
+        let (first, last) = input_span(&events, UNIT).unwrap_or_default();
         let during = frames_between(first, last, 8 * MS, |time| (time / (8 * MS)) % 3);
         let after = frames_between(last + MS, last + 400 * MS, 5 * MS, |time| {
             20_000 + time / MS
@@ -1322,6 +1347,208 @@ mod tests {
         let tiny = |count: u64| frames_between(10 * MS, 20 * MS, MS, |t| (t / MS) % count);
         assert_eq!(scroll_refusal(&few, &tiny(5), UNIT), None);
         assert!(scroll_refusal(&few, &tiny(4), UNIT).is_some());
+    }
+
+    /// `count` key presses 250 ms apart, the first at t = 1 s.
+    fn key_run(count: u64) -> Vec<InputEvent> {
+        (0..count)
+            .map(|index| key(index + 1, 1_000 * MS + index * 250 * MS))
+            .collect()
+    }
+
+    /// How many of the typing workload's keys an app has answered by `time`
+    /// when it answers each `delay` ticks after the press.
+    fn keys_answered(time: u64, delay: u64) -> u64 {
+        time.checked_sub(1_000 * MS + delay)
+            .map_or(0, |since| (since / (250 * MS) + 1).min(100))
+    }
+
+    #[test]
+    fn the_key_minimum_is_half_the_keys_with_a_floor() {
+        assert_eq!(min_key_states(100), 50);
+        assert_eq!(min_key_states(101), 50);
+        assert_eq!(min_key_states(1_000), 500);
+        assert_eq!(min_key_states(22), 11);
+        assert_eq!(min_key_states(21), 10);
+        assert_eq!(min_key_states(20), 10);
+        // The floor never asks for more states than there were keys.
+        assert_eq!(min_key_states(10), 10);
+        assert_eq!(min_key_states(9), 9);
+        assert_eq!(min_key_states(1), 1);
+        assert_eq!(min_key_states(0), 0);
+        let keys = key_run(100);
+        let states = |count: u64| {
+            frames_between(1_000 * MS, 30_000 * MS, 50 * MS, |t| {
+                (t / (50 * MS)) % count
+            })
+        };
+        assert_eq!(key_refusal(&keys, &states(50), UNIT), None);
+        let reason = key_refusal(&keys, &states(49), UNIT).unwrap_or_default();
+        assert_eq!(
+            reason,
+            "100 keys left the band in 49 distinct states, fewer than the 50 required"
+        );
+        // Ten keys can show ten states: ten pass and nine do not.
+        let few = key_run(10);
+        let tiny = |count: u64| {
+            frames_between(1_000 * MS, 3_300 * MS, 25 * MS, |t| (t / (25 * MS)) % count)
+        };
+        assert_eq!(key_refusal(&few, &tiny(10), UNIT), None);
+        assert!(key_refusal(&few, &tiny(9), UNIT).is_some());
+    }
+
+    #[test]
+    fn keys_that_left_the_band_unchanged_are_refused_with_their_counts() {
+        // The band never moved, so its one state was the whole span.
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |_| 7);
+        let reason = key_refusal(&key_run(100), &frames, UNIT).unwrap_or_default();
+        assert_eq!(
+            reason,
+            "100 keys left the band in 1 distinct state, fewer than the 50 required"
+        );
+    }
+
+    #[test]
+    fn a_late_change_after_the_span_is_not_the_keys() {
+        // One change 1.03 s after the last key: two states in the capture, one
+        // in the span.
+        let last_key = 1_000 * MS + 99 * 250 * MS;
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |time| {
+            u64::from(time > last_key + 1_030 * MS)
+        });
+        assert_eq!(distinct_frames(&frames, 0, u64::MAX), 2);
+        let reason = key_refusal(&key_run(100), &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("in 1 distinct state,"), "{reason}");
+    }
+
+    #[test]
+    fn a_blinking_caret_alone_is_not_typing() {
+        // Two states switching twice a second: dozens of changes, but typing
+        // adds a new state per key, so only states count.
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |t| (t / (500 * MS)) % 2);
+        let keys = key_run(100);
+        let (first, last) = input_span(&keys, UNIT).unwrap_or_default();
+        assert!(frame_intervals(&frames, first, last, UNIT).len() >= 40);
+        let reason = key_refusal(&keys, &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("in 2 distinct states,"), "{reason}");
+    }
+
+    #[test]
+    fn a_band_that_changed_with_every_key_is_not_refused() {
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |t| keys_answered(t, 30 * MS));
+        assert_eq!(key_refusal(&key_run(100), &frames, UNIT), None);
+    }
+
+    #[test]
+    fn a_slow_app_is_not_refused_until_most_keys_trail_the_span() {
+        let keys = key_run(100);
+        let (first, last) = input_span(&keys, UNIT).unwrap_or_default();
+        let answered_after =
+            |delay: u64| frames_between(860 * MS, 40_000 * MS, 8 * MS, |t| keys_answered(t, delay));
+        let verdict = |delay: u64| key_refusal(&keys, &answered_after(delay), UNIT);
+        // Answers 400 ms late all land in the span but the last two keys'.
+        assert_eq!(
+            distinct_frames(&answered_after(400 * MS), first, last),
+            1 + 98
+        );
+        assert_eq!(verdict(400 * MS), None);
+        // Twelve seconds late still shows 52 of the 100 keys; thirteen, 48.
+        assert_eq!(verdict(12_000 * MS), None);
+        let reason = verdict(13_000 * MS).unwrap_or_default();
+        assert!(reason.contains("in 49 distinct states,"), "{reason}");
+    }
+
+    #[test]
+    fn only_frames_inside_the_key_span_count() {
+        let keys = key_run(100);
+        let (first, last) = input_span(&keys, UNIT).unwrap_or_default();
+        // Three states while the keys went in, and many before and after.
+        let during = frames_between(first, last, 8 * MS, |time| (time / (400 * MS)) % 3);
+        let before = frames_between(0, first - MS, 5 * MS, |time| 10_000 + time / MS);
+        let after = frames_between(last + MS, last + 400 * MS, 5 * MS, |time| {
+            20_000 + time / MS
+        });
+        let frames = [before, during, after].concat();
+        let reason = key_refusal(&keys, &frames, UNIT).unwrap_or_default();
+        assert!(reason.contains("in 3 distinct states,"), "{reason}");
+        // The refusal names the count `distinct_frames` gives over the span.
+        assert_eq!(distinct_frames(&frames, first, last), 3);
+    }
+
+    #[test]
+    fn keys_that_posted_nothing_are_refused() {
+        let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |t| keys_answered(t, 30 * MS));
+        let reason = key_refusal(&[], &frames, UNIT).unwrap_or_default();
+        assert_eq!(reason, "the helper posted no keys; the keys did not land");
+    }
+
+    /// An excerpt of a run's `events.tsv` or `frames.tsv` as the helper printed
+    /// it: no header, no run, trial or phase columns, `tag` first on each line.
+    fn helper_lines(excerpt: &str, tag: &str) -> Vec<String> {
+        excerpt
+            .lines()
+            .skip(1)
+            .filter_map(|row| row.splitn(4, '\t').nth(3))
+            .map(|rest| format!("{tag}\t{rest}"))
+            .collect()
+    }
+
+    /// A run's keys and frames from its excerpts, through the helper parsers.
+    fn replay(keys: &str, frames: &str) -> Result<(Vec<InputEvent>, Vec<Frame>), String> {
+        let keys = parse_input_events(&helper_lines(keys, "event").join("\n"))?;
+        let frames = helper_lines(frames, "frame")
+            .iter()
+            .filter_map(|line| parse_frame(line).transpose())
+            .collect::<Result<_, _>>()?;
+        Ok((keys, frames))
+    }
+
+    /// The dev Mac's timebase, which the real runs were captured on.
+    const MAC: Timebase = Timebase {
+        numer: 125,
+        denom: 3,
+    };
+
+    // Each excerpt keeps all 100 keys and the frames that begin a new state or
+    // the span; every dropped frame repeats the hash of one kept before it.
+    #[test]
+    fn real_typing_runs_replay_two_pass_and_zed_is_refused() -> Result<(), String> {
+        let appkit = replay(
+            include_str!("../tests/fixtures/typing-appkit-events.tsv"),
+            include_str!("../tests/fixtures/typing-appkit-frames.tsv"),
+        )?;
+        let alpine = replay(
+            include_str!("../tests/fixtures/typing-alpine-events.tsv"),
+            include_str!("../tests/fixtures/typing-alpine-frames.tsv"),
+        )?;
+        let zed = replay(
+            include_str!("../tests/fixtures/typing-zed-events.tsv"),
+            include_str!("../tests/fixtures/typing-zed-frames.tsv"),
+        )?;
+        let zed_reason = "100 keys left the band in 1 distinct state, fewer than the 50 required";
+        // Span states, keys (timed, late) and verdict, as each run recorded.
+        let runs = [
+            ("appkit", appkit, 116, (100, 0), None),
+            ("alpine", alpine, 97, (96, 4), None),
+            ("zed", zed, 1, (0, 100), Some(zed_reason)),
+        ];
+        for (name, (keys, frames), states, (timed, late), refusal) in runs {
+            let (first, last) = input_span(&keys, MAC).unwrap_or_default();
+            assert_eq!(keys.len(), 100, "{name}");
+            assert_eq!(distinct_frames(&frames, first, last), states, "{name}");
+            let latencies = key_latencies(&keys, &frames, MAC, MAC.ticks(250 * MS));
+            assert_eq!(
+                (latencies.measured_ms.len(), latencies.late),
+                (timed, late),
+                "{name}"
+            );
+            assert_eq!(
+                key_refusal(&keys, &frames, MAC).as_deref(),
+                refusal,
+                "{name}"
+            );
+        }
+        Ok(())
     }
 
     fn opening_frame() -> Appeared {

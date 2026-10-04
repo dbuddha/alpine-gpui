@@ -38,8 +38,8 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "Zed typing: live-check the seeded worktree trust"
-  - "M1.4a highlight: record the superseded startup frame, then one live trial"
+  - "Idle gate (#656): per-type input timers, then a live check"
+  - "Bench: fix the misread 250 to 500 ms key lag"
   - "M1.4 ten-trial baseline against Zed and AppKit, budgets, CP1"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---

@@ -1,19 +1,17 @@
 ---
 scope: bench/, the local black-box benchmark (never shipped, never in CI)
 parent: ../AGENTS.md
-updated: 2026-10-03
-gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
+updated: 2026-10-04
+gate: "in bench/: cargo build, test, clippy --all-targets -- -D warnings, fmt --check; then helpers/build.sh"
 known_defects:
-  - "Zed typing unmeasured: its first-launch trust dialog probably took the keys; trust now seeded, unverified"
-  - "highlight: a launch event replaces the pending startup frame before it draws, so no event-0 row exists (run 20261004T045057Z)"
   - "unverified: the reference editor's caret blink suppression"
 ---
 
 # Bench
 
 `bench/` measures Alpine Editor, Zed and an AppKit reference editor the same
-way, from outside: a std-only Cargo workspace outside the root one, plus
-Swift helpers built with `xcrun swiftc`.
+way: a std-only Cargo workspace outside the root one, plus Swift helpers
+(`xcrun swiftc`).
 
 ## Commands
 
@@ -26,7 +24,7 @@ target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
 
-Workloads live in `src/workload.rs`; `--dry-run` prints a run's launches and
+Workloads live in `src/workload.rs`; `--dry-run` prints launches and
 input, starting nothing. Alpine is the installed
 `~/Applications/Alpine Editor.app`, built clean.
 
@@ -81,8 +79,9 @@ export.
   counts from process start. CPU and wakeups include reaped children;
   energy counts processes alive at the end.
 - Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
-  each timed to the first changed frame of the text band, else late or missed
-  (rules in `analysis.rs`).
+  each timed to the first changed frame of the text band, else late or missed.
+  A typing or caret trial posting nothing, or leaving under
+  `min(keys, max(10, keys/2))` distinct band states, is invalid.
 - Frame interval while scrolling: display-time gaps between changed frames;
   `frame_late_pct` counts gaps over 1.5 refresh periods. A scroll posting
   nothing, or leaving under `min(events, max(20, events/50))` distinct window
@@ -90,15 +89,15 @@ export.
 - `highlight_first_frame_ms` (the 100 ms budget): `build_end_ns` minus
   `build_begin_ns` on the first row of Alpine's `perf-<s>-frames.tsv` with
   both; it must be the cold startup build (event 0), else the trial is refused.
-- Output: raw TSV in `results/<run>/`; `bench baseline` appends stamped
-  milestone rows to the tracked `baseline.tsv`.
+- Output: raw TSV in `results/<run>/`; `bench baseline` appends stamped rows
+  to `baseline.tsv`.
 
 ## Comparable and not
 
 Matched: fixture bytes (outside any git checkout), the requested window frame
 (960x572 pt, read after the last phase; over 1 pt off invalidates), Menlo 15 pt
 on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
-`CARGO_TARGET_DIR` under `bench/target`, and the capture path. Not matched:
+`CARGO_TARGET_DIR`, and the capture path. Not matched:
 
 - Zed runs non-default settings: no updates, telemetry, AI, sign-in server,
   completion popups or git decorations; trusted worktrees; `cursor_blink` off;
@@ -117,10 +116,10 @@ on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
 ## Isolation
 
 Trials set HOME and `CFFIXED_USER_HOME` to the disposable home; the latter
-moves `NSHomeDirectory` and the user Library folders. Zed also gets
+moves `NSHomeDirectory` and user Library folders. Zed also gets
 `--user-data-dir`, seeded settings, `ZED_UPDATE_EXPLANATION` and a dead
 `ZED_SERVER_URL`. Only the reference editor gets `-ApplePersistenceIgnoreState
 YES` (why: `apps.rs`). cfprefsd still writes preferences to the real home, so
-each trial compares the app's real state (`apps.rs` lists it) before and after
+each trial compares the app's real state (`apps.rs`) before and after
 and stops loudly on any change. Zed's Dock recents (`noteNewRecentDocumentURL`)
 need Full Disk Access to inspect and go unchecked.

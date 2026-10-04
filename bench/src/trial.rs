@@ -971,9 +971,9 @@ fn run_input_phase(
     Ok(())
 }
 
-/// Voids the trial if a finished input phase did nothing where the captured
-/// frames can show it: a scroll must post events and leave the window in many
-/// distinct states. A scroll that moved nothing failed; it was not fast.
+/// Voids the trial if a finished input phase did nothing the captured frames
+/// can show: scrolls and keys must post events and leave many distinct states.
+/// Input that changed nothing failed; it was not fast.
 fn refuse_idle_input(
     driven: &mut Driven,
     phase: &str,
@@ -981,9 +981,14 @@ fn refuse_idle_input(
     (posted, frames): (&[InputEvent], &[Frame]),
     timebase: Timebase,
 ) {
-    if let Action::Scroll { .. } = action
-        && let Some(reason) = analysis::scroll_refusal(posted, frames, timebase)
-    {
+    let reason = match action {
+        Action::Scroll { .. } => analysis::scroll_refusal(posted, frames, timebase),
+        Action::Type { .. } | Action::Keys { .. } => {
+            analysis::key_refusal(posted, frames, timebase)
+        }
+        Action::Idle | Action::UntilQuiet { .. } | Action::SaveRecorderLog => None,
+    };
+    if let Some(reason) = reason {
         driven.invalid.get_or_insert(format!("{phase}: {reason}"));
     }
 }
@@ -1195,7 +1200,7 @@ fn trial_metrics(
                 ));
             }
             Action::Scroll { .. } => {
-                let span = analysis::scroll_span(&events, timebase)
+                let span = analysis::input_span(&events, timebase)
                     .unwrap_or((window.start_mach, window.end_mach));
                 metrics.extend(analysis::scroll_metrics(
                     phase.name,
@@ -1730,19 +1735,42 @@ mod tests {
         }
     }
 
-    fn keys() -> Action {
-        Action::Keys {
-            keycode: 125,
-            count: 3_334,
-            interval_ms: 8,
-        }
+    /// The first phase's action of the workload called `name`.
+    fn action_of(name: &str) -> Result<Action, String> {
+        let workload = find(name)?;
+        let phase = workload.phases.first();
+        phase
+            .map(|phase| phase.action)
+            .ok_or_else(|| format!("{name} has no phase"))
+    }
+
+    /// `count` key presses, one tick apart.
+    fn pressed(count: u64) -> Vec<InputEvent> {
+        (1..=count)
+            .map(|seq| InputEvent {
+                seq,
+                mach: 100 + seq,
+                kind: "key".to_owned(),
+                label: "a".to_owned(),
+            })
+            .collect()
+    }
+
+    /// What the refusal leaves in `invalid` for a phase named `phase`.
+    fn verdict_in(
+        phase: &str,
+        action: Action,
+        posted: &[InputEvent],
+        frames: &[Frame],
+    ) -> Option<String> {
+        let mut trial = driven();
+        refuse_idle_input(&mut trial, phase, action, (posted, frames), UNIT);
+        trial.invalid
     }
 
     /// What the refusal leaves in `invalid` for a phase named "scroll".
     fn verdict(action: Action, posted: &[InputEvent], frames: &[Frame]) -> Option<String> {
-        let mut trial = driven();
-        refuse_idle_input(&mut trial, "scroll", action, (posted, frames), UNIT);
-        trial.invalid
+        verdict_in("scroll", action, posted, frames)
     }
 
     #[test]
@@ -1783,14 +1811,57 @@ mod tests {
     }
 
     #[test]
-    fn a_scroll_that_posted_nothing_voids_the_trial_but_a_key_run_does_not() {
+    fn a_scroll_that_posted_nothing_voids_the_trial() {
         let frames = frames_of(3_300, 3_300);
         let reason = verdict(scroll(), &[], &frames).unwrap_or_default();
         assert!(reason.starts_with("scroll: "), "{reason}");
         assert!(reason.contains("posted no scroll events"), "{reason}");
-        // Frames that never changed say nothing about a key press.
-        assert_eq!(verdict(keys(), &posted(3_334), &frames_of(3_300, 2)), None);
-        assert_eq!(verdict(keys(), &[], &frames), None);
+    }
+
+    #[test]
+    fn typing_and_caret_runs_that_changed_nothing_void_the_trial() -> Result<(), String> {
+        for phase in ["typing", "caret"] {
+            let action = action_of(phase)?;
+            // Thousands of frames, but only two states.
+            let reason = verdict_in(phase, action, &pressed(100), &frames_of(3_000, 2));
+            let want = format!(
+                "{phase}: 100 keys left the band in 2 distinct states, \
+                 fewer than the 50 required"
+            );
+            assert_eq!(reason, Some(want));
+            // A band that changed with every frame passes.
+            let landed = verdict_in(phase, action, &pressed(100), &frames_of(3_000, 3_000));
+            assert_eq!(landed, None, "{phase}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typing_and_caret_runs_that_posted_nothing_void_the_trial() -> Result<(), String> {
+        for phase in ["typing", "caret"] {
+            let frames = frames_of(3_000, 3_000);
+            let reason = verdict_in(phase, action_of(phase)?, &[], &frames);
+            let want = format!("{phase}: the helper posted no keys; the keys did not land");
+            assert_eq!(reason, Some(want));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn phases_that_post_no_input_are_never_refused() {
+        let still = frames_of(3_000, 1);
+        let quiet = Action::UntilQuiet {
+            quiet_core_pct: 5.0,
+            quiet_seconds: 5,
+            max_seconds: 180,
+        };
+        for action in [Action::Idle, quiet, Action::SaveRecorderLog] {
+            assert_eq!(
+                verdict_in("steady", action, &[], &still),
+                None,
+                "{action:?}"
+            );
+        }
     }
 
     #[test]
