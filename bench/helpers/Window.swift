@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-// bench-window: window list, activation, displays, idle time and permissions.
+// bench-window: window list, activation, displays, owner presence, permissions.
 // Needs no permission: PID, owner name, layer and bounds are readable
 // without Screen Recording, and nothing here requests access.
 
@@ -167,6 +167,23 @@ func idleRecord(_ seconds: Double) -> [String] {
     ["idle", String(format: "%.3f", seconds)]
 }
 
+// The session dictionary holds CGSSessionScreenIsLocked while the screen is
+// locked. Only read here: nothing unlocks the screen or touches login.
+func screenLocked(_ session: [String: Any]) -> Bool {
+    (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+}
+
+func sessionLocked() throws -> Bool {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+        throw HelperFailure.runtime("no login session dictionary is available")
+    }
+    return screenLocked(session)
+}
+
+func lockedRecord(_ locked: Bool) -> [String] {
+    ["locked", locked ? "1" : "0"]
+}
+
 func permissions() {
     // Preflight calls only report state; none of them shows a prompt.
     Output.emit(["permission", "accessibility", AXIsProcessTrusted() ? "1" : "0"])
@@ -189,6 +206,12 @@ func windowSelfTest() throws {
     }
     try check(idleRecord(2603.3234) == ["idle", "2603.323"], "idle record")
     try check(try idleSeconds() >= 0, "idle time is readable")
+    try check(screenLocked(["CGSSessionScreenIsLocked": true]), "a locked session")
+    try check(!screenLocked(["CGSSessionScreenIsLocked": false]), "an unlocked flag")
+    try check(!screenLocked([:]), "no flag means unlocked")
+    try check(lockedRecord(true) == ["locked", "1"], "locked record")
+    try check(lockedRecord(false) == ["locked", "0"], "unlocked record")
+    _ = try sessionLocked()
     Output.emit(["self-test", "ok"])
 }
 
@@ -217,7 +240,11 @@ struct WindowMain {
                 permissions()
             case "idle":
                 try options.finish()
-                Output.emit(idleRecord(try idleSeconds()))
+                // Both are read before either is printed.
+                let seconds = try idleSeconds()
+                let locked = try sessionLocked()
+                Output.emit(idleRecord(seconds))
+                Output.emit(lockedRecord(locked))
             case "self-test": try windowSelfTest()
             default:
                 throw HelperFailure.usage(

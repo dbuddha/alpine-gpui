@@ -128,19 +128,39 @@ pub fn parse_now(text: &str) -> Result<(u64, Timebase), String> {
     ))
 }
 
-/// `idle\t<seconds>` from `bench-window idle`: time since the owner's last
-/// hardware keyboard or mouse event.
-pub fn parse_idle(text: &str) -> Result<f64, String> {
-    let line = text
-        .lines()
-        .find(|line| line.starts_with("idle\t"))
-        .ok_or_else(|| format!("no idle line in {text:?}"))?;
-    let seconds: f64 = number(&tsv::split(line)?, 1, line)?;
-    if seconds.is_finite() && seconds >= 0.0 {
-        Ok(seconds)
-    } else {
-        Err(format!("bad idle time in helper line {line:?}"))
+/// What `bench-window idle` reports about the owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Presence {
+    /// Seconds since the last hardware keyboard or mouse event.
+    pub idle_seconds: f64,
+    /// Whether the session's screen is locked.
+    pub locked: bool,
+}
+
+/// `idle\t<seconds>` and `locked\t<0 or 1>` from `bench-window idle`.
+pub fn parse_presence(text: &str) -> Result<Presence, String> {
+    let record = |kind: &str| -> Result<(Vec<String>, &str), String> {
+        let line = text
+            .lines()
+            .find(|line| line.split('\t').next() == Some(kind))
+            .ok_or_else(|| format!("no {kind} line in {text:?}"))?;
+        Ok((tsv::split(line)?, line))
+    };
+    let (idle, line) = record("idle")?;
+    let idle_seconds: f64 = number(&idle, 1, line)?;
+    if !(idle_seconds.is_finite() && idle_seconds >= 0.0) {
+        return Err(format!("bad idle time in helper line {line:?}"));
     }
+    let (locked, line) = record("locked")?;
+    let locked = match field(&locked, 1, line)? {
+        "0" => false,
+        "1" => true,
+        other => return Err(format!("bad lock flag {other:?} in helper line {line:?}")),
+    };
+    Ok(Presence {
+        idle_seconds,
+        locked,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -422,14 +442,12 @@ impl Helpers {
         parse_displays(&self.window(&["display"])?)
     }
 
-    /// Seconds since the owner's last hardware keyboard or mouse event. A
-    /// helper built before `idle` existed fails here, so the error says how
-    /// to fix it.
-    pub fn idle_seconds(&self) -> Result<f64, String> {
-        let text = self
-            .window(&["idle"])
-            .map_err(|error| format!("{error}; rebuild the helpers with bench/helpers/build.sh"))?;
-        parse_idle(&text)
+    /// The owner's idle time and the screen lock. A helper built before
+    /// these existed fails here, so the error says how to fix it.
+    pub fn presence(&self) -> Result<Presence, String> {
+        self.window(&["idle"])
+            .and_then(|text| parse_presence(&text))
+            .map_err(|error| format!("{error}; rebuild the helpers with bench/helpers/build.sh"))
     }
 
     /// Preflight only: these calls never show a permission prompt.
@@ -866,8 +884,8 @@ impl Drop for Capture {
 mod tests {
     use super::{
         InputOutcome, InputRun, SamplerData, SamplerLine, SetKind, Timebase, failure_message,
-        parse_appeared, parse_displays, parse_frame, parse_idle, parse_input_events,
-        parse_permissions, parse_sampler_line, parse_window_list,
+        parse_appeared, parse_displays, parse_frame, parse_input_events, parse_permissions,
+        parse_presence, parse_sampler_line, parse_window_list,
     };
     use std::path::Path;
     use std::thread;
@@ -918,23 +936,34 @@ mod tests {
         Ok(())
     }
 
-    /// The first line is `bench-window idle` as the dev Mac printed it, while
-    /// `ioreg` read `HIDIdleTime` 2603.44 s.
+    /// The first text is `bench-window idle` as the dev Mac printed it with
+    /// the screen locked and the owner away. The unlocked text has the same
+    /// shape with `locked\t0`; the Mac could not be captured unlocked.
     #[test]
-    fn idle_seconds_parse_and_bad_readings_are_refused() -> Result<(), String> {
-        let idle = parse_idle("idle\t2603.323\n")?;
-        assert!((idle - 2603.323).abs() < 1e-9);
-        assert!(parse_idle("idle\t0.000\n")?.abs() < f64::EPSILON);
+    fn presence_parses_and_bad_readings_are_refused() -> Result<(), String> {
+        let locked = parse_presence("idle\t6596.312\nlocked\t1\n")?;
+        assert!((locked.idle_seconds - 6596.312).abs() < 1e-9);
+        assert!(locked.locked);
+        let away = parse_presence("idle\t2603.323\nlocked\t0\n")?;
+        assert!((away.idle_seconds - 2603.323).abs() < 1e-9);
+        assert!(!away.locked);
+        assert!(parse_presence("idle\t0.000\nlocked\t0\n")?.idle_seconds < f64::EPSILON);
         for bad in [
             "",
             "front\t1\tx\n",
-            "idle\n",
-            "idle\tsoon\n",
-            "idle\t-1.000\n",
-            "idle\tNaN\n",
-            "idle\tinf\n",
+            "idle\nlocked\t0\n",
+            "idle\tsoon\nlocked\t0\n",
+            "idle\t-1.000\nlocked\t0\n",
+            "idle\tNaN\nlocked\t0\n",
+            "idle\tinf\nlocked\t0\n",
+            "locked\t1\n",
+            // A helper from before the lock reading printed only idle.
+            "idle\t2603.323\n",
+            "idle\t2603.323\nlocked\n",
+            "idle\t2603.323\nlocked\t2\n",
+            "idle\t2603.323\nlocked\tyes\n",
         ] {
-            assert!(parse_idle(bad).is_err(), "{bad:?}");
+            assert!(parse_presence(bad).is_err(), "{bad:?}");
         }
         Ok(())
     }

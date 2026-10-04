@@ -386,6 +386,27 @@ mod tests {
         Ok(())
     }
 
+    /// Each option reaches the request, so a dropped one fails here.
+    #[test]
+    fn every_run_option_reaches_the_run_request() -> Result<(), String> {
+        let Command::Run(run) = parse(&args(
+            "run caret --app alpine --trials 7 --warmup 2 --keep-homes --rust-analyzer /ra \
+             --key-interval-ms 400 --wait-idle 12",
+        ))?
+        else {
+            return Err("not a run".to_owned());
+        };
+        let request = request_for(&run)?;
+        assert_eq!(request.workload.name, "caret");
+        assert_eq!(request.app, crate::apps::App::Alpine);
+        assert_eq!((request.trials, request.warmup), (7, Some(2)));
+        assert!(request.keep_homes);
+        assert_eq!(request.rust_analyzer, Some(PathBuf::from("/ra")));
+        assert_eq!(request.key_interval_ms, Some(400));
+        assert_eq!(request.wait_idle, Some(12));
+        Ok(())
+    }
+
     #[test]
     fn run_accepts_the_gate_invocation_and_flags() -> Result<(), String> {
         let Command::Run(run) = parse(&args(

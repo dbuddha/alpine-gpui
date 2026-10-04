@@ -2,6 +2,7 @@
 //! stands, are pure functions of samples. The polling loop and the display
 //! assertion live here too, so `trial.rs` only supplies the samples.
 
+use crate::helpers::Presence;
 use crate::procs;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -10,6 +11,8 @@ use std::time::Duration;
 
 /// Why a trial is void when the owner touched the keyboard or mouse.
 pub const OWNER_INPUT: &str = "owner input";
+/// Why a trial is void when the screen locked under it.
+pub const SCREEN_LOCKED: &str = "screen locked";
 /// How often a closed gate reads its samples again.
 pub const POLL: Duration = Duration::from_secs(5);
 /// A waiting gate repeats its state every this many polls (five minutes).
@@ -77,6 +80,8 @@ pub fn power() -> Result<Power, String> {
 pub struct Sample {
     /// Seconds since the owner's last hardware keyboard or mouse event.
     pub idle_seconds: f64,
+    /// Whether the screen is locked, which no trial can be measured behind.
+    pub locked: bool,
     pub power: Power,
     /// Pids of copies of the measured app that are already running.
     pub running: Vec<i32>,
@@ -86,6 +91,7 @@ pub struct Sample {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Blocker {
     Owner(f64),
+    Locked,
     Power(Power),
     AppRunning(Vec<i32>),
 }
@@ -113,6 +119,9 @@ pub fn before_trial(gate: &Gate, sample: &Sample) -> Step {
     if !idle_enough(gate, sample.idle_seconds) {
         blockers.push(Blocker::Owner(sample.idle_seconds));
     }
+    if sample.locked {
+        blockers.push(Blocker::Locked);
+    }
     if sample.power != Power::Ac {
         blockers.push(Blocker::Power(sample.power.clone()));
     }
@@ -136,12 +145,18 @@ pub fn during_trial(gate: &Gate, idle_seconds: f64) -> Watch {
     }
 }
 
-/// Why a trial is void after one idle reading, or none to go on. An
-/// unreadable clock voids the trial: the gate cannot vouch for it.
-pub fn voided_by(gate: &Gate, reading: Result<f64, String>) -> Option<String> {
+/// Why a trial is void after one reading, or none to go on. A locked screen
+/// comes first: the lock is what the owner left behind, not input. An
+/// unreadable clock voids the trial too, since the gate cannot vouch for it.
+pub fn voided_by(gate: &Gate, reading: Result<Presence, String>) -> Option<String> {
     match reading {
-        Ok(idle) if during_trial(gate, idle) == Watch::Continue => None,
-        Ok(_) => Some(OWNER_INPUT.to_owned()),
+        Ok(presence) if presence.locked => Some(SCREEN_LOCKED.to_owned()),
+        Ok(presence) if during_trial(gate, presence.idle_seconds) == Watch::Abort => Some(format!(
+            "{OWNER_INPUT} (idle {:.1} s < {} s)",
+            presence.idle_seconds,
+            gate.threshold()
+        )),
+        Ok(_) => None,
         Err(error) => Some(format!("cannot read the idle time ({error})")),
     }
 }
@@ -159,6 +174,7 @@ fn wait_text(gate: &Gate, blockers: &[Blocker]) -> String {
             Blocker::Owner(idle) => {
                 format!("owner idle ({} of {}m)", age(*idle), gate.minutes)
             }
+            Blocker::Locked => format!("the screen to unlock ({SCREEN_LOCKED})"),
             Blocker::Power(power) => format!("AC power (now {})", power.label()),
             Blocker::AppRunning(pids) => {
                 let pids: Vec<String> = pids.iter().map(ToString::to_string).collect();
@@ -171,7 +187,7 @@ fn wait_text(gate: &Gate, blockers: &[Blocker]) -> String {
 
 fn open_text(gate: &Gate, sample: &Sample) -> String {
     format!(
-        "owner idle {} of {}m, AC power, {} not running",
+        "owner idle {} of {}m, AC power, screen unlocked, {} not running",
         age(sample.idle_seconds),
         gate.minutes,
         gate.app
@@ -190,7 +206,15 @@ pub fn wait_to_start(
 ) -> Result<(), String> {
     let mut polls: u32 = 0;
     loop {
-        let reading = sample()?;
+        // One failed read is retried a poll later; two end the run.
+        let reading = match sample() {
+            Ok(reading) => reading,
+            Err(error) => {
+                say(&format!("gate sample failed ({error}); trying once more"));
+                pause();
+                sample()?
+            }
+        };
         match before_trial(gate, &reading) {
             Step::Start => {
                 if polls > 0 || first {
@@ -224,22 +248,26 @@ pub fn caffeinate_args(pid: &str) -> Vec<String> {
         .collect()
 }
 
-/// The dry run's description of the gate.
-pub fn plan_lines(gate: &Gate, binary: &Path) -> Vec<String> {
+/// The dry run's description of the gate; `check_every` is the in-trial
+/// poll.
+pub fn plan_lines(gate: &Gate, binary: &Path, check_every: Duration) -> Vec<String> {
     vec![
         format!(
             "gate\tbefore every trial wait until the owner has had no keyboard or mouse \
-             event for {} min, on AC power, with no copy of {} running",
+             event for {} min, on AC power, with the screen unlocked and no copy of {} running",
             gate.minutes,
             binary.display()
         ),
         format!(
-            "gate\tread every {} s; a trial that sees owner input is void ({OWNER_INPUT}) \
-             and the next one waits again",
-            POLL.as_secs()
+            "gate\tpoll every {} s while waiting and every {} s during a trial; owner input \
+             or a locked screen voids the trial ({OWNER_INPUT}, {SCREEN_LOCKED}) and the \
+             next one waits again",
+            POLL.as_secs(),
+            check_every.as_secs()
         ),
         format!(
-            "gate\t{CAFFEINATE} {} keeps the display and system awake",
+            "gate\t{CAFFEINATE} {} keeps the display and system awake once the first \
+             gate opens",
             caffeinate_args("<bench pid>").join(" ")
         ),
     ]
@@ -253,8 +281,12 @@ pub struct KeepAwake {
 
 impl KeepAwake {
     pub fn start() -> Result<Self, String> {
+        Self::start_at(Path::new(CAFFEINATE))
+    }
+
+    pub fn start_at(program: &Path) -> Result<Self, String> {
         let pid = std::process::id().to_string();
-        Self::spawn(Path::new(CAFFEINATE), &caffeinate_args(&pid))
+        Self::spawn(program, &caffeinate_args(&pid))
     }
 
     fn spawn(program: &Path, args: &[String]) -> Result<Self, String> {
@@ -290,11 +322,16 @@ impl Drop for KeepAwake {
 #[cfg(test)]
 mod tests {
     use super::{
-        Blocker, Gate, KeepAwake, OWNER_INPUT, Power, Sample, Step, Watch, age, before_trial,
-        caffeinate_args, during_trial, parse_power, plan_lines, voided_by, wait_to_start,
+        Blocker, Gate, HEARTBEAT_POLLS, KeepAwake, OWNER_INPUT, POLL, Power, SCREEN_LOCKED, Sample,
+        Step, Watch, age, before_trial, caffeinate_args, during_trial, parse_power, plan_lines,
+        voided_by, wait_to_start,
     };
+    use crate::helpers::Presence;
     use std::collections::VecDeque;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
+    use std::time::Duration;
 
     const TEN: Gate = Gate {
         minutes: 10,
@@ -304,8 +341,23 @@ mod tests {
     fn sample(idle_seconds: f64, power: Power, running: &[i32]) -> Sample {
         Sample {
             idle_seconds,
+            locked: false,
             power,
             running: running.to_vec(),
+        }
+    }
+
+    fn locked(idle_seconds: f64) -> Sample {
+        Sample {
+            locked: true,
+            ..sample(idle_seconds, Power::Ac, &[])
+        }
+    }
+
+    fn presence(idle_seconds: f64, locked: bool) -> Presence {
+        Presence {
+            idle_seconds,
+            locked,
         }
     }
 
@@ -367,13 +419,30 @@ mod tests {
             [Blocker::AppRunning(vec![812, 9])]
         );
         // Every failing condition is reported together, in a fixed order.
+        let everything = Sample {
+            locked: true,
+            ..sample(5.0, battery.clone(), &[812])
+        };
         assert_eq!(
-            waits(5.0, battery.clone(), &[812]),
-            [
+            before_trial(&TEN, &everything),
+            Step::Wait(vec![
                 Blocker::Owner(5.0),
+                Blocker::Locked,
                 Blocker::Power(battery),
                 Blocker::AppRunning(vec![812])
-            ]
+            ])
+        );
+    }
+
+    #[test]
+    fn a_locked_screen_keeps_the_gate_shut_however_idle_the_owner_is() {
+        assert_eq!(
+            before_trial(&TEN, &locked(3600.0)),
+            Step::Wait(vec![Blocker::Locked])
+        );
+        assert_eq!(
+            before_trial(&TEN, &sample(3600.0, Power::Ac, &[])),
+            Step::Start
         );
     }
 
@@ -392,19 +461,43 @@ mod tests {
     }
 
     #[test]
-    fn input_during_a_trial_is_owner_input() {
+    fn a_void_reason_carries_the_reading_that_caused_it() {
         // Idle only grows during a trial, so a reading under the gate's own
         // threshold can only follow a keyboard or mouse event.
-        assert_eq!(during_trial(&TEN, 612.4), Watch::Continue);
-        assert_eq!(during_trial(&TEN, 3.2), Watch::Abort);
-        assert_eq!(voided_by(&TEN, Ok(612.4)), None);
-        assert_eq!(voided_by(&TEN, Ok(0.4)).as_deref(), Some(OWNER_INPUT));
+        assert_eq!(voided_by(&TEN, Ok(presence(612.4, false))), None);
+        assert_eq!(
+            voided_by(&TEN, Ok(presence(0.4, false))).as_deref(),
+            Some("owner input (idle 0.4 s < 600 s)")
+        );
+        assert_eq!(OWNER_INPUT, "owner input");
+        let short = Gate {
+            minutes: 1,
+            app: "zed",
+        };
+        assert_eq!(
+            voided_by(&short, Ok(presence(3.26, false))).as_deref(),
+            Some("owner input (idle 3.3 s < 60 s)")
+        );
         let unreadable = voided_by(&TEN, Err("no such helper".to_owned())).unwrap_or_default();
         assert!(
             unreadable.contains("cannot read the idle time"),
             "{unreadable}"
         );
         assert!(unreadable.contains("no such helper"), "{unreadable}");
+    }
+
+    /// A lock is what an absent owner leaves behind, so it is named as such
+    /// even when the lock itself came with a key press.
+    #[test]
+    fn a_screen_that_locked_voids_the_trial_as_locked_not_as_input() {
+        assert_eq!(
+            voided_by(&TEN, Ok(presence(900.0, true))).as_deref(),
+            Some(SCREEN_LOCKED)
+        );
+        assert_eq!(
+            voided_by(&TEN, Ok(presence(0.2, true))).as_deref(),
+            Some("screen locked")
+        );
     }
 
     /// Runs the wait over scripted samples; returns the log and the pauses.
@@ -445,7 +538,28 @@ mod tests {
             lines,
             [
                 "gate waiting for owner idle (0m12s of 10m)",
-                "gate open: owner idle 10m01s of 10m, AC power, zed not running",
+                "gate open: owner idle 10m01s of 10m, AC power, screen unlocked, zed not running",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_gate_waits_while_the_screen_is_locked() {
+        let (outcome, lines, pauses) = waited(
+            false,
+            vec![
+                Ok(locked(3600.0)),
+                Ok(locked(3700.0)),
+                Ok(sample(3800.0, Power::Ac, &[])),
+            ],
+        );
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(pauses, 2);
+        assert_eq!(
+            lines,
+            [
+                "gate waiting for the screen to unlock (screen locked)",
+                "gate open: owner idle 63m20s of 10m, AC power, screen unlocked, zed not running",
             ]
         );
     }
@@ -459,7 +573,7 @@ mod tests {
         assert_eq!((outcome, pauses), (Ok(()), 0));
         assert_eq!(
             first,
-            ["gate open: owner idle 66m40s of 10m, AC power, zed not running"]
+            ["gate open: owner idle 66m40s of 10m, AC power, screen unlocked, zed not running"]
         );
     }
 
@@ -478,22 +592,69 @@ mod tests {
             [
                 "gate waiting for AC power (now Battery Power), zed to quit (pid 812)",
                 "gate still waiting for zed to quit (pid 812)",
-                "gate open: owner idle 11m40s of 10m, AC power, zed not running",
+                "gate open: owner idle 11m40s of 10m, AC power, screen unlocked, zed not running",
             ]
         );
     }
 
+    /// The poll and the repeat together make the five minutes the log shows.
     #[test]
-    fn a_sample_that_fails_stops_the_wait() {
+    fn the_poll_and_the_repeat_make_five_minutes() {
+        assert_eq!(POLL, Duration::from_secs(5));
+        assert_eq!(POLL * HEARTBEAT_POLLS, Duration::from_mins(5));
+    }
+
+    #[test]
+    fn a_sample_that_fails_twice_stops_the_wait() {
         let (outcome, lines, pauses) = waited(
             true,
             vec![
                 Ok(sample(1.0, Power::Ac, &[])),
                 Err("bench-window idle failed".to_owned()),
+                Err("bench-window idle failed again".to_owned()),
             ],
         );
-        assert_eq!(outcome, Err("bench-window idle failed".to_owned()));
-        assert_eq!((lines.len(), pauses), (1, 1));
+        assert_eq!(outcome, Err("bench-window idle failed again".to_owned()));
+        // The first poll was shut and said so; the failure was said once and
+        // retried after a poll's pause.
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("bench-window idle failed"), "{lines:?}");
+        assert!(lines[1].contains("trying once more"), "{lines:?}");
+        assert_eq!(pauses, 2);
+    }
+
+    /// One transient `ps` or `pmset` error is retried; the run goes on.
+    #[test]
+    fn a_sample_that_fails_once_is_retried() {
+        let retry = || {
+            vec![
+                Err("ps failed".to_owned()),
+                Ok(sample(900.0, Power::Ac, &[])),
+            ]
+        };
+        // A later trial's gate says only that it retried: it did not wait.
+        let (outcome, lines, pauses) = waited(false, retry());
+        assert_eq!((outcome, pauses), (Ok(()), 1));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("ps failed"), "{lines:?}");
+        assert!(lines[0].contains("trying once more"), "{lines:?}");
+        // The run's first gate also says it opened.
+        let (outcome, lines, pauses) = waited(true, retry());
+        assert_eq!((outcome, pauses), (Ok(()), 1));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].starts_with("gate open: "), "{lines:?}");
+        // After a failure in mid-wait the heartbeat count is undisturbed.
+        let (outcome, lines, pauses) = waited(
+            false,
+            vec![
+                Ok(sample(1.0, Power::Ac, &[])),
+                Err("pmset failed".to_owned()),
+                Ok(sample(2.0, Power::Ac, &[])),
+                Ok(sample(900.0, Power::Ac, &[])),
+            ],
+        );
+        assert_eq!((outcome, pauses), (Ok(()), 3));
+        assert_eq!(lines.len(), 3, "{lines:?}");
     }
 
     /// An abort sends the run back to the gate, which waits for idle again
@@ -540,7 +701,11 @@ mod tests {
 
     #[test]
     fn the_dry_run_describes_the_gate() {
-        let lines = plan_lines(&TEN, Path::new("/Applications/Zed.app/Contents/MacOS/zed"));
+        let lines = plan_lines(
+            &TEN,
+            Path::new("/Applications/Zed.app/Contents/MacOS/zed"),
+            Duration::from_secs(1),
+        );
         let text = lines.join("\n");
         assert!(
             lines.iter().all(|line| line.starts_with("gate\t")),
@@ -548,12 +713,18 @@ mod tests {
         );
         assert!(text.contains("for 10 min"), "{text}");
         assert!(text.contains("on AC power"), "{text}");
+        assert!(text.contains("with the screen unlocked"), "{text}");
         assert!(text.contains("no copy of /Applications/Zed.app"), "{text}");
-        assert!(text.contains("owner input"), "{text}");
+        assert!(text.contains("owner input, screen locked"), "{text}");
+        assert!(
+            text.contains("poll every 5 s while waiting and every 1 s during a trial"),
+            "{text}"
+        );
         assert!(
             text.contains("/usr/bin/caffeinate -d -i -w <bench pid>"),
             "{text}"
         );
+        assert!(text.contains("once the first gate opens"), "{text}");
     }
 
     fn alive(pid: &str) -> bool {
@@ -576,9 +747,7 @@ mod tests {
             drop(sleeper);
             let _ = done.send(());
         });
-        let stopped = finished
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .is_ok();
+        let stopped = finished.recv_timeout(Duration::from_secs(10)).is_ok();
         if !stopped {
             let _ = std::process::Command::new("/bin/kill").arg(&pid).status();
         }
@@ -592,6 +761,27 @@ mod tests {
         let refused = KeepAwake::spawn(Path::new("/usr/bin/false"), &[]).err();
         let message = refused.ok_or("a process that exits was accepted")?;
         assert!(message.contains("exited at once"), "{message}");
+        Ok(())
+    }
+
+    /// A stand-in `caffeinate` records its arguments, then sleeps as one.
+    #[test]
+    fn the_awake_guard_watches_the_bench_and_nothing_else() -> Result<(), String> {
+        let dir = crate::test_dir("awake-args")?;
+        let script = dir.join("caffeinate");
+        let body = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\nexec /bin/sleep 600\n";
+        fs::write(&script, body).map_err(|error| format!("{}: {error}", script.display()))?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("{}: {error}", script.display()))?;
+        let guard = KeepAwake::start_at(&script)?;
+        let recorded = fs::read_to_string(dir.join("caffeinate.args"))
+            .map_err(|error| format!("no arguments were recorded: {error}"))?;
+        let own_pid = std::process::id().to_string();
+        assert_eq!(
+            recorded.lines().collect::<Vec<_>>(),
+            ["-d", "-i", "-w", own_pid.as_str()]
+        );
+        drop(guard);
         Ok(())
     }
 }
