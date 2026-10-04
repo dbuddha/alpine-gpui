@@ -146,6 +146,9 @@ struct Context<'a> {
     /// The real state as the last gate opened, or as the run began with no
     /// gate: what the end of the run is compared with.
     baseline: RefCell<Snapshot>,
+    /// The measured app's identity as stamped; every gate that opens checks
+    /// the install against it.
+    installed: Vec<(String, String)>,
     effects: &'a dyn Effects,
 }
 
@@ -158,10 +161,30 @@ impl Context<'_> {
             return Ok(());
         };
         let setup = (self.paths, self.helpers, self.request);
-        if wait_for_gate(self.effects, setup, gate, false)? {
+        let waited = wait_for_gate(self.effects, setup, gate, false)?;
+        self.install_unchanged()?;
+        if waited {
             self.retake_baseline();
         }
         Ok(())
+    }
+
+    /// Stops the run loudly if the measured app was replaced or rebuilt since
+    /// the stamp, which a long wait makes possible.
+    fn install_unchanged(&self) -> Result<(), String> {
+        let now = stamp::app_entries(
+            self.request.app,
+            &self.paths.alpine_bundle,
+            &self.paths.zed_app,
+            &self.paths.helpers_dir,
+        );
+        match stamp::changed(&self.installed, &now) {
+            None => Ok(()),
+            Some(change) => Err(format!(
+                "the {} install changed since the run was stamped ({change}); stop and inspect",
+                self.request.app.name()
+            )),
+        }
     }
 
     fn retake_baseline(&self) {
@@ -296,6 +319,7 @@ fn run_with(
         helpers_dir: &paths.helpers_dir,
         displays: &displays,
     });
+    let installed = stamp.installed(request.app);
     let (_, tag) = stamp::utc(stamp::now_seconds());
     let run_id = format!("{tag}-{}-{}", request.workload.name, request.app.name());
     let run_dir = paths.results.join(&run_id);
@@ -316,6 +340,7 @@ fn run_with(
         state_roots: apps::real_state_paths(request.app, &paths.real_home, &paths.zed_app),
         gate,
         baseline: RefCell::new(Snapshot::new()),
+        installed,
         effects,
     };
     write_run_table(&context, &stamp, &fixtures)?;

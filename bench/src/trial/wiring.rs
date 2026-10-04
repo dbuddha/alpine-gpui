@@ -12,6 +12,7 @@ use crate::helpers::{Appeared, Helpers, Sampler, SamplerData};
 use crate::isolation::Snapshot;
 use crate::paths::BenchPaths;
 use crate::procs::{LaunchedApp, PsRow};
+use crate::stamp;
 use crate::workload::{Action, Document, Fixture, Phase, Servers, Workload};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -232,6 +233,12 @@ impl Rig {
             state_roots: Vec::new(),
             gate,
             baseline: RefCell::new(Snapshot::new()),
+            installed: stamp::app_entries(
+                self.request.app,
+                &self.paths.alpine_bundle,
+                &self.paths.zed_app,
+                &self.paths.helpers_dir,
+            ),
             effects,
         })
     }
@@ -575,6 +582,35 @@ fn a_late_write_after_the_last_gate_still_fails_a_gated_run() -> Result<(), Stri
         failure.contains("REAL appkit STATE CHANGED during the run"),
         "{failure}"
     );
+    Ok(())
+}
+
+/// The app is replaced during the cooldown after trial 1. Every gate opening
+/// compares the install with the stamp, so the run stops before trial 2.
+#[test]
+fn a_replaced_app_stops_a_gated_run_at_the_next_gate() -> Result<(), String> {
+    let rig = Rig::new("install-replaced", 3, Some(1))?;
+    rig.idle(&[(4000.0, false)])?;
+    let stamp = rig.paths.helpers_dir.join("stamp.tsv");
+    write(&stamp, &stamp_text("aaaaaaaaaaaa"), 0o644)?;
+    // Sleeps: the banner, then the cooldown after trial 1.
+    let rebuilt = on_nth_sleep(2, move || {
+        let _ = fs::write(&stamp, stamp_text("bbbbbbbbbbbb"));
+    });
+    let fake = Fake::new(&rig).on_sleep(rebuilt);
+    let failure = run_with(&rig.paths, &rig.helpers, &rig.request, &fake)
+        .err()
+        .ok_or("a replaced app went unnoticed")?;
+    assert!(failure.contains("before trial 2"), "{failure}");
+    assert!(failure.contains("appkit_version"), "{failure}");
+    assert!(failure.contains("src-aaaaaaaaaaaa"), "{failure}");
+    assert!(failure.contains("src-bbbbbbbbbbbb"), "{failure}");
+    let trials: Vec<String> = rig
+        .calls()
+        .into_iter()
+        .filter(|call| call.starts_with("@trial"))
+        .collect();
+    assert_eq!(trials, ["@trial 1 awake=true"]);
     Ok(())
 }
 
