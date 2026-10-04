@@ -4,8 +4,6 @@ parent: ../AGENTS.md
 updated: 2026-10-04
 gate: "in bench/: cargo build, test, clippy --all-targets -- -D warnings, fmt --check; then helpers/build.sh"
 known_defects:
-  - "Zed typing unmeasured: its first-launch trust dialog probably took the keys; trust now seeded, unverified"
-  - "highlight: a launch event replaces the pending startup frame before it draws, so no event-0 row exists (run 20261004T045057Z)"
   - "unverified: the reference editor's caret blink suppression"
 ---
 

@@ -1,1 +1,1 @@
-*.tsv -whitespace
+*.tsv whitespace=-trailing-space
