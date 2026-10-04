@@ -153,7 +153,8 @@ pub fn voided_by(gate: &Gate, reading: Result<Presence, String>) -> Option<Strin
     match reading {
         Ok(presence) if presence.locked => Some(SCREEN_LOCKED.to_owned()),
         Ok(presence) if during_trial(gate, presence.idle_seconds) == Watch::Abort => Some(format!(
-            "{OWNER_INPUT} (idle {:.1} s < {} s)",
+            "{OWNER_INPUT} ({} {:.1} s < {} s)",
+            presence.input,
             presence.idle_seconds,
             gate.threshold()
         )),
@@ -375,7 +376,15 @@ mod tests {
     fn presence(idle_seconds: f64, locked: bool) -> Presence {
         Presence {
             idle_seconds,
+            input: "keyDown".to_owned(),
             locked,
+        }
+    }
+
+    fn typed(input: &str, idle_seconds: f64) -> Presence {
+        Presence {
+            input: input.to_owned(),
+            ..presence(idle_seconds, false)
         }
     }
 
@@ -484,8 +493,8 @@ mod tests {
         // threshold can only follow a keyboard or mouse event.
         assert_eq!(voided_by(&TEN, Ok(presence(612.4, false))), None);
         assert_eq!(
-            voided_by(&TEN, Ok(presence(0.4, false))).as_deref(),
-            Some("owner input (idle 0.4 s < 600 s)")
+            voided_by(&TEN, Ok(typed("mouseMoved", 0.4))).as_deref(),
+            Some("owner input (mouseMoved 0.4 s < 600 s)")
         );
         assert_eq!(OWNER_INPUT, "owner input");
         let short = Gate {
@@ -493,8 +502,8 @@ mod tests {
             app: "zed",
         };
         assert_eq!(
-            voided_by(&short, Ok(presence(3.26, false))).as_deref(),
-            Some("owner input (idle 3.3 s < 60 s)")
+            voided_by(&short, Ok(typed("scrollWheel", 3.26))).as_deref(),
+            Some("owner input (scrollWheel 3.3 s < 60 s)")
         );
         let unreadable = voided_by(&TEN, Err("no such helper".to_owned())).unwrap_or_default();
         assert!(

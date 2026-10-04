@@ -166,11 +166,26 @@ impl Rig {
             .join(format!("bench-window.{suffix}"))
     }
 
-    /// What `bench-window idle` answers on its first, second, ... call.
+    /// What `bench-window idle` answers on its first, second, ... call, as
+    /// if the mouse had moved last.
     fn idle(&self, records: &[(f64, bool)]) -> Result<(), String> {
         let mut text = String::new();
         for (seconds, locked) in records {
-            let _ = writeln!(text, "idle\t{seconds:.3}\nlocked\t{}", u8::from(*locked));
+            let _ = writeln!(
+                text,
+                "idle\t{seconds:.3}\tmouseMoved\nlocked\t{}",
+                u8::from(*locked)
+            );
+        }
+        write(&self.window("idle"), &text, 0o644)
+    }
+
+    /// Like `idle`, with the input type behind each reading.
+    fn idle_by(&self, records: &[(f64, &str, bool)]) -> Result<(), String> {
+        let mut text = String::new();
+        for (seconds, input, locked) in records {
+            let locked = u8::from(*locked);
+            let _ = writeln!(text, "idle\t{seconds:.3}\t{input}\nlocked\t{locked}");
         }
         write(&self.window("idle"), &text, 0o644)
     }
@@ -701,7 +716,7 @@ fn a_run_without_wait_idle_reads_no_clock_and_holds_no_display() -> Result<(), S
 fn every_trial_waits_at_the_gate_and_a_voided_trial_does_not_stop_the_run() -> Result<(), String> {
     let rig = Rig::new("trial-loop", 3, Some(1))?;
     rig.idle(&[(4000.0, false), (3.0, false), (4000.0, false)])?;
-    let fake = Fake::new(&rig).voiding(1, "typing: owner input (idle 3.0 s < 60 s)");
+    let fake = Fake::new(&rig).voiding(1, "typing: owner input (mouseMoved 3.0 s < 60 s)");
     let context = rig.context(Some(ONE_MINUTE), &fake)?;
     run_trials(&context)?;
     assert_eq!(
@@ -731,7 +746,7 @@ fn every_trial_waits_at_the_gate_and_a_voided_trial_does_not_stop_the_run() -> R
     assert_eq!(rows.len(), 4, "{trials}");
     assert_eq!(
         (rows[1][3], rows[1][4]),
-        ("0", "typing: owner input (idle 3.0 s < 60 s)")
+        ("0", "typing: owner input (mouseMoved 3.0 s < 60 s)")
     );
     assert_eq!((rows[2][3], rows[3][3]), ("1", "1"));
     Ok(())
@@ -789,7 +804,7 @@ fn a_startup_refusal_the_owner_caused_voids_the_trial_without_taking_focus() -> 
     let reason = driven?.invalid;
     assert_eq!(
         reason.as_deref(),
-        Some("startup: owner input (idle 3.0 s < 60 s)")
+        Some("startup: owner input (mouseMoved 3.0 s < 60 s)")
     );
     assert_eq!(rig.calls(), strings(&["wait", "list", "idle", "idle"]));
     finish_trial(app, sampler)
@@ -827,7 +842,7 @@ fn the_look_at_the_end_of_a_phase_reads_the_owner() -> Result<(), String> {
     let reason = driven?.invalid;
     assert_eq!(
         reason.as_deref(),
-        Some("idle: owner input (idle 3.0 s < 60 s)")
+        Some("idle: owner input (mouseMoved 3.0 s < 60 s)")
     );
     assert_eq!(
         rig.calls(),
@@ -839,7 +854,7 @@ fn the_look_at_the_end_of_a_phase_reads_the_owner() -> Result<(), String> {
             "idle",
             "list",
             "idle",
-            "@say idle: owner input (idle 3.0 s < 60 s); stopping the trial",
+            "@say idle: owner input (mouseMoved 3.0 s < 60 s); stopping the trial",
         ])
     );
     finish_trial(app, sampler)
@@ -940,21 +955,21 @@ fn a_window_that_comes_to_the_front_after_a_request_is_accepted() -> Result<(), 
 #[test]
 fn owner_input_voids_a_gated_trial_at_once_and_a_plain_run_never_reads_it() -> Result<(), String> {
     let rig = Rig::new("check-owner-input", 1, Some(1))?;
-    rig.idle(&[(3.0, false)])?;
+    rig.idle_by(&[(3.0, "scrollWheel", false)])?;
     let fake = Fake::new(&rig);
     let gated = rig.context(Some(ONE_MINUTE), &fake)?;
     let mut trial = driven();
     assert!(check_trial(&gated, 4242, "typing", &mut trial).is_none());
     assert_eq!(
         trial.invalid.as_deref(),
-        Some("typing: owner input (idle 3.0 s < 60 s)")
+        Some("typing: owner input (scrollWheel 3.0 s < 60 s)")
     );
     // The trial is void, so the window is not even listed.
     assert_eq!(
         rig.calls(),
         strings(&[
             "idle",
-            "@say typing: owner input (idle 3.0 s < 60 s); stopping the trial"
+            "@say typing: owner input (scrollWheel 3.0 s < 60 s); stopping the trial"
         ])
     );
     let plain = rig.context(None, &fake)?;
@@ -1003,6 +1018,26 @@ fn a_locked_screen_voids_a_gated_trial_as_locked_before_the_window_is_looked_at(
         rig.calls(),
         strings(&["idle", "@say typing: screen locked; stopping the trial"])
     );
+    Ok(())
+}
+
+/// A helper built before the per-type clocks names no input type. It reads
+/// the any-input clock that screen capture resets, so it is not trusted.
+#[test]
+fn a_helper_that_names_no_input_type_is_refused_with_the_rebuild_hint() -> Result<(), String> {
+    let rig = Rig::new("check-old-helper", 1, Some(1))?;
+    write(&rig.window("idle"), "idle\t4000.000\nlocked\t0\n", 0o644)?;
+    let fake = Fake::new(&rig);
+    let gated = rig.context(Some(ONE_MINUTE), &fake)?;
+    let mut trial = driven();
+    assert!(check_trial(&gated, 4242, "typing", &mut trial).is_none());
+    let reason = trial.invalid.unwrap_or_default();
+    assert!(
+        reason.starts_with("typing: cannot read the idle time"),
+        "{reason}"
+    );
+    assert!(reason.contains("no input type"), "{reason}");
+    assert!(reason.contains("bench/helpers/build.sh"), "{reason}");
     Ok(())
 }
 

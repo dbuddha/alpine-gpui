@@ -21,8 +21,7 @@ way: a std-only Cargo workspace outside the root one, plus Swift helpers
 bench/helpers/build.sh          # helpers, reference editor, self-tests
 cd bench && cargo build --release
 target/release/bench workloads | stamp | permissions | fixtures
-target/release/bench run <workload> --app alpine|zed|appkit [--trials 10] [--dry-run]
-target/release/bench run <workload> --app alpine|zed|appkit --wait-idle 10
+target/release/bench run <workload> --app alpine|zed|appkit [--trials 10] [--wait-idle MIN] [--dry-run]
 target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
@@ -56,10 +55,11 @@ input, starting nothing. Alpine is the installed
   uncovered by other apps' visible windows at any layer but the pointer's; a
   failure stops the run before measuring (except what `--wait-idle` voids) and
   invalidates the trial after.
-- `--wait-idle MIN`: each trial waits for MIN minutes without keyboard or mouse
-  input, on AC power, screen unlocked; owner input, a lock or an unreadable
-  clock voids a trial (not replaced: pass spare `--trials`); the display stays
-  awake once the gate first opens.
+- `--wait-idle MIN`: each trial waits MIN minutes without keyboard or mouse
+  input (per-type hardware timers; capture resets the any-input clock), on AC
+  power, screen unlocked; owner input, a lock or an unreadable clock voids a
+  trial (not replaced: pass spare `--trials`); display stays awake once the
+  gate first opens.
 - Report 95% Student t intervals over trials.
 
 ## Permissions
@@ -124,5 +124,5 @@ moves `NSHomeDirectory` and user Library folders. Zed also gets
 `ZED_SERVER_URL`. Only the reference editor gets `-ApplePersistenceIgnoreState
 YES` (why: `apps.rs`). cfprefsd still writes preferences to the real home, so
 each trial compares the app's real state (`apps.rs`) before and after
-and stops loudly on any change. Zed's Dock recents (`noteNewRecentDocumentURL`)
+and stops on any change. Zed's Dock recents (`noteNewRecentDocumentURL`)
 need Full Disk Access to inspect and go unchecked.
