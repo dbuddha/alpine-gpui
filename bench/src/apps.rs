@@ -194,8 +194,8 @@ fn json_string(value: &str) -> String {
 }
 
 /// Zed's isolated settings: no updates, telemetry, AI or sign-in server; a
-/// steady caret and Alpine's font metrics (Menlo 15/22); and no completion
-/// popups or git decorations, which Alpine does not have.
+/// steady caret and Alpine's font metrics (Menlo 15/22); no completion popups
+/// or git decorations, which Alpine does not have; and trusted worktrees.
 pub fn zed_settings(rust_analyzer: Option<&Path>) -> String {
     let mut lines = vec![
         "  \"auto_update\": false".to_owned(),
@@ -209,8 +209,8 @@ pub fn zed_settings(rust_analyzer: Option<&Path>) -> String {
         "  \"show_completions_on_input\": false".to_owned(),
         "  \"git\": { \"inline_blame\": { \"enabled\": false }, \"git_gutter\": \"hide\" }"
             .to_owned(),
-        // Otherwise a fresh profile opens Restricted Mode's trust dialog, which
-        // takes keyboard focus and blocks language servers.
+        // Otherwise a fresh profile starts in Restricted Mode, which blocks
+        // language servers, and its trust dialog takes keyboard focus.
         "  \"session\": { \"trust_all_worktrees\": true }".to_owned(),
     ];
     if let Some(binary) = rust_analyzer {
