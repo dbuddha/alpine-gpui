@@ -170,7 +170,9 @@ func idleRecord(_ seconds: Double) -> [String] {
 // The session dictionary holds CGSSessionScreenIsLocked while the screen is
 // locked. Only read here: nothing unlocks the screen or touches login.
 func screenLocked(_ session: [String: Any]) -> Bool {
-    (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+    guard let flag = session["CGSSessionScreenIsLocked"] else { return false }
+    // Once the key exists, only a clear false reads as unlocked.
+    return (flag as? Bool) ?? true
 }
 
 func sessionLocked() throws -> Bool {
@@ -209,6 +211,11 @@ func windowSelfTest() throws {
     try check(screenLocked(["CGSSessionScreenIsLocked": true]), "a locked session")
     try check(!screenLocked(["CGSSessionScreenIsLocked": false]), "an unlocked flag")
     try check(!screenLocked([:]), "no flag means unlocked")
+    try check(!screenLocked(["CGSSessionScreenIsLocked": NSNumber(value: false)]), "a zero flag")
+    // Once the key exists, anything but a clear false reads as locked.
+    try check(screenLocked(["CGSSessionScreenIsLocked": "yes"]), "a text flag")
+    try check(screenLocked(["CGSSessionScreenIsLocked": 1]), "an integer flag")
+    try check(screenLocked(["CGSSessionScreenIsLocked": NSNumber(value: 2)]), "a number flag")
     try check(lockedRecord(true) == ["locked", "1"], "locked record")
     try check(lockedRecord(false) == ["locked", "0"], "unlocked record")
     _ = try sessionLocked()
