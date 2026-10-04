@@ -4,8 +4,8 @@ parent: ../AGENTS.md
 updated: 2026-10-03
 gate: "inside bench/: cargo build, cargo test, cargo clippy --all-targets -- -D warnings, cargo fmt --check; then helpers/build.sh"
 known_defects:
-  - "Zed timed 0 to 3 of 100 keys in a 1486x933 window on 2026-10-03; unchecked at 960x572"
-  - "highlight: the palette chord opened nothing in the first live trial (run 20261004T033941Z); the query went into the document"
+  - "Zed shows none of 100 typed keys in the band, at 960x572 too (run 20261004T044624Z); cause open"
+  - "highlight: a launch event replaces the pending startup frame before it draws, so no event-0 row exists (run 20261004T045057Z)"
   - "unverified: the reference editor's caret blink suppression"
 ---
 
