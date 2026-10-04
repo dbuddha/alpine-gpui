@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod validation {
     use std::{
         cell::{Cell, RefCell},
+        collections::BTreeMap,
         error::Error,
         ffi::OsStr,
         rc::Rc,
@@ -17,7 +18,7 @@ mod validation {
 
     use alpine_core::{LinearRgba, Point, Rect, Size};
     use alpine_metal::RenderError;
-    use alpine_platform::PresentationOutcome;
+    use alpine_platform::{PresentationOutcome, PresentationRevision};
     use alpine_platform_macos::{
         EditorSignpost, EditorSignpostStage, EditorSignposts, NativeSurface, RecorderSnapshot,
         SurfaceDescriptor, SurfaceError, SurfaceEvent, SurfaceFrame, SurfaceResponse,
@@ -31,6 +32,7 @@ mod validation {
     pub(super) fn run() -> TestResult {
         let hosted_direct = hosted_direct_mode()?;
         validate_startup_frame(hosted_direct)?;
+        validate_superseded_startup_frame()?;
         let descriptor = SurfaceDescriptor::new("Alpine presented frame", 96.0, 64.0, 1.0)?;
         let surface = Rc::new(native_validation::new_surface(&descriptor)?);
         assert_eq!(
@@ -195,6 +197,70 @@ mod validation {
         assert!(end >= begin, "{text}");
         surface.close();
         Ok(())
+    }
+
+    // A frame requested before `show` replaces the pending startup frame. That
+    // frame keeps its event-0 row, as superseded, before any callback runs.
+    fn validate_superseded_startup_frame() -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine superseded startup", 96.0, 64.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        let viewport = Size::new(96.0, 64.0).ok_or("valid viewport")?;
+        let bounds = Rect::new(
+            Point::new(8.0, 8.0).ok_or("valid origin")?,
+            Size::new(80.0, 48.0).ok_or("valid quad size")?,
+        );
+        let color = LinearRgba::new(0.25, 0.5, 0.75, 1.0).ok_or("valid color")?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("valid clear")?;
+        let signposts = EditorSignposts::new();
+        let earlier = frame_rows()?.len();
+        let revision = surface.request_startup_frame(|| {
+            for stage in [
+                EditorSignpostStage::FrameBuildBegin,
+                EditorSignpostStage::FrameBuildComplete,
+            ] {
+                let _ = signposts.emit(EditorSignpost::new(stage, 0, 1, 1, 1, [0; 3]));
+            }
+            Some(SurfaceFrame::new(scene(1, viewport, bounds, color), clear))
+        })?;
+        assert_eq!(revision.map(PresentationRevision::get), Some(1));
+        assert_eq!(frame_rows()?.len(), earlier, "a pending frame has no row");
+        let revision = surface.request_frame(scene(2, viewport, bounds, color), clear)?;
+        assert_eq!(revision.get(), 2);
+
+        let rows = frame_rows()?;
+        assert_eq!(rows.len(), earlier + 1, "{rows:?}");
+        let row = &rows[earlier];
+        assert_eq!(row["revision"], "1", "{row:?}");
+        assert_eq!(row["event"], "", "{row:?}");
+        assert_eq!(row["outcome"], "superseded", "{row:?}");
+        let begin: u64 = row["build_begin_ns"].parse()?;
+        let end: u64 = row["build_end_ns"].parse()?;
+        assert!(end >= begin, "{row:?}");
+        for column in [
+            "submit_begin_ns",
+            "submit_end_ns",
+            "gpu_observed_ns",
+            "target_ns",
+            "target_present_ns",
+            "presented_ns",
+        ] {
+            assert_eq!(row[column], "", "{column}: {row:?}");
+        }
+        assert_eq!(surface.snapshot().submission_count(), 0);
+        surface.close();
+        Ok(())
+    }
+
+    // The recorder's frames.tsv rows, each by column name.
+    fn frame_rows() -> TestResult<Vec<BTreeMap<String, String>>> {
+        let mut tsv = Vec::new();
+        RecorderSnapshot::capture().write_frames_tsv(&mut tsv)?;
+        let text = String::from_utf8(tsv)?;
+        let mut lines = text.lines().map(|line| line.split('\t').map(str::to_owned));
+        let header: Vec<String> = lines.next().ok_or("frames.tsv has no header")?.collect();
+        Ok(lines
+            .map(|fields| header.iter().cloned().zip(fields).collect())
+            .collect())
     }
 
     fn hosted_direct_mode() -> TestResult<bool> {

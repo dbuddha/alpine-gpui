@@ -254,6 +254,38 @@ mod tests {
     }
 
     #[test]
+    fn a_superseded_startup_row_is_still_the_cold_first_frame() -> Result<(), String> {
+        // A launch event can replace the pending startup frame before it
+        // draws. Alpine then writes the row as superseded: event 0 (empty),
+        // both build columns, no submission or presentation columns.
+        let mut startup = vec![""; 20];
+        startup[1] = "1";
+        startup[2] = "superseded";
+        startup[3] = "100000000005";
+        startup[6] = "120";
+        startup[11] = "38000120";
+        startup[12] = "38000480";
+        startup[19] = "61000000";
+        let text = table(&[startup.join("\t"), row("2", "10", "900010")]);
+        let frames = parse_frames(&text)?;
+        assert_eq!(
+            frames.first(),
+            Some(&RecorderFrame {
+                event: None,
+                build_begin_ns: Some(120),
+                build_end_ns: Some(38_000_120),
+            })
+        );
+        assert_eq!(
+            first_build(&frames),
+            FirstBuild::Startup {
+                build_ns: 38_000_000
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_warm_or_missing_startup_row_is_refused() -> Result<(), String> {
         let warm = table(&[row("", "", ""), row("2", "10", "900010")]);
         let FirstBuild::Refused(reason) = first_build(&parse_frames(&warm)?) else {

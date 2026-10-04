@@ -22,9 +22,9 @@ const NO_SERVER: u8 = u8::MAX;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const ABSENT: u32 = u32::MAX;
 
-// Columns after `event_ns` are ns after event receipt (for event 0, the
-// startup build's start) or after submit start for a frame no event produced.
-// Both leave `event` empty; gpu_observed is a poll's upper bound on completion.
+// Columns after `event_ns` are ns after receipt (event 0: build start) or,
+// with no event, after submit start; `event` is then empty. gpu_observed is a
+// poll's upper bound. A replaced pending frame is superseded with no submit.
 const FRAME_HEADER: &str = concat!(
     "event\trevision\toutcome\tevent_ns\tdispatch_ns\tmutation_ns\tbuild_begin_ns",
     "\tlayout_begin_ns\tlayout_end_ns\tatlas_begin_ns\tatlas_end_ns\tbuild_end_ns",
@@ -80,7 +80,8 @@ const fn editor_column(stage: EditorSignpostStage) -> Option<usize> {
     }
 }
 
-/// One frame attempt, from its event's receipt to its terminal record.
+/// One frame attempt, or an event frame replaced before one, from its
+/// event's receipt to its terminal record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameRecord {
     event: u64,
@@ -475,7 +476,7 @@ impl RecorderSnapshot {
         self.work
     }
 
-    /// Writes a header and one TSV row per frame attempt.
+    /// Writes a header, one row per attempt and one per replaced event frame.
     /// # Errors
     /// Returns the first error from `out`.
     pub fn write_frames_tsv(&self, out: &mut impl Write) -> io::Result<()> {
