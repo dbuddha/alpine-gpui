@@ -21,6 +21,8 @@ let ansiKeycodes: [Character: CGKeyCode] = [
 ]
 
 let keyHoldNanos: UInt64 = 8_000_000
+// WindowServer's sender checks were measured at 7 to 18 ms.
+let exitLingerMs = 200
 let guardIntervalNanos: UInt64 = 50_000_000
 
 struct ForegroundGuard {
@@ -451,6 +453,9 @@ func run(_ script: Script) throws {
         posted = 1
     }
     Output.emit(["done", String(Clock.now()), String(posted), String(script.pid)])
+    // WindowServer vets a synthetic event's sender after the event arrives and
+    // drops it ("prohibited from synthesizing") if the sender already exited.
+    Clock.sleep(milliseconds: exitLingerMs)
 }
 
 func inputSelfTest() throws {
