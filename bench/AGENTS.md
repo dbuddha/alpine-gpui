@@ -54,13 +54,13 @@ input, starting nothing. Alpine is the installed
   other rows pool them.
 - From before measuring, every second, the app must be frontmost and
   uncovered by other apps' visible windows at any layer but the pointer's; a
-  failure stops the run before measuring (except under `--wait-idle`) and
+  failure stops the run before measuring (except what `--wait-idle` voids) and
   invalidates the trial after.
 - `--wait-idle MIN`: each trial waits for MIN minutes without keyboard or mouse
-  input, on AC power, screen unlocked; owner input or a lock voids a trial,
-  even before measuring (not replaced: pass spare `--trials`); the display
-  stays awake once the gate first opens.
-- Report 95% Student t intervals of per-trial values.
+  input, on AC power, screen unlocked; owner input, a lock or an unreadable
+  clock voids a trial (not replaced: pass spare `--trials`); the display stays
+  awake once the gate first opens.
+- Report 95% Student t intervals over trials.
 
 ## Permissions
 
