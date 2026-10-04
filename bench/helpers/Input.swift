@@ -523,6 +523,13 @@ func routingSelfTest() throws {
         try check(event.getIntegerValueField(.eventTargetUnixProcessID) == 4242, "\(name) carries its target pid")
         try check(access.get(event) == local, "\(name) carries its window-local point")
     }
+    // A mouse event also names the window in the public fields, which it keeps.
+    for (name, event) in events where name.hasPrefix("mouse") {
+        let under = event.getIntegerValueField(.mouseEventWindowUnderMousePointer)
+        let handler = event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent)
+        try check(under == 9001, "\(name) keeps field 91")
+        try check(handler == 9001, "\(name) keeps field 92")
+    }
     // The measured window is the only one a poster may name.
     try check((try? Poster(pid: 4243, route: route)) == nil, "a route for another pid is refused")
     let unrouted = try Poster(pid: 4242, route: nil)
