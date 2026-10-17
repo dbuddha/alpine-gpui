@@ -852,6 +852,15 @@ fn await_frame_terminal(
                 .submission_count()
                 .saturating_sub(initial.submission_count()),
         );
+        // A cancel with nothing submitted means the link stayed silent past
+        // its restarts; fail now instead of at the wait's timeout.
+        if observed_submissions == 0 && snapshot.cancelled_count() > initial.cancelled_count() {
+            return Err(failure(
+                "cancelled-without-submission",
+                0,
+                &"the pending frame was cancelled after its display link stayed silent",
+            ));
+        }
         if frame_drain_bound_exceeded(observed_submissions) {
             return Err(failure(
                 "frame-drain-bound",

@@ -41,7 +41,7 @@ autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their o
 next:
   - "Cleanup: land #656 after its live check"
   - "M1 close: ten-trial baseline, budgets, CP1"
-  - "S: servers stop cleanly and off the main thread, then S7 to S10"
+  - "S: S5 server stops off the main thread, then S8 to S10"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 

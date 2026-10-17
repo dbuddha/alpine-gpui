@@ -1639,10 +1639,15 @@ pub mod native_validation {
         timer_terminals: u64,
         timer_close_drains: u64,
         link_restarts: u64,
+        max_first_callback_lag: Duration,
         timer_armed: bool,
     }
 
     impl FrameProgressEvidence {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "validation evidence is one flat record of counters"
+        )]
         pub(crate) const fn new(
             silenced_updates: u64,
             timer_schedules: u64,
@@ -1650,6 +1655,7 @@ pub mod native_validation {
             timer_terminals: u64,
             timer_close_drains: u64,
             link_restarts: u64,
+            max_first_callback_lag: Duration,
             timer_armed: bool,
         ) -> Self {
             Self {
@@ -1659,6 +1665,7 @@ pub mod native_validation {
                 timer_terminals,
                 timer_close_drains,
                 link_restarts,
+                max_first_callback_lag,
                 timer_armed,
             }
         }
@@ -1697,6 +1704,13 @@ pub mod native_validation {
         #[must_use]
         pub const fn link_restarts(self) -> u64 {
             self.link_restarts
+        }
+
+        /// Returns the longest wait from a resume or restart to the next
+        /// display-link callback.
+        #[must_use]
+        pub const fn max_first_callback_lag(self) -> Duration {
+            self.max_first_callback_lag
         }
 
         /// Returns whether a frame-progress timer is scheduled now.

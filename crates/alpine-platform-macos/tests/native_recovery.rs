@@ -18,8 +18,7 @@ mod validation {
     use alpine_platform::PresentationOutcome;
     use alpine_platform_macos::{
         CloseDisposition, NativeSurface, SurfaceDescriptor, SurfaceError, SurfaceEvent,
-        SurfaceFrame, SurfaceOperation, SurfaceResponse, SurfaceSnapshot, SurfaceWakeAdmission,
-        native_validation,
+        SurfaceFrame, SurfaceResponse, SurfaceSnapshot, SurfaceWakeAdmission, native_validation,
     };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
     use objc2::rc::autoreleasepool;
@@ -139,7 +138,7 @@ mod validation {
     }
 
     // No update ever reaches the pending frame, so only the bounded restarts
-    // and the cancel can end it: zero submissions and a surfaced error.
+    // and the cancel can end it: zero submissions and no latched error.
     fn validate_permanent_pending_silence(
         surface: &NativeSurface,
         scene: Scene,
@@ -169,10 +168,15 @@ mod validation {
         assert_eq!(snapshot.submission_count(), before.submission_count());
         assert_eq!(snapshot.occupied_frame_slots(), 0);
         assert!(snapshot.display_link_paused(), "{snapshot:?}");
-        assert_eq!(
-            progress.link_restarts() - progress_before.link_restarts(),
-            MAX_PENDING_LINK_RESTARTS,
+        // A pause during the wait restores the budget, so more is possible.
+        assert!(
+            progress.link_restarts() - progress_before.link_restarts() >= MAX_PENDING_LINK_RESTARTS,
             "{progress:?}"
+        );
+        assert_eq!(
+            snapshot.cancelled_count(),
+            before.cancelled_count() + 1,
+            "{snapshot:?}"
         );
         assert_eq!(
             progress.timer_terminals() - progress_before.timer_terminals(),
@@ -180,12 +184,7 @@ mod validation {
             "{progress:?}"
         );
         assert!(!progress.timer_armed(), "{progress:?}");
-        assert_eq!(
-            surface.take_error()?,
-            Some(SurfaceError::InvariantViolation {
-                operation: SurfaceOperation::Presentation,
-            })
-        );
+        assert_eq!(surface.take_error()?, None);
         assert_progress_idle(surface, progress)
     }
 

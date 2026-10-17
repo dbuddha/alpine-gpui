@@ -1641,7 +1641,8 @@ impl PresentationDriver {
     }
 
     // The restart budget is spent: drop the frame first so even a failed
-    // cancel stops the timer. Prepare gives the terminal a token.
+    // cancel stops the timer. The Cancelled terminal is the record; no error
+    // latches, so one stuck link cannot fail the app's exit.
     fn cancel_silent_pending(
         &mut self,
         counters: &FrameCounters,
@@ -1655,7 +1656,6 @@ impl PresentationDriver {
             return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
         };
         let transition = self.state.apply(PresentationAction::CancelActive(token))?;
-        self.last_error = Some(SurfaceError::invariant(SurfaceOperation::Presentation));
         let timing = AttemptTiming {
             event: frame.event_timing,
             ..AttemptTiming::default()
@@ -3384,6 +3384,21 @@ fn link_silent_for_tick(no_update_since_tick: bool, since_update: Option<Duratio
 const PENDING_LINK_QUIET: Duration = Duration::from_secs(1);
 const MAX_PENDING_LINK_RESTARTS: u8 = 3;
 
+// Silence since the last update, resume or restart; zero while updates flow.
+fn pending_quiet_for(
+    no_update_since_tick: bool,
+    last_update: Option<Instant>,
+    last_resume: Option<Instant>,
+    now: Instant,
+) -> Duration {
+    if !no_update_since_tick {
+        return Duration::ZERO;
+    }
+    last_update
+        .max(last_resume)
+        .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
+}
+
 const fn pending_waits_for_link(active: bool, pending: bool, link: DisplayLinkState) -> bool {
     !active && pending && matches!(link, DisplayLinkState::Running)
 }
@@ -3465,6 +3480,8 @@ struct FrameProgressCounters {
     terminals: Cell<u64>,
     close_drains: Cell<u64>,
     link_restarts: Cell<u64>,
+    awaiting_callback_since: Cell<Option<Instant>>,
+    max_first_callback_lag: Cell<Duration>,
 }
 
 #[cfg(alpine_native_validation)]
@@ -4349,9 +4366,7 @@ impl DisplayLinkDelegate {
             DisplayLinkDirective::None => {}
             DisplayLinkDirective::Resume => {
                 display_link.setPaused(false);
-                self.ivars()
-                    .last_display_link_resume
-                    .set(Some(Instant::now()));
+                self.stamp_display_link_resume();
             }
             DisplayLinkDirective::Pause => display_link.setPaused(true),
             DisplayLinkDirective::Invalidate => self.retire_display_link(),
@@ -4371,11 +4386,19 @@ impl DisplayLinkDelegate {
         }
         display_link.setPaused(true);
         display_link.setPaused(false);
-        self.ivars()
-            .last_display_link_resume
-            .set(Some(Instant::now()));
+        self.stamp_display_link_resume();
         #[cfg(alpine_native_validation)]
         increment_cell(&self.ivars().frame_progress.link_restarts);
+    }
+
+    fn stamp_display_link_resume(&self) {
+        let now = Instant::now();
+        self.ivars().last_display_link_resume.set(Some(now));
+        #[cfg(alpine_native_validation)]
+        self.ivars()
+            .frame_progress
+            .awaiting_callback_since
+            .set(Some(now));
     }
 
     // Ends callbacks without invalidate(). invalidate() races QuartzCore's
@@ -4437,9 +4460,15 @@ impl DisplayLinkDelegate {
     fn record_display_link_update(&self) {
         let updates = &self.ivars().display_link_updates;
         updates.set(updates.get().wrapping_add(1));
-        self.ivars()
-            .last_display_link_update
-            .set(Some(Instant::now()));
+        let now = Instant::now();
+        self.ivars().last_display_link_update.set(Some(now));
+        // Evidence for sizing the restart threshold on real runners.
+        #[cfg(alpine_native_validation)]
+        if let Some(since) = self.ivars().frame_progress.awaiting_callback_since.take() {
+            let lag = now.saturating_duration_since(since);
+            let longest = &self.ivars().frame_progress.max_first_callback_lag;
+            longest.set(longest.get().max(lag));
+        }
     }
 
     fn reconcile_frame_progress_timer(&self) {
@@ -4517,13 +4546,12 @@ impl DisplayLinkDelegate {
         let last_update = self.ivars().last_display_link_update.get();
         let since_update = last_update.map(|at| now.saturating_duration_since(at));
         let link_silent = link_silent_for_tick(no_update_since_tick, since_update);
-        let quiet_for = if no_update_since_tick {
-            last_update
-                .max(self.ivars().last_display_link_resume.get())
-                .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
-        } else {
-            Duration::ZERO
-        };
+        let quiet_for = pending_quiet_for(
+            no_update_since_tick,
+            last_update,
+            self.ivars().last_display_link_resume.get(),
+            now,
+        );
         let Some(driver) = &self.ivars().driver else {
             self.cancel_frame_progress_timer();
             return;
@@ -6237,6 +6265,7 @@ impl NativeSurface {
             counters.terminals.get(),
             counters.close_drains.get(),
             counters.link_restarts.get(),
+            counters.max_first_callback_lag.get(),
             armed,
         )
     }
@@ -7434,6 +7463,22 @@ mod tests {
     }
 
     #[test]
+    fn pending_quiet_runs_from_the_newest_update_or_resume() {
+        let now = Instant::now();
+        let second = Duration::from_secs(1);
+        let update = now.checked_sub(second * 3);
+        let resume = now.checked_sub(second);
+        assert_eq!(
+            pending_quiet_for(false, update, resume, now),
+            Duration::ZERO
+        );
+        assert_eq!(pending_quiet_for(true, None, None, now), Duration::MAX);
+        assert_eq!(pending_quiet_for(true, update, resume, now), second);
+        assert_eq!(pending_quiet_for(true, resume, update, now), second);
+        assert_eq!(pending_quiet_for(true, update, None, now), second * 3);
+    }
+
+    #[test]
     fn pending_link_restarts_wait_for_a_full_quiet_interval() {
         let mut watchdog = PendingLinkWatchdog::default();
         let two_thirty_hertz_turns = Duration::from_micros(66_667);
@@ -7916,10 +7961,7 @@ mod superseded_frame_tests {
         );
         assert_eq!(driver.display_link_state(), DisplayLinkState::Paused);
         assert!(!driver.needs_frame_progress());
-        assert_eq!(
-            driver.take_error(),
-            Some(SurfaceError::invariant(SurfaceOperation::Presentation))
-        );
+        assert_eq!(driver.take_error(), None);
         Ok(())
     }
 
@@ -7964,7 +8006,7 @@ mod superseded_frame_tests {
         assert!(!driver.needs_frame_progress());
 
         // The next request resumes the link with a full budget.
-        driver.take_error();
+        assert!(driver.take_error().is_none());
         driver.request_frame(blank_scene(5)?, clear()?)?;
         assert!(driver.needs_frame_progress());
         assert_eq!(
