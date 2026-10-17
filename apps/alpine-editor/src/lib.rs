@@ -2296,8 +2296,8 @@ impl Drop for EditorApp {
         if let Some(capture) = self.dogfood_capture.take() {
             capture.capture(self);
         }
-        // Persist before stopping servers: each shutdown can block up to 5 s,
-        // and a force quit in that window must not lose recovery or session.
+        // Persist before stopping servers: quit waits up to 1.5 s for them, and
+        // a force quit in that window must not lose recovery or session.
         if self.recovery.is_some()
             && let Ok(request) = self.capture_recovery_request()
             && let Some(recovery) = self.recovery.as_ref()

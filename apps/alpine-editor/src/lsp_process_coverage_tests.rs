@@ -80,12 +80,10 @@ fn detached_process(
     control: Option<SyncSender<Control>>,
     events: Receiver<ProcessEvent>,
 ) -> LanguageServerProcess {
-    let (_completion_sender, supervisor_complete) = sync_channel(1);
     LanguageServerProcess {
         control,
         events,
         supervisor: None,
-        supervisor_complete,
         shutdown: None,
         counters: Arc::new(Counters::default()),
         configuration_bytes: 7,
@@ -1080,8 +1078,8 @@ fn drop_signals_and_joins_the_owned_supervisor() {
     let (shutdown, shutdown_receiver) = sync_channel(1);
     let observed = Arc::new(AtomicBool::new(false));
     let worker_observed = Arc::clone(&observed);
-    let (completion_sender, supervisor_complete) = sync_channel(1);
-    let supervisor = thread::spawn(move || {
+    let (completion_sender, complete) = sync_channel(1);
+    let thread = thread::spawn(move || {
         let mut farewell = None;
         while !shutdown_requested(&shutdown_receiver, &mut farewell) {
             thread::yield_now();
@@ -1093,8 +1091,7 @@ fn drop_signals_and_joins_the_owned_supervisor() {
     let process = LanguageServerProcess {
         control: None,
         events,
-        supervisor: Some(supervisor),
-        supervisor_complete,
+        supervisor: Some(Supervisor { thread, complete }),
         shutdown: Some(shutdown),
         counters: Arc::new(Counters::default()),
         configuration_bytes: 0,
@@ -1122,7 +1119,12 @@ fn bounded_supervisor_join_reports_an_unfinished_worker() {
     });
     let (_completion_sender, completion) = sync_channel(1);
     let counters = Counters::default();
-    join_supervisor(supervisor, &completion, Duration::ZERO, &counters);
+    assert!(!join_supervisor(
+        supervisor,
+        &completion,
+        Duration::ZERO,
+        &counters
+    ));
     assert_eq!(counters.shutdown_timeouts.load(Ordering::Relaxed), 1);
     release.store(true, Ordering::Release);
     let deadline = Instant::now() + TIMEOUT;
@@ -1447,10 +1449,10 @@ fn stops_unpublish_the_pid_before_killing_or_reaping_the_child() -> Result<(), B
 }
 
 // A scratch directory under the system temporary directory, removed on drop.
-struct TestDirectory(PathBuf);
+pub(crate) struct TestDirectory(PathBuf);
 
 impl TestDirectory {
-    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(name: &str) -> Result<Self, Box<dyn Error>> {
         let path = env::temp_dir().join(format!(
             "alpine-lsp-process-{name}-{}-{}",
             std::process::id(),
@@ -1460,7 +1462,7 @@ impl TestDirectory {
         Ok(Self(fs::canonicalize(path)?))
     }
 
-    fn join(&self, name: &str) -> PathBuf {
+    pub(crate) fn join(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
 }
@@ -1474,21 +1476,25 @@ impl Drop for TestDirectory {
 // The `sleep 30` a test's shell server started, killed on drop unless seen
 // gone. It outlives every test, so its PID is not reused while held here.
 #[cfg(unix)]
-struct Grandchild {
+pub(crate) struct Grandchild {
     id: String,
     gone: bool,
 }
 
 #[cfg(unix)]
 impl Grandchild {
-    fn read(path: &Path) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn from_id(id: u32) -> Self {
+        let id = id.to_string();
+        Self { id, gone: false }
+    }
+
+    pub(crate) fn read(path: &Path) -> Result<Self, Box<dyn Error>> {
         let deadline = Instant::now() + TIMEOUT;
         loop {
             if let Ok(id) = fs::read_to_string(path)
                 && let Ok(id) = id.trim().parse::<u32>()
             {
-                let id = id.to_string();
-                return Ok(Self { id, gone: false });
+                return Ok(Self::from_id(id));
             }
             if Instant::now() >= deadline {
                 return Err("the grandchild never reported its PID".into());
@@ -1497,7 +1503,7 @@ impl Grandchild {
         }
     }
 
-    fn alive(&self) -> bool {
+    pub(crate) fn alive(&self) -> bool {
         Command::new("/bin/kill")
             .args(["-0", &self.id])
             .stderr(Stdio::null())
@@ -1505,7 +1511,7 @@ impl Grandchild {
             .is_ok_and(|status| status.success())
     }
 
-    fn gone_within(&mut self, timeout: Duration) -> bool {
+    pub(crate) fn gone_within(&mut self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while self.alive() {
             if Instant::now() >= deadline {
