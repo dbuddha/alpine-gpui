@@ -971,9 +971,8 @@ fn run_input_phase(
     Ok(())
 }
 
-/// Voids the trial if a finished input phase did nothing the captured frames
-/// can show: scrolls and keys must post events and leave many distinct states.
-/// Input that changed nothing failed; it was not fast.
+/// Missing input is a helper failure. Sparse key responses remain measured
+/// outcomes with diagnostics, so subsequent fast trials cannot replace them.
 fn refuse_idle_input(
     driven: &mut Driven,
     phase: &str,
@@ -984,7 +983,11 @@ fn refuse_idle_input(
     let reason = match action {
         Action::Scroll { .. } => analysis::scroll_refusal(posted, frames, timebase),
         Action::Type { .. } | Action::Keys { .. } => {
-            analysis::key_refusal(posted, frames, timebase)
+            let warning = analysis::key_band_warning(posted, frames, timebase);
+            if let Some(reason) = &warning {
+                eprintln!("bench: {phase}: {reason}; key timing is unqualified");
+            }
+            warning.filter(|_| posted.is_empty())
         }
         Action::Idle | Action::UntilQuiet { .. } | Action::SaveRecorderLog => None,
     };
@@ -1193,6 +1196,22 @@ fn trial_metrics(
                 let spacing_ms = action.key_interval_ms().unwrap_or_default();
                 let spacing = timebase.ticks(spacing_ms.saturating_mul(1_000_000));
                 let latencies = analysis::key_latencies(&events, &frames, timebase, spacing);
+                let distinct = analysis::input_span(&events, timebase)
+                    .map_or(0, |span| analysis::distinct_frames(&frames, span.0, span.1));
+                metrics.push(Metric::new(
+                    phase.name,
+                    "key_band_distinct",
+                    to_f64(distinct as u64),
+                    "count",
+                ));
+                metrics.push(Metric::new(
+                    phase.name,
+                    "key_band_states_sufficient",
+                    f64::from(
+                        !events.is_empty() && distinct >= analysis::min_key_states(events.len()),
+                    ),
+                    "bool",
+                ));
                 metrics.extend(analysis::latency_metrics(
                     phase.name,
                     &latencies,
@@ -1453,6 +1472,13 @@ fn outcome_line(outcome: &TrialOutcome, total: u32) -> String {
         None => "valid".to_owned(),
         Some(reason) => format!("INVALID ({reason})"),
     });
+    if outcome
+        .metrics
+        .iter()
+        .any(|metric| metric.name == "key_semantic_qualified" && metric.value == 0.0)
+    {
+        parts.push("key timing unqualified (hash changes do not verify text or caret)".to_owned());
+    }
     if let Some(launch) = find(TRIAL_PHASE, "launch_to_window") {
         parts.push(format!("window after {launch:.0} ms"));
     }
@@ -1819,16 +1845,12 @@ mod tests {
     }
 
     #[test]
-    fn typing_and_caret_runs_that_changed_nothing_void_the_trial() -> Result<(), String> {
+    fn sparse_typing_and_caret_responses_remain_measured_outcomes() -> Result<(), String> {
         for phase in ["typing", "caret"] {
             let action = action_of(phase)?;
             // Thousands of frames, but only two states.
             let reason = verdict_in(phase, action, &pressed(100), &frames_of(3_000, 2));
-            let want = format!(
-                "{phase}: 100 keys left the band in 2 distinct states, \
-                 fewer than the 50 required"
-            );
-            assert_eq!(reason, Some(want));
+            assert_eq!(reason, None);
             // A band that changed with every frame passes.
             let landed = verdict_in(phase, action, &pressed(100), &frames_of(3_000, 3_000));
             assert_eq!(landed, None, "{phase}");

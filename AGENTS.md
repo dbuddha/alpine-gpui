@@ -39,7 +39,7 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "Cleanup: CI re-run; land #659, #660, #656"
+  - "Cleanup: land #660, then #656 after its live check"
   - "M1 close: ten-trial baseline, budgets, CP1"
   - "S: quit order, crash log, safe saves, servers off main thread"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
