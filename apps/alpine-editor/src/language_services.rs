@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
@@ -16,7 +17,7 @@ use std::{
 use crate::language_registry::LanguageRegistryError;
 use crate::{
     language_registry::{LanguageRegistry, LanguageSpec},
-    lsp_process::ProcessWake,
+    lsp_process::{ProcessStop, ProcessWake},
     rust_diagnostics::{
         DiscoveryEnv, LanguageEffect, LanguageWake, RustDiagnostics, RustDiagnosticsSnapshot,
         RustDocumentInput, discover_binaries,
@@ -33,6 +34,12 @@ const MAX_OPEN_PATHS: usize = 32;
 const IDLE_TTL: Duration = Duration::from_mins(1);
 // Discovery jobs that may wait behind the one in flight.
 const DISCOVERY_QUEUE: usize = MAX_WARM_SERVERS;
+// Stops from eviction and idle reap in flight at once; each ends within
+// about 0.8 s, so later syncs and polls reap them.
+const MAX_DRAINING: usize = MAX_WARM_SERVERS + 1;
+// Quit waits this long in total for every server's stop: well past the
+// about 0.8 s a stubborn server takes to reach KILL, so none outlives quit.
+const QUIT_DEADLINE: Duration = Duration::from_millis(1_500);
 
 struct Slot {
     workspace_root: PathBuf,
@@ -51,8 +58,18 @@ enum Discovery {
         token: u64,
         wake: ProcessWake,
         input: RustDocumentInput,
+        cancel: Arc<AtomicBool>,
     },
     Done,
+}
+
+impl Slot {
+    /// Tells the discovery thread to skip this slot's queued job.
+    fn cancel_discovery(&self) {
+        if let Discovery::Pending { cancel, .. } = &self.discovery {
+            cancel.store(true, Ordering::Release);
+        }
+    }
 }
 
 /// Finds one server's executable. Runs only on the discovery thread.
@@ -66,6 +83,7 @@ struct DiscoveryJob {
     overlay: Option<PathBuf>,
     environment: DiscoveryEnv,
     wake: ProcessWake,
+    cancel: Arc<AtomicBool>,
 }
 
 struct DiscoveryResult {
@@ -97,6 +115,9 @@ impl DiscoveryWorker {
             .name(String::from("alpine-lsp-discovery"))
             .spawn(move || {
                 while let Ok(job) = queued.recv() {
+                    if job.cancel.load(Ordering::Acquire) {
+                        continue;
+                    }
                     let server = discover(&job);
                     let result = DiscoveryResult {
                         token: job.token,
@@ -128,9 +149,13 @@ pub(crate) struct LanguageServices {
     slots: Vec<Slot>,
     active_index: Option<usize>,
     fallback: RustDiagnostics,
+    // Stops begun by eviction and idle reap, at most MAX_DRAINING.
+    draining: Vec<ProcessStop>,
     discover: Discover,
     discovery_worker: Option<DiscoveryWorker>,
     discovery_token: u64,
+    #[cfg(test)]
+    detached_stops: u64,
     #[cfg(test)]
     discovery_env: Option<DiscoveryEnv>,
     #[cfg(test)]
@@ -149,9 +174,12 @@ impl Default for LanguageServices {
             slots: Vec::new(),
             active_index: None,
             fallback: RustDiagnostics::default(),
+            draining: Vec::new(),
             discover: Arc::new(run_discovery),
             discovery_worker: None,
             discovery_token: 0,
+            #[cfg(test)]
+            detached_stops: 0,
             #[cfg(test)]
             discovery_env: None,
             #[cfg(test)]
@@ -264,6 +292,7 @@ impl LanguageServices {
         F: FnOnce(LanguageWake) -> ProcessWake,
     {
         let now = Instant::now();
+        self.reap_draining();
         // This sync starts the active slot itself, with the current input.
         let _ = self.admit_discoveries();
         self.reap_idle(now);
@@ -295,6 +324,7 @@ impl LanguageServices {
     }
 
     pub(crate) fn poll(&mut self, wake: LanguageWake) -> LanguageEffect {
+        self.reap_draining();
         let mut effect = LanguageEffect::default();
         if let Some((index, input, session_wake)) = self.admit_discoveries()
             && let Some(slot) = self.slots.get_mut(index)
@@ -325,14 +355,24 @@ impl LanguageServices {
         effect
     }
 
+    /// Begins every server's stop, then waits for all of them at once under
+    /// one deadline; any still running then is detached.
     pub(crate) fn shutdown(&mut self) -> RustDiagnosticsSnapshot {
         self.discovery_worker = None;
-        for slot in &mut self.slots {
-            let _ = slot.model.shutdown();
+        let mut stops = mem::take(&mut self.draining);
+        for mut slot in self.slots.drain(..) {
+            slot.cancel_discovery();
+            stops.extend(slot.model.begin_stop());
         }
-        self.slots.clear();
         self.active_index = None;
-        self.fallback.shutdown()
+        stops.extend(self.fallback.begin_stop());
+        let deadline = Instant::now() + QUIT_DEADLINE;
+        for mut stop in stops {
+            if !stop.finish_by(deadline) {
+                self.count_detached();
+            }
+        }
+        self.fallback.snapshot()
     }
 
     fn active_model(&self) -> &RustDiagnostics {
@@ -495,6 +535,7 @@ impl LanguageServices {
         };
         let slot = &self.slots[index];
         let wake = wake_factory(slot.model.next_session_wake());
+        let cancel = Arc::new(AtomicBool::new(false));
         let job = DiscoveryJob {
             token,
             workspace_root: slot.workspace_root.clone(),
@@ -503,11 +544,17 @@ impl LanguageServices {
             overlay: self.discovery_overlay.clone(),
             environment,
             wake: Arc::clone(&wake),
+            cancel: Arc::clone(&cancel),
         };
         match worker.jobs.try_send(job) {
             Ok(()) => {
                 self.discovery_token = token;
-                self.slots[index].discovery = Discovery::Pending { token, wake, input };
+                self.slots[index].discovery = Discovery::Pending {
+                    token,
+                    wake,
+                    input,
+                    cancel,
+                };
                 #[cfg(test)]
                 {
                     self.discovery_dispatches = self.discovery_dispatches.saturating_add(1);
@@ -576,18 +623,31 @@ impl LanguageServices {
         start
     }
 
+    /// Evicts an unattached slot if there is one, else the least recently
+    /// used attached slot, but never the shown document's.
     fn evict_one(&mut self) -> bool {
+        let active = self.active_index;
         let Some(index) = self
             .slots
             .iter()
             .enumerate()
+            .filter(|(index, slot)| !(slot.attached && active == Some(*index)))
             .min_by_key(|(_, slot)| (slot.attached, slot.last_used))
             .map(|(index, _)| index)
         else {
             return false;
         };
+        self.retire(index);
+        true
+    }
+
+    /// Removes a slot and moves its server's stop to `draining`. Never waits.
+    fn retire(&mut self, index: usize) {
         let mut slot = self.slots.remove(index);
-        let _ = slot.model.shutdown();
+        slot.cancel_discovery();
+        if let Some(stop) = slot.model.begin_stop() {
+            self.push_draining(stop);
+        }
         if let Some(active) = self.active_index {
             if active == index {
                 self.active_index = None;
@@ -595,7 +655,37 @@ impl LanguageServices {
                 self.active_index = Some(active.saturating_sub(1));
             }
         }
-        true
+    }
+
+    fn push_draining(&mut self, stop: ProcessStop) {
+        self.reap_draining();
+        // A detached stop still ends on its own supervisor thread.
+        if self.draining.len() >= MAX_DRAINING {
+            self.draining.remove(0).detach();
+            self.count_detached();
+        }
+        if self.draining.try_reserve(1).is_err() {
+            stop.detach();
+            self.count_detached();
+            return;
+        }
+        self.draining.push(stop);
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "counts only in tests")
+    )]
+    fn count_detached(&mut self) {
+        #[cfg(test)]
+        {
+            self.detached_stops = self.detached_stops.saturating_add(1);
+        }
+    }
+
+    /// Joins every stop that has finished, without waiting for the rest.
+    fn reap_draining(&mut self) {
+        self.draining.retain_mut(|stop| !stop.try_finish());
     }
 
     fn reap_idle(&mut self, now: Instant) {
@@ -609,15 +699,7 @@ impl LanguageServices {
                     })
             };
             if expired {
-                let mut slot = self.slots.remove(index);
-                let _ = slot.model.shutdown();
-                if let Some(active) = self.active_index {
-                    if active == index {
-                        self.active_index = None;
-                    } else if active > index {
-                        self.active_index = Some(active.saturating_sub(1));
-                    }
-                }
+                self.retire(index);
             } else {
                 index = index.saturating_add(1);
             }
@@ -640,6 +722,19 @@ impl LanguageServices {
         {
             slot.attached = false;
             slot.idle_since = Some(now);
+            slot.last_used = now.checked_sub(Duration::from_hours(1)).unwrap_or(now);
+        }
+    }
+
+    /// Makes a slot the least recently used one without detaching it.
+    #[cfg(test)]
+    pub(crate) fn age_slot_for_test(&mut self, server_id: &str) {
+        let now = Instant::now();
+        if let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.server_id.as_ref() == server_id)
+        {
             slot.last_used = now.checked_sub(Duration::from_hours(1)).unwrap_or(now);
         }
     }
@@ -727,9 +822,16 @@ impl LanguageServices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rust_diagnostics::RustDiagnosticsError;
+    use crate::{
+        lsp_process::{
+            blocking_stop_waits,
+            tests::{Grandchild, TestDirectory},
+        },
+        rust_diagnostics::{LanguageIdentity, RustDiagnosticsError},
+    };
     use std::{
         error::Error,
+        fmt::Write as _,
         fs,
         sync::{
             Mutex,
@@ -1237,6 +1339,342 @@ mod tests {
         assert_eq!(gate.finished.load(Ordering::SeqCst), 1);
         assert_eq!(services.server_processes().count(), 0);
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    // A server that ignores `exit` and TERM. Its first start leaves a `sleep
+    // 30` grandchild, also ignoring TERM, holding its pipes; each start
+    // appends its PID to `starts` in its workspace root, its working folder.
+    const STUBBORN_SERVER: &str = "trap '' TERM\necho $$ >> starts\n\
+        [ -e pid ] || { sleep 30 & echo $! > pid.tmp && mv pid.tmp pid; }\nexec sleep 30\n";
+    const LANGUAGES: usize = MAX_WARM_SERVERS + 1;
+
+    // Languages l0 to l5 on servers s0 to s5. No root markers, so each
+    // document's folder is its workspace root; `sh` reads the script beside
+    // those folders, so no new executable waits on a macOS assessment.
+    fn stub_registry() -> Result<LanguageRegistry, Box<dyn Error>> {
+        let mut text = String::new();
+        for index in 0..LANGUAGES {
+            write!(
+                text,
+                "[[language]]\nid = \"l{index}\"\nextensions = [\"l{index}\"]\n\
+                 server_id = \"s{index}\"\nbinaries = [\"sh\"]\narguments = [\"../server.sh\"]\n"
+            )?;
+        }
+        Ok(LanguageRegistry::parse(&text)?)
+    }
+
+    fn stub_document(
+        directory: &TestDirectory,
+        index: usize,
+    ) -> Result<RustDocumentInput, Box<dyn Error>> {
+        let workspace = directory.join(&format!("w{index}"));
+        fs::create_dir_all(&workspace)?;
+        let path = workspace.join(format!("main.l{index}"));
+        fs::write(&path, "x\n")?;
+        let identity = LanguageIdentity {
+            workspace_id: 1,
+            workspace_revision: 1,
+            document_id: u64::try_from(index)? + 1,
+            document_revision: 1,
+            buffer_revision: 1,
+            selection_revision: 1,
+        };
+        let snapshot = alpine_text::Buffer::new("x\n").snapshot();
+        Ok(RustDocumentInput::new(
+            &path, &workspace, identity, snapshot,
+        ))
+    }
+
+    // Signal 0 only checks; it never reaches a reused PID's process.
+    fn process_exists(id: u32) -> bool {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", &id.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Six open tabs, one per language, each served by `STUBBORN_SERVER`.
+    struct Stubborn {
+        services: LanguageServices,
+        documents: Vec<RustDocumentInput>,
+        spawned: Vec<Grandchild>,
+        // Supervisors reap leaders, so their PIDs are only ever polled.
+        leaders: Vec<u32>,
+        leaders_tracked: bool,
+        publish: Sender<LanguageWake>,
+        directory: TestDirectory,
+    }
+
+    // Even a failed test waits for, or kills, every process it started.
+    impl Drop for Stubborn {
+        fn drop(&mut self) {
+            let _ = self.services.shutdown();
+            let _ = self.all_gone();
+        }
+    }
+
+    impl Stubborn {
+        fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+            let directory = TestDirectory::new(name)?;
+            fs::write(directory.join("server.sh"), STUBBORN_SERVER)?;
+            let mut services = LanguageServices {
+                registry: stub_registry()?,
+                discovery_enabled: true,
+                discovery_env: Some(DiscoveryEnv {
+                    pinned: Some("/bin/sh".into()),
+                    ..DiscoveryEnv::default()
+                }),
+                ..LanguageServices::default()
+            };
+            let documents = (0..LANGUAGES)
+                .map(|index| stub_document(&directory, index))
+                .collect::<Result<Vec<_>, _>>()?;
+            services.replace_open_paths(documents.iter().map(RustDocumentInput::path));
+            let (publish, _) = mpsc::channel();
+            Ok(Self {
+                services,
+                documents,
+                spawned: Vec::new(),
+                leaders: Vec::new(),
+                leaders_tracked: false,
+                publish,
+                directory,
+            })
+        }
+
+        fn show(&mut self, index: usize) -> LanguageEffect {
+            let input = self.documents[index].clone();
+            self.services.sync(Some(input), wake_into(&self.publish))
+        }
+
+        /// Shows tabs 0 to 4 in order and waits for each server's grandchild.
+        fn start_five(&mut self) -> Result<(), Box<dyn Error>> {
+            for index in 0..MAX_WARM_SERVERS {
+                let _ = self.show(index);
+                self.wait_for_grandchild(index)?;
+            }
+            Ok(())
+        }
+
+        fn wait_for_grandchild(&mut self, index: usize) -> Result<(), Box<dyn Error>> {
+            let pid = self.directory.join(&format!("w{index}/pid"));
+            self.spawned.push(Grandchild::read(&pid)?);
+            Ok(())
+        }
+
+        fn starts(&self, index: usize) -> usize {
+            let starts = self.directory.join(&format!("w{index}/starts"));
+            fs::read_to_string(starts).map_or(0, |text| text.lines().count())
+        }
+
+        fn track_leaders(&mut self) {
+            if mem::replace(&mut self.leaders_tracked, true) {
+                return;
+            }
+            for index in 0..LANGUAGES {
+                let starts = self.directory.join(&format!("w{index}/starts"));
+                let text = fs::read_to_string(starts).unwrap_or_default();
+                let leaders = text
+                    .lines()
+                    .filter_map(|line| line.trim().parse::<u32>().ok());
+                self.leaders.extend(leaders);
+            }
+        }
+
+        /// Whether every grandchild and server leader ends within the backstop.
+        fn all_gone(&mut self) -> bool {
+            self.track_leaders();
+            let grandchildren = self
+                .spawned
+                .iter_mut()
+                .all(|process| process.gone_within(BACKSTOP));
+            let deadline = Instant::now() + BACKSTOP;
+            while self.leaders.iter().any(|&id| process_exists(id)) {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            grandchildren
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn eviction_and_idle_reap_never_wait_for_a_stopping_server() -> Result<(), Box<dyn Error>> {
+        let mut fleet = Stubborn::new("never-wait")?;
+        fleet.start_five()?;
+        let waits = blocking_stop_waits();
+        // A sixth language with five attached slots evicts s0.
+        let _ = fleet.show(5);
+        // Tab 1 closes and its idle TTL lapses.
+        let open = fleet
+            .documents
+            .iter()
+            .filter(|input| input.path() != fleet.documents[1].path());
+        fleet
+            .services
+            .replace_open_paths(open.map(RustDocumentInput::path));
+        let _ = fleet.show(5);
+        fleet.services.expire_idle_for_test("s1");
+        assert!(!fleet.services.has_server_id("s0") && !fleet.services.has_server_id("s1"));
+        for _ in 0..32 {
+            let _ = fleet.show(5);
+            let _ = fleet.services.poll(LanguageWake::new(1));
+        }
+        assert_eq!(blocking_stop_waits(), waits);
+        fleet.wait_for_grandchild(5)?;
+        let _ = fleet.services.shutdown();
+        assert!(fleet.all_gone());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn later_turns_reap_draining_stops_and_leave_nothing_running() -> Result<(), Box<dyn Error>> {
+        let mut fleet = Stubborn::new("reaped")?;
+        fleet.start_five()?;
+        let waits = blocking_stop_waits();
+        let _ = fleet.show(5);
+        assert_eq!(blocking_stop_waits(), waits);
+        assert!(!fleet.services.has_server_id("s0"));
+        fleet.wait_for_grandchild(5)?;
+        let deadline = Instant::now() + BACKSTOP;
+        while !fleet.services.draining.is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+            let _ = fleet.services.poll(LanguageWake::new(1));
+            let _ = fleet.show(5);
+        }
+        assert!(fleet.services.draining.is_empty());
+        assert_eq!(fleet.services.detached_stops, 0);
+        assert_eq!(blocking_stop_waits(), waits);
+        // The reaped stop killed s0's grandchild; the rest still run.
+        assert!(fleet.spawned[0].gone_within(BACKSTOP));
+        assert!(fleet.spawned[1..].iter().all(Grandchild::alive));
+        let _ = fleet.services.shutdown();
+        assert!(fleet.all_gone());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot spawn the gated supervisor threads")]
+    fn a_full_draining_list_detaches_the_oldest_without_waiting() -> Result<(), Box<dyn Error>> {
+        let mut services = LanguageServices::default();
+        let waits = blocking_stop_waits();
+        let mut releases = Vec::new();
+        for _ in 0..=MAX_DRAINING {
+            let (release, gate) = mpsc::channel();
+            releases.push(release);
+            services.push_draining(ProcessStop::gated_for_test(gate));
+        }
+        assert_eq!(blocking_stop_waits(), waits);
+        assert_eq!(services.draining.len(), MAX_DRAINING);
+        assert_eq!(services.detached_stops, 1);
+        // Only the oldest was detached: releasing the others empties the list.
+        for release in &releases[1..] {
+            release.send(())?;
+        }
+        let deadline = Instant::now() + BACKSTOP;
+        while !services.draining.is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+            let _ = services.poll(LanguageWake::new(1));
+        }
+        assert!(services.draining.is_empty());
+        assert_eq!(blocking_stop_waits(), waits);
+        // Closing its gate ends the detached thread.
+        drop(releases);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn quit_stops_every_server_under_one_shared_deadline() -> Result<(), Box<dyn Error>> {
+        let mut fleet = Stubborn::new("quit")?;
+        fleet.start_five()?;
+        // The sixth evicts s0, so quit also finds one stop still draining.
+        let _ = fleet.show(5);
+        fleet.wait_for_grandchild(5)?;
+        let waits = blocking_stop_waits();
+        let begin = Instant::now();
+        let _ = fleet.services.shutdown();
+        let elapsed = begin.elapsed();
+        // A hang bound only: one 1.5 s deadline for all six, where waiting for
+        // each stop in turn took about 0.8 s apiece.
+        assert!(
+            elapsed < Duration::from_millis(2_500),
+            "quit took {elapsed:?}"
+        );
+        // One wait per stop: five slots and the draining one.
+        assert_eq!(blocking_stop_waits() - waits, 6);
+        assert_eq!(fleet.services.warm_count(), 0);
+        assert!(fleet.services.draining.is_empty());
+        // A stop detached at the deadline still kills its group.
+        assert!(fleet.all_gone());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn a_sixth_language_spares_the_shown_slot_and_evicted_servers_restart()
+    -> Result<(), Box<dyn Error>> {
+        let mut fleet = Stubborn::new("sixth")?;
+        fleet.start_five()?;
+        // Tab 4 is shown; make its slot the least recently used one, so
+        // only the rule keeps it.
+        fleet.services.age_slot_for_test("s4");
+        let waits = blocking_stop_waits();
+        let _ = fleet.show(5);
+        fleet.wait_for_grandchild(5)?;
+        assert!(fleet.services.has_server_id("s4"));
+        assert!(!fleet.services.has_server_id("s0"));
+        assert_eq!(fleet.starts(0), 1);
+        // Showing tab 0 again restarts its server.
+        let _ = fleet.show(0);
+        assert!(fleet.services.has_server_id("s0"));
+        assert!(fleet.services.has_session());
+        let deadline = Instant::now() + BACKSTOP;
+        while fleet.starts(0) < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(fleet.starts(0), 2);
+        assert_eq!(blocking_stop_waits(), waits);
+        let _ = fleet.services.shutdown();
+        assert!(fleet.all_gone());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri does not emulate the discovery thread's host walk"
+    )]
+    fn a_queued_discovery_for_a_reaped_slot_never_runs() -> Result<(), Box<dyn Error>> {
+        let directory = TestDirectory::new("cancel")?;
+        let (discover, gate) = gated_discovery();
+        let mut services = discovering_services(discover);
+        services.registry = stub_registry()?;
+        services.discovery_env = Some(DiscoveryEnv::default());
+        let (publish, _wakes) = mpsc::channel();
+        for index in 0..3 {
+            let input = stub_document(&directory, index)?;
+            let _ = services.sync(Some(input), wake_into(&publish));
+            if index == 0 {
+                // Job 1 now blocks the thread; jobs 2 and 3 queue behind it.
+                assert_eq!(gate.started.recv_timeout(BACKSTOP)?, 1);
+            }
+        }
+        assert_eq!(services.discovery_dispatches, 3);
+        // Tab 1 closes and its idle TTL lapses while its job waits.
+        services.expire_idle_for_test("s1");
+        assert!(!services.has_server_id("s1"));
+        gate.release.send(None)?;
+        // The thread skips job 2 and runs job 3 next.
+        assert_eq!(gate.started.recv_timeout(BACKSTOP)?, 3);
+        assert_eq!(gate.finished.load(Ordering::SeqCst), 1);
+        gate.release.send(None)?;
+        let _ = services.shutdown();
         Ok(())
     }
 }

@@ -603,11 +603,103 @@ impl fmt::Display for SupervisorStopped {
 
 impl Error for SupervisorStopped {}
 
+// The supervisor thread and the signal it sends as it ends.
+struct Supervisor {
+    thread: JoinHandle<()>,
+    complete: Receiver<()>,
+}
+
+/// A stop in flight, from `begin_stop`: the farewell is queued and the
+/// control channel closed. Dropping it detaches the supervisor, which still
+/// signals, kills and reaps the server's group on its own.
+#[must_use = "dropping a stop detaches its supervisor"]
+pub(crate) struct ProcessStop {
+    supervisor: Option<Supervisor>,
+    counters: Arc<Counters>,
+}
+
+impl ProcessStop {
+    /// Joins the supervisor if it has already finished. Never blocks.
+    pub(crate) fn try_finish(&mut self) -> bool {
+        let Some(supervisor) = self.supervisor.take() else {
+            return true;
+        };
+        match supervisor.complete.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => {
+                let _ = supervisor.thread.join();
+                true
+            }
+            Err(TryRecvError::Empty) => {
+                self.supervisor = Some(supervisor);
+                false
+            }
+        }
+    }
+
+    /// Waits for the supervisor until `deadline`, then detaches it as a
+    /// shutdown timeout. Returns whether it finished.
+    pub(crate) fn finish_by(&mut self, deadline: Instant) -> bool {
+        let Some(supervisor) = self.supervisor.take() else {
+            return true;
+        };
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        join_supervisor(
+            supervisor.thread,
+            &supervisor.complete,
+            timeout,
+            &self.counters,
+        )
+    }
+
+    /// Stops tracking an unfinished supervisor; `Drop` counts it as a
+    /// shutdown timeout.
+    pub(crate) fn detach(self) {
+        drop(self);
+    }
+}
+
+// Any unfinished stop that goes away counts as a timeout, however it ends.
+impl Drop for ProcessStop {
+    fn drop(&mut self) {
+        if self.supervisor.take().is_some() {
+            self.counters
+                .shutdown_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+impl ProcessStop {
+    /// A stop whose supervisor ends once `release` sends or closes.
+    pub(crate) fn gated_for_test(release: Receiver<()>) -> Self {
+        let (complete_sender, complete) = sync_channel(1);
+        let thread = thread::spawn(move || {
+            let _ = release.recv();
+            let _ = complete_sender.try_send(());
+        });
+        Self {
+            supervisor: Some(Supervisor { thread, complete }),
+            counters: Arc::new(Counters::default()),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BLOCKING_STOP_WAITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Supervisor waits that could block, made on the calling thread.
+#[cfg(test)]
+pub(crate) fn blocking_stop_waits() -> u64 {
+    BLOCKING_STOP_WAITS.with(std::cell::Cell::get)
+}
+
 pub(crate) struct LanguageServerProcess {
     control: Option<SyncSender<Control>>,
     events: Receiver<ProcessEvent>,
-    supervisor: Option<JoinHandle<()>>,
-    supervisor_complete: Receiver<()>,
+    supervisor: Option<Supervisor>,
     // A shutdown request, carrying the protocol's farewell bytes if any.
     shutdown: Option<SyncSender<Option<Payload>>>,
     counters: Arc<Counters>,
@@ -675,8 +767,10 @@ impl LanguageServerProcess {
         Ok(Self {
             control: Some(control_sender),
             events: event_receiver,
-            supervisor: Some(supervisor),
-            supervisor_complete: completion_receiver,
+            supervisor: Some(Supervisor {
+                thread: supervisor,
+                complete: completion_receiver,
+            }),
             shutdown: Some(shutdown),
             counters,
             configuration_bytes,
@@ -695,12 +789,10 @@ impl LanguageServerProcess {
         let counters = Arc::new(Counters::default());
         let (control_sender, control_receiver) = sync_channel(CONTROL_CAPACITY);
         let (event_sender, event_receiver) = sync_channel(EVENT_CAPACITY);
-        let (_, completion_receiver) = sync_channel(1);
         Self {
             control: Some(control_sender),
             events: event_receiver,
             supervisor: None,
-            supervisor_complete: completion_receiver,
             shutdown: None,
             counters,
             configuration_bytes: 0,
@@ -826,25 +918,29 @@ impl LanguageServerProcess {
 
     /// Like `shutdown`, but first writes `farewell` to the server's stdin.
     pub(crate) fn shutdown_with_farewell(&mut self, farewell: &[u8]) -> ProcessSnapshot {
-        let payload = (farewell.len() <= MAX_MESSAGE_BYTES)
-            .then(|| Payload::copy(farewell, &self.counters, ProcessStage::Input).ok())
-            .flatten();
-        self.stop(payload)
+        self.stop(Some(farewell))
     }
 
-    fn stop(&mut self, farewell: Option<Payload>) -> ProcessSnapshot {
+    /// Starts a stop without waiting: queues `farewell` for the server's
+    /// stdin and closes the control channel. The caller finishes the stop.
+    pub(crate) fn begin_stop(&mut self, farewell: Option<&[u8]>) -> ProcessStop {
         if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.try_send(farewell);
+            let payload = farewell
+                .filter(|bytes| bytes.len() <= MAX_MESSAGE_BYTES)
+                .and_then(|bytes| Payload::copy(bytes, &self.counters, ProcessStage::Input).ok());
+            let _ = shutdown.try_send(payload);
         }
         self.control.take();
-        if let Some(supervisor) = self.supervisor.take() {
-            join_supervisor(
-                supervisor,
-                &self.supervisor_complete,
-                SUPERVISOR_SHUTDOWN_TIMEOUT,
-                &self.counters,
-            );
+        ProcessStop {
+            supervisor: self.supervisor.take(),
+            counters: Arc::clone(&self.counters),
         }
+    }
+
+    fn stop(&mut self, farewell: Option<&[u8]>) -> ProcessSnapshot {
+        let _ = self
+            .begin_stop(farewell)
+            .finish_by(Instant::now() + SUPERVISOR_SHUTDOWN_TIMEOUT);
         while self.events.try_recv().is_ok() {
             self.counters.queued_events.fetch_sub(1, Ordering::AcqRel);
         }
@@ -857,14 +953,18 @@ fn join_supervisor(
     completion: &Receiver<()>,
     timeout: Duration,
     counters: &Counters,
-) {
+) -> bool {
+    #[cfg(test)]
+    BLOCKING_STOP_WAITS.with(|waits| waits.set(waits.get().saturating_add(1)));
     match completion.recv_timeout(timeout) {
         Ok(()) | Err(RecvTimeoutError::Disconnected) => {
             let _ = supervisor.join();
+            true
         }
         Err(RecvTimeoutError::Timeout) => {
             counters.shutdown_timeouts.fetch_add(1, Ordering::Relaxed);
             drop(supervisor);
+            false
         }
     }
 }
@@ -1636,4 +1736,4 @@ mod group {
 
 #[cfg(test)]
 #[path = "lsp_process_coverage_tests.rs"]
-mod tests;
+pub(crate) mod tests;
