@@ -166,6 +166,8 @@ fn key_trial_violations(
     let Some(phase) = key_phase(stamp) else {
         return Ok(Vec::new());
     };
+    let run_id = stamp.require("run_id")?;
+    let app = stamp.require("app")?;
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
     for trial in &trials.rows {
@@ -184,8 +186,8 @@ fn key_trial_violations(
                     && metrics.get(row, "metric")? == *name
                     && metrics.get(row, "warmup")? == "0"
                     && metrics.get(row, "valid")? == "1"
-                    && metrics.get(row, "run_id")? == stamp.require("run_id")?
-                    && metrics.get(row, "app")? == stamp.require("app")?
+                    && metrics.get(row, "run_id")? == run_id
+                    && metrics.get(row, "app")? == app
                     && metrics.get(row, "workload")? == phase
                     && metrics.get(row, "unit")? == *unit
                 {

@@ -417,9 +417,9 @@ pub fn key_latencies(
         let window_end = events
             .get(index + 1)
             .map_or(event.mach.saturating_add(spacing_ticks), |next| next.mach);
+        // `changes` is sorted by display time, so the first answer bisects.
         let response = changes
-            .iter()
-            .find(|frame| frame.display_mach >= event.mach)
+            .get(changes.partition_point(|frame| frame.display_mach < event.mach))
             .map(|frame| frame.display_mach);
         match response {
             Some(display) if display > event.mach && display < window_end && !ambiguous => result
