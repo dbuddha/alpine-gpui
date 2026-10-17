@@ -8,6 +8,7 @@
 mod accessibility;
 mod commands;
 mod composition;
+mod crash;
 mod documents;
 mod dogfood_diagnostic;
 mod field_edit;
@@ -18,6 +19,7 @@ mod go_to_line;
 mod language_registry;
 mod language_services;
 mod legacy_migration;
+mod logs;
 #[cfg_attr(
     not(test),
     expect(
@@ -881,7 +883,8 @@ pub fn migrate_legacy_data() {
 pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_restored_app()?)
+        let hook = crash::CrashHook::install(std::env::var_os("HOME"));
+        run_native(native_restored_app()?, &hook)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -900,10 +903,11 @@ pub fn run() -> Result<(), RuntimeError> {
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), EditorError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_explicit_path_app(
-            path.as_ref(),
-            ExplicitPathKind::File,
-        )?)
+        let hook = crash::CrashHook::install(std::env::var_os("HOME"));
+        run_native(
+            native_explicit_path_app(path.as_ref(), ExplicitPathKind::File)?,
+            &hook,
+        )
         .map_err(EditorError::from)
     }
 
@@ -934,10 +938,11 @@ mod entry_point_contract_tests {
 pub fn run_path(path: impl AsRef<Path>) -> Result<(), EditorError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_explicit_path_app(
-            path.as_ref(),
-            ExplicitPathKind::Any,
-        )?)
+        let hook = crash::CrashHook::install(std::env::var_os("HOME"));
+        run_native(
+            native_explicit_path_app(path.as_ref(), ExplicitPathKind::Any)?,
+            &hook,
+        )
         .map_err(EditorError::from)
     }
 
@@ -950,11 +955,14 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), EditorError> {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
-fn run_native(app: EditorApp) -> Result<(), RuntimeError> {
+fn run_native(app: EditorApp, hook: &crash::CrashHook) -> Result<(), RuntimeError> {
     #[cfg(alpine_native_validation)]
     let mut app = app;
     #[cfg(not(alpine_native_validation))]
     let mut app = app;
+    if let Some(recovery) = app.recovery.as_ref() {
+        hook.attach_recovery(recovery.flush_handle());
+    }
     app.adopt_discovered_language_server();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
         .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
@@ -8880,6 +8888,48 @@ pub mod native_validation {
         Ok(journal)
     }
 
+    /// Edits a document, installs the crash hook as `run` does, then panics
+    /// on a worker-named thread and aborts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a file, construction or persistence failure before the panic.
+    pub fn crash_probe(
+        home: &Path,
+        document_path: &Path,
+        local_text: &str,
+    ) -> Result<std::convert::Infallible, EditorError> {
+        let session_path = home
+            .join("Library")
+            .join("Application Support")
+            .join("Alpine Editor")
+            .join("session-v1.bin");
+        let mut app = native_explicit_path_app_with_session(
+            document_path,
+            super::ExplicitPathKind::File,
+            None,
+        )?;
+        app.configure_persistence(session_path)?;
+        let hook = crate::crash::CrashHook::install(Some(home.into()));
+        if let Some(recovery) = app.recovery.as_ref() {
+            hook.attach_recovery(recovery.flush_handle());
+        }
+        let invariant = || SurfaceError::invariant(SurfaceOperation::Application);
+        if !app
+            .handle_ime(&ImeEvent::Committed(local_text.into()))
+            .document_changed
+        {
+            return Err(invariant().into());
+        }
+        app.publish_recovery();
+        let worker = std::thread::Builder::new()
+            .name(String::from("alpine-worker-probe"))
+            .spawn(|| std::panic::panic_any("crash probe"))
+            .map_err(|_| invariant())?;
+        let _ = worker.join();
+        std::process::abort()
+    }
+
     fn resolve_recovery_through_save(app: &mut EditorApp) -> Result<(), SurfaceError> {
         let request = app
             .capture_recovery_request()
@@ -10612,6 +10662,10 @@ pub mod native_validation {
 #[cfg(test)]
 #[path = "command_palette_tests.rs"]
 mod command_palette_tests;
+
+#[cfg(all(test, unix))]
+#[path = "crash_process_tests.rs"]
+mod crash_process_tests;
 
 #[cfg(test)]
 #[path = "keymap_parity_tests.rs"]

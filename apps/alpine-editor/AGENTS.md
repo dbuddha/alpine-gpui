@@ -1,7 +1,7 @@
 ---
 product: Alpine Editor
 parent: ../../AGENTS.md
-updated: 2026-10-08
+updated: 2026-10-17
 phase: "2, language agnostic: active, closes in M4"
 parity:
   core_editing: {status: partial, closes: M6}
@@ -97,7 +97,8 @@ through ScreenCaptureKit (`tools/onscreen-sdr-capture`); `screencapture -l`
 cannot see the Metal layer. The capturing terminal needs Screen Recording
 permission. Clean up only the processes a capture owns; never close unrelated
 apps. Window > Save Performance Log writes `perf-<unix s>-frames.tsv` and
-`-samples.tsv` to `~/Library/Logs/Alpine Editor/` for T3 dogfood.
+`-samples.tsv` to `~/Library/Logs/Alpine Editor/` for T3 dogfood; a panic
+leaves `crash-<unix>-<pid>.log` there.
 
 ## Correctness that must never regress
 
