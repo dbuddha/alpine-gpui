@@ -2170,23 +2170,31 @@ impl Drop for EditorApp {
         if let Some(capture) = self.dogfood_capture.take() {
             capture.capture(self);
         }
-        let _ = self.rust_diagnostics.shutdown();
+        // Persist before stopping servers: each shutdown can block up to 5 s,
+        // and a force quit in that window must not lose recovery or session.
         if self.recovery.is_some()
             && let Ok(request) = self.capture_recovery_request()
             && let Some(recovery) = self.recovery.as_ref()
         {
+            #[cfg(test)]
+            record_exit_step(ExitStep::RecoveryPublish);
             let _ = recovery.publish(request);
         }
         if let Some(mut recovery) = self.recovery.take() {
+            #[cfg(test)]
+            record_exit_step(ExitStep::RecoveryShutdown);
             let _ = recovery.shutdown();
         }
-        let Some(path) = self.session_path.clone() else {
-            return;
-        };
-        let Ok(state) = self.capture_session() else {
-            return;
-        };
-        let _ = session::save(&path, &state);
+        if let Some(path) = self.session_path.clone()
+            && let Ok(state) = self.capture_session()
+        {
+            #[cfg(test)]
+            record_exit_step(ExitStep::SessionSave);
+            let _ = session::save(&path, &state);
+        }
+        #[cfg(test)]
+        record_exit_step(ExitStep::ServerShutdown);
+        let _ = self.rust_diagnostics.shutdown();
     }
 }
 
@@ -8127,6 +8135,31 @@ fn reset_recovery_publish_calls() {
 #[cfg(test)]
 fn recovery_publish_calls() -> u64 {
     RECOVERY_PUBLISH_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExitStep {
+    RecoveryPublish,
+    RecoveryShutdown,
+    SessionSave,
+    ServerShutdown,
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXIT_STEPS: std::cell::RefCell<Vec<ExitStep>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn record_exit_step(step: ExitStep) {
+    EXIT_STEPS.with(|steps| steps.borrow_mut().push(step));
+}
+
+#[cfg(test)]
+fn take_exit_steps() -> Vec<ExitStep> {
+    EXIT_STEPS.with(|steps| std::mem::take(&mut *steps.borrow_mut()))
 }
 
 enum EditorWorkerOutput {
