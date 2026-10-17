@@ -2755,6 +2755,198 @@ fn real_file_open_edit_save_and_conflicts_are_atomic() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[cfg(unix)]
+fn unix_mode(path: &Path) -> std::io::Result<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Ok(fs::metadata(path)?.permissions().mode() & 0o7777)
+}
+
+#[cfg(unix)]
+fn set_unix_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(unix)]
+fn sorted_names(directory: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+    let mut names = fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(unix)]
+fn assert_save_as_succeeded(app: &EditorApp) {
+    assert!(
+        app.last_workspace_error.is_none(),
+        "Save As failed: {:?}",
+        app.last_workspace_error
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn save_as_over_an_existing_file_keeps_its_mode() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("source.sh", "echo new\n")?;
+    root.write("script.sh", "echo old\n")?;
+    let script = root.path().join("script.sh");
+    set_unix_mode(&script, 0o755)?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("source.sh"))?;
+    let _effect = app.save_document_as(&script);
+    assert_save_as_succeeded(&app);
+    assert_eq!(fs::read_to_string(&script)?, "echo new\n");
+    assert_eq!(unix_mode(&script)?, 0o755);
+
+    let reference = root.path().join("reference.sh");
+    fs::File::create(&reference)?;
+    let created = root.path().join("created.sh");
+    let _effect = app.save_document_as(&created);
+    assert_save_as_succeeded(&app);
+    assert_eq!(fs::read_to_string(&created)?, "echo new\n");
+    assert_eq!(unix_mode(&created)?, unix_mode(&reference)?);
+    assert_eq!(
+        sorted_names(root.path())?,
+        ["created.sh", "reference.sh", "script.sh", "source.sh"]
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn save_as_writes_through_a_symlink_destination() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("source.txt", "new")?;
+    root.create_dir("real")?;
+    root.write("real/target.txt", "old")?;
+    let target = root.path().join("real/target.txt");
+    set_unix_mode(&target, 0o640)?;
+    let link = root.path().join("link.txt");
+    let relative = Path::new("real/target.txt");
+    std::os::unix::fs::symlink(relative, &link)?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+    let _effect = app.save_document_as(&link);
+    assert_save_as_succeeded(&app);
+    assert!(fs::symlink_metadata(&link)?.file_type().is_symlink());
+    assert_eq!(fs::read_link(&link)?, relative);
+    assert_eq!(fs::read_to_string(&target)?, "new");
+    assert_eq!(unix_mode(&target)?, 0o640);
+    assert_eq!(app.buffer().snapshot().text(), "new");
+    assert_eq!(
+        sorted_names(root.path())?,
+        ["link.txt", "real", "source.txt"]
+    );
+    assert_eq!(sorted_names(&root.path().join("real"))?, ["target.txt"]);
+
+    let dangling = root.path().join("dangling.txt");
+    let missing = Path::new("missing/target.txt");
+    std::os::unix::fs::symlink(missing, &dangling)?;
+    let _effect = app.save_document_as(&dangling);
+    assert!(app.last_workspace_error.is_some());
+    assert!(fs::symlink_metadata(&dangling)?.file_type().is_symlink());
+    assert_eq!(fs::read_link(&dangling)?, missing);
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn save_as_refuses_a_link_to_a_file_already_open() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("source.txt", "open")?;
+    let link = root.path().join("link.txt");
+    std::os::unix::fs::symlink("source.txt", &link)?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+    let _effect = app.save_document_as(&link);
+    assert!(app.last_workspace_error.is_some());
+    assert_eq!(app.tabs.len(), 1);
+    assert!(fs::symlink_metadata(&link)?.file_type().is_symlink());
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn saves_into_a_folder_that_cannot_be_read_still_succeed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    root.create_dir("drop")?;
+    root.write("drop/existing.txt", "old")?;
+    root.write("source.txt", "new")?;
+    let folder = root.path().join("drop");
+    let mut app = EditorApp::open_file(TestTextSystem, folder.join("existing.txt"))?;
+    set_unix_mode(&folder, 0o300)?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        assert!(app.replace_range(0..3, "edited").document_changed);
+        let _effect = app.save_document();
+        assert!(app.last_file_error.is_none(), "{:?}", app.last_file_error);
+        assert!(!app.document.is_dirty());
+        let mut other = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+        let _effect = other.save_document_as(&folder.join("created.txt"));
+        assert_save_as_succeeded(&other);
+        Ok(())
+    })();
+    set_unix_mode(&folder, 0o700)?;
+    result?;
+    assert_eq!(fs::read_to_string(folder.join("existing.txt"))?, "edited");
+    assert_eq!(fs::read_to_string(folder.join("created.txt"))?, "new");
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn save_as_leaves_files_at_temporary_names_untouched() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("source.txt", "new")?;
+    root.write("victim.txt", "victim")?;
+    let old_fixed_name = format!(".alpine-save-as.{}", std::process::id());
+    root.write(&old_fixed_name, "unrelated")?;
+    let first_attempt_name = format!(".destination.txt.alpine-save-as-{}-0", std::process::id());
+    let first_attempt = root.path().join(&first_attempt_name);
+    std::os::unix::fs::symlink("victim.txt", &first_attempt)?;
+    let destination = root.path().join("destination.txt");
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+    let _effect = app.save_document_as(&destination);
+    assert_save_as_succeeded(&app);
+    assert_eq!(fs::read_to_string(&destination)?, "new");
+    assert_eq!(fs::read(root.path().join(&old_fixed_name))?, b"unrelated");
+    assert_eq!(
+        fs::read_to_string(root.path().join("victim.txt"))?,
+        "victim"
+    );
+    assert_eq!(fs::read_link(&first_attempt)?, Path::new("victim.txt"));
+    let mut expected = [
+        old_fixed_name.as_str(),
+        first_attempt_name.as_str(),
+        "destination.txt",
+        "source.txt",
+        "victim.txt",
+    ];
+    expected.sort_unstable();
+    assert_eq!(sorted_names(root.path())?, expected);
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn save_as_syncs_the_destination_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("source.txt", "new")?;
+    root.create_dir("nested")?;
+    root.write("nested/second.txt", "old")?;
+    reset_save_as_directory_syncs();
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+    let _effect = app.save_document_as(&root.path().join("nested/first.txt"));
+    assert_save_as_succeeded(&app);
+    assert_eq!(save_as_directory_syncs(), 1);
+    let _effect = app.save_document_as(&root.path().join("nested/second.txt"));
+    assert_save_as_succeeded(&app);
+    assert_eq!(save_as_directory_syncs(), 2);
+    let _effect = app.save_document_as(&root.path().join("missing/third.txt"));
+    assert!(app.last_workspace_error.is_some());
+    assert_eq!(save_as_directory_syncs(), 2);
+    Ok(())
+}
+
 #[test]
 #[cfg(target_family = "windows")]
 fn windows_file_save_fails_structurally_without_touching_disk()
@@ -2916,6 +3108,51 @@ fn dirty_recovery_fixture(
     );
     app.publish_recovery();
     drop(app);
+    Ok(())
+}
+
+#[test]
+fn quit_persists_recovery_and_session_before_stopping_servers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let document_path = root.path().join("document.rs");
+    fs::write(&document_path, "base")?;
+
+    let clean_session = root.path().join("clean").join("session-v1.bin");
+    let mut app = EditorApp::open_file(TestTextSystem, &document_path)?;
+    app.configure_persistence(clean_session.clone())?;
+    let _ = take_exit_steps();
+    drop(app);
+    assert_eq!(
+        take_exit_steps(),
+        [
+            ExitStep::RecoveryPublish,
+            ExitStep::RecoveryShutdown,
+            ExitStep::SessionSave,
+            ExitStep::ServerShutdown,
+        ],
+        "a clean quit persists recovery and session, then stops servers"
+    );
+    assert_eq!(session::load(&clean_session)?.tabs.len(), 1);
+
+    let dirty_session = root.path().join("dirty").join("session-v1.bin");
+    let mut app = EditorApp::open_file(TestTextSystem, &document_path)?;
+    app.configure_persistence(dirty_session.clone())?;
+    assert!(app.replace_range(0..4, "local").document_changed);
+    let _ = take_exit_steps();
+    drop(app);
+    assert_eq!(
+        take_exit_steps(),
+        [
+            ExitStep::RecoveryPublish,
+            ExitStep::RecoveryShutdown,
+            ExitStep::ServerShutdown,
+        ],
+        "a dirty quit joins the recovery writer before stopping servers"
+    );
+    let recovered = recovery::load(&recovery::path_for_session(&dirty_session))?;
+    assert_eq!(recovered.documents.len(), 1);
+    assert_eq!(&*recovered.documents[0].local, "local");
     Ok(())
 }
 
@@ -8452,9 +8689,17 @@ fn scrolling_does_not_rediscover_language_servers() -> Result<(), Box<dyn Error>
         });
     }
     assert_eq!(
-        rust_diagnostics::discover_binaries_calls(),
+        runtime
+            .delegate()
+            .rust_diagnostics
+            .discovery_dispatches_for_test(),
         1,
         "language-server discovery belongs on first attach, not on every scroll"
+    );
+    assert_eq!(
+        rust_diagnostics::discover_binaries_calls(),
+        0,
+        "language-server discovery belongs off the event thread"
     );
     Ok(())
 }

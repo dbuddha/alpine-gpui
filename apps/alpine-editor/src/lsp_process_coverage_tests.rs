@@ -1,8 +1,12 @@
 use std::{env, thread, time::Instant};
 
 use super::*;
+use crate::lsp_json::LspPeer;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
+// Long enough that a server exiting on EOF beats it even under heavy load.
+const LONG_EXIT_GRACE: Duration = Duration::from_secs(30);
+static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
 fn identity(generation: u64) -> ProcessIdentity {
     ProcessIdentity {
@@ -82,7 +86,7 @@ fn detached_process(
         events,
         supervisor: None,
         supervisor_complete,
-        shutdown: Arc::new(AtomicBool::new(false)),
+        shutdown: None,
         counters: Arc::new(Counters::default()),
         configuration_bytes: 7,
         identity: identity(1),
@@ -424,12 +428,17 @@ fn pipe_wait_join_and_event_failures_are_structured() -> Result<(), Box<dyn Erro
         })
     ));
     assert!(classify_wait(identity(1), ProcessEpoch(1), Ok(None))?.is_none());
+    let counters = Counters::default();
     let mut helpers = vec![thread::spawn(|| {
         std::panic::resume_unwind(Box::new("injected helper panic"));
     })];
-    assert!(join_helpers(&mut helpers));
+    assert!(join_helpers_by(
+        &mut helpers,
+        Instant::now() + TIMEOUT,
+        &counters
+    ));
+    assert_eq!(counters.shutdown_timeouts.load(Ordering::Relaxed), 0);
 
-    let counters = Counters::default();
     let (full_sender, _full_receiver) = sync_channel(0);
     assert!(!emit(
         &full_sender,
@@ -572,7 +581,7 @@ fn supervisor_and_helper_spawn_failures_are_injected_without_bypasses() -> Resul
     let working_spec = ProcessSpec::new("/bin/sleep", ["30"], Some(&env::temp_dir()))?;
     let counters = Arc::new(Counters::default());
     let mut process = spawn_process(&working_spec, identity(1), ProcessEpoch(1), &counters)?;
-    assert!(!stop_running(&mut process, true, &counters));
+    assert!(!force_stop(&mut process, &counters));
     Ok(())
 }
 
@@ -591,13 +600,14 @@ fn failed_child_start_rejects_queued_input_and_releases_payload() -> Result<(), 
         payload: Payload::copy(b"x", &counters, ProcessStage::Input)?,
     })?;
     drop(control_sender);
+    let (_shutdown, shutdown_receiver) = sync_channel(1);
     supervise(
         spec,
         identity(1),
         ProcessEpoch(1),
         control_receiver,
         event_sender,
-        Arc::new(AtomicBool::new(false)),
+        shutdown_receiver,
         Arc::clone(&counters),
     );
     let events: Vec<_> = event_receiver.try_iter().collect();
@@ -686,7 +696,7 @@ fn input_admission_distinguishes_identity_full_disconnected_and_missing_sender()
         .ok_or("disconnected input queue accepted a request")?;
     assert_eq!(closed.1.kind, FailureKind::Io(io::ErrorKind::BrokenPipe));
     let mut process = running.take().ok_or("running process disappeared")?;
-    assert!(!stop_running(&mut process, true, &counters));
+    assert!(!force_stop(&mut process, &counters));
     assert_eq!(counters.retained_bytes.load(Ordering::Relaxed), 0);
     Ok(())
 }
@@ -1001,7 +1011,7 @@ fn supervisor_decision_helpers_cover_every_transition() {
     assert!(matches!(interpret_wait(WaitDecision::Exited), (true, None)));
     assert!(matches!(
         interpret_wait(WaitDecision::Terminate),
-        (false, Some(StopReason::OutputOverflow))
+        (true, Some(StopReason::OutputOverflow))
     ));
 }
 
@@ -1067,13 +1077,13 @@ fn stale_event_filter_checks_identity_and_epoch_independently() -> Result<(), Bo
 
 #[test]
 fn drop_signals_and_joins_the_owned_supervisor() {
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let (shutdown, shutdown_receiver) = sync_channel(1);
     let observed = Arc::new(AtomicBool::new(false));
-    let worker_shutdown = Arc::clone(&shutdown);
     let worker_observed = Arc::clone(&observed);
     let (completion_sender, supervisor_complete) = sync_channel(1);
     let supervisor = thread::spawn(move || {
-        while !worker_shutdown.load(Ordering::Acquire) {
+        let mut farewell = None;
+        while !shutdown_requested(&shutdown_receiver, &mut farewell) {
             thread::yield_now();
         }
         worker_observed.store(true, Ordering::Release);
@@ -1085,7 +1095,7 @@ fn drop_signals_and_joins_the_owned_supervisor() {
         events,
         supervisor: Some(supervisor),
         supervisor_complete,
-        shutdown,
+        shutdown: Some(shutdown),
         counters: Arc::new(Counters::default()),
         configuration_bytes: 0,
         identity: identity(1),
@@ -1133,9 +1143,8 @@ fn supervisor_exits_after_terminal_event_overflow() -> Result<(), Box<dyn Error>
     )?;
     let (control_sender, control_receiver) = sync_channel(1);
     let (event_sender, _event_receiver) = sync_channel(1);
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let (shutdown, shutdown_receiver) = sync_channel(1);
     let counters = Arc::new(Counters::default());
-    let worker_shutdown = Arc::clone(&shutdown);
     let worker_counters = Arc::clone(&counters);
     let (done_sender, done_receiver) = sync_channel(1);
     let supervisor = thread::spawn(move || {
@@ -1145,13 +1154,13 @@ fn supervisor_exits_after_terminal_event_overflow() -> Result<(), Box<dyn Error>
             ProcessEpoch(1),
             control_receiver,
             event_sender,
-            worker_shutdown,
+            shutdown_receiver,
             worker_counters,
         );
         let _ = done_sender.try_send(());
     });
     let completed = done_receiver.recv_timeout(TIMEOUT).is_ok();
-    shutdown.store(true, Ordering::Release);
+    let _ = shutdown.try_send(None);
     drop(control_sender);
     if !completed {
         let _ = done_receiver.recv_timeout(TIMEOUT);
@@ -1421,17 +1430,258 @@ fn stops_unpublish_the_pid_before_killing_or_reaping_the_child() -> Result<(), B
     let reason = StopReason::OutputOverflow;
     let _ = stop_for_reason(&mut Some(child.process), reason, &events, &child.counters);
     assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
-    // The supervisor's exit path, then its shutdown tail.
-    for kill in [false, true] {
-        let mut child = PublishedChild::spawn()?;
-        assert!(!stop_running(&mut child.process, kill, &child.counters));
-        assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
-    }
+    // The supervisor's shutdown tail, then its other forced stops.
+    let mut child = PublishedChild::spawn()?;
+    assert!(!shut_down(&mut child.process, None, &child.counters));
+    assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
+    let mut child = PublishedChild::spawn()?;
+    assert!(!force_stop(&mut child.process, &child.counters));
+    assert_eq!(child.writer_saw.load(Ordering::Acquire), 0);
 
     let counters = Arc::new(Counters::default());
     let (full, _full_receiver) = sync_channel(0);
     let spec = ProcessSpec::new("/bin/cat", std::iter::empty::<&str>(), None)?;
     assert!(start_running(&spec, identity(1), ProcessEpoch(1), &full, &counters).is_none());
     assert_eq!(counters.process_id.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+// A scratch directory under the system temporary directory, removed on drop.
+struct TestDirectory(PathBuf);
+
+impl TestDirectory {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let path = env::temp_dir().join(format!(
+            "alpine-lsp-process-{name}-{}-{}",
+            std::process::id(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path)?;
+        Ok(Self(fs::canonicalize(path)?))
+    }
+
+    fn join(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+// The `sleep 30` a test's shell server started, killed on drop unless seen
+// gone. It outlives every test, so its PID is not reused while held here.
+#[cfg(unix)]
+struct Grandchild {
+    id: String,
+    gone: bool,
+}
+
+#[cfg(unix)]
+impl Grandchild {
+    fn read(path: &Path) -> Result<Self, Box<dyn Error>> {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            if let Ok(id) = fs::read_to_string(path)
+                && let Ok(id) = id.trim().parse::<u32>()
+            {
+                let id = id.to_string();
+                return Ok(Self { id, gone: false });
+            }
+            if Instant::now() >= deadline {
+                return Err("the grandchild never reported its PID".into());
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn alive(&self) -> bool {
+        Command::new("/bin/kill")
+            .args(["-0", &self.id])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn gone_within(&mut self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.alive() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        self.gone = true;
+        true
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Grandchild {
+    fn drop(&mut self) {
+        if !self.gone && self.alive() {
+            let _ = Command::new("/bin/kill").args(["-KILL", &self.id]).status();
+        }
+    }
+}
+
+// A server whose background `sleep 30` inherits and holds its stdout and
+// stderr pipes. Only the first start spawns it and records its PID.
+#[cfg(unix)]
+fn grandchild_server(pid_file: &Path, ignore_term: bool) -> Result<ProcessSpec, ConfigError> {
+    let path = pid_file.display();
+    let trap = if ignore_term { "trap '' TERM; " } else { "" };
+    shell(&format!(
+        "[ -e '{path}' ] || {{ {trap}sleep 30 & echo $! > '{path}.tmp' && mv '{path}.tmp' '{path}'; }}; exec cat"
+    ))
+}
+
+#[cfg(unix)]
+fn assert_shutdown_stops_grandchild(ignore_term: bool) -> Result<(), Box<dyn Error>> {
+    let directory = TestDirectory::new("grandchild")?;
+    let pid_file = directory.join("pid");
+    let spec =
+        grandchild_server(&pid_file, ignore_term)?.with_helper_join_grace_for_test(LONG_EXIT_GRACE);
+    let mut process = LanguageServerProcess::start(spec, identity(1))?;
+    let mut grandchild = Grandchild::read(&pid_file)?;
+    let begin = Instant::now();
+    let snapshot = process.shutdown();
+    let elapsed = begin.elapsed();
+    let gone = grandchild.gone_within(Duration::from_secs(1));
+    // A hang bound only: the base hit the 5 s backstop with the child alive.
+    assert!(
+        gone && elapsed < Duration::from_secs(4) && snapshot.shutdown_timeouts == 0,
+        "gone: {gone}, elapsed: {elapsed:?}, snapshot: {snapshot:?}"
+    );
+    assert_eq!(snapshot.exit_grace_timeouts, 1);
+    assert_eq!(snapshot.retained_bytes, 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn shutdown_kills_a_grandchild_that_holds_the_pipes() -> Result<(), Box<dyn Error>> {
+    assert_shutdown_stops_grandchild(false)
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn shutdown_kills_a_grandchild_that_ignores_term() -> Result<(), Box<dyn Error>> {
+    assert_shutdown_stops_grandchild(true)
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn restart_kills_the_old_process_group() -> Result<(), Box<dyn Error>> {
+    let directory = TestDirectory::new("restart")?;
+    let pid_file = directory.join("pid");
+    let spec =
+        grandchild_server(&pid_file, false)?.with_helper_join_grace_for_test(LONG_EXIT_GRACE);
+    let mut process = LanguageServerProcess::start(spec, identity(1))?;
+    let mut grandchild = Grandchild::read(&pid_file)?;
+    process.restart(identity(2))?;
+    let restarted = wait_for(
+        &mut process,
+        |event| matches!(event, ProcessEvent::Started { epoch, .. } if epoch.get() == 2),
+    );
+    let gone = grandchild.gone_within(Duration::from_secs(1));
+    let snapshot = process.shutdown();
+    assert!(
+        restarted.is_ok() && gone && snapshot.shutdown_timeouts == 0,
+        "restarted: {restarted:?}, gone: {gone}, snapshot: {snapshot:?}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn a_server_that_exits_on_eof_skips_the_grace_waits() -> Result<(), Box<dyn Error>> {
+    let directory = TestDirectory::new("clean")?;
+    let marker = directory.join("marker");
+    let script = format!("cat > /dev/null; echo clean > '{}'", marker.display());
+    let spec = shell(&script)?
+        .with_exit_grace_for_test(LONG_EXIT_GRACE)
+        .with_helper_join_grace_for_test(LONG_EXIT_GRACE);
+    let mut process = LanguageServerProcess::start(spec, identity(1))?;
+    let _ = wait_for(&mut process, |event| {
+        matches!(event, ProcessEvent::Started { .. })
+    })?;
+    let begin = Instant::now();
+    let snapshot = process.shutdown();
+    let elapsed = begin.elapsed();
+    let marker = fs::read_to_string(&marker).unwrap_or_default();
+    // Ending well inside the grace shows the wait stopped at EOF.
+    assert!(
+        marker == "clean\n" && elapsed < LONG_EXIT_GRACE / 3,
+        "marker: {marker:?}, elapsed: {elapsed:?}"
+    );
+    assert_eq!(snapshot.exit_grace_timeouts, 0);
+    assert_eq!(snapshot.shutdown_timeouts, 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn farewell_reaches_stdin_before_it_closes() -> Result<(), Box<dyn Error>> {
+    let mut peer = LspPeer::new();
+    let _ = peer.begin_initialize()?;
+    let _ = peer.receive(
+        br#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#,
+        None,
+    )?;
+    let farewell = peer.farewell()?;
+    let directory = TestDirectory::new("farewell")?;
+    let received = directory.join("stdin");
+    let script = format!("cat > '{}'", received.display());
+    let spec = shell(&script)?.with_exit_grace_for_test(LONG_EXIT_GRACE);
+    let mut process = LanguageServerProcess::start(spec, identity(1))?;
+    let _ = wait_for(&mut process, |event| {
+        matches!(event, ProcessEvent::Started { .. })
+    })?;
+    let snapshot = process.shutdown_with_farewell(&farewell);
+    let received = fs::read_to_string(&received)?;
+    assert_eq!(received.as_bytes(), &*farewell);
+    let shutdown = received.find(r#""method":"shutdown""#);
+    let exit = received.find(r#""method":"exit""#);
+    assert!(shutdown.is_some_and(|shutdown| exit.is_some_and(|exit| shutdown < exit)));
+    assert_eq!(snapshot.exit_grace_timeouts, 0);
+    assert_eq!(snapshot.retained_bytes, 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn process_group_guard_refuses_unsafe_targets() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::process::ExitStatusExt;
+
+    for id in [0, 1, std::process::id(), u32::MAX] {
+        assert!(ProcessGroup::refuses(id), "admitted {id}");
+    }
+    let mut command = Command::new("/bin/sleep");
+    command.arg("30");
+    let (mut child, group) = ProcessGroup::spawn_leader(&mut command)?;
+    let signalled = group.signal(GroupSignal::Kill);
+    let deadline = Instant::now() + TIMEOUT;
+    // No `?` here: an early return would leak the sleeping child.
+    let mut status = child.try_wait().ok().flatten();
+    while status.is_none() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+        status = child.try_wait().ok().flatten();
+    }
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert_eq!(group.id(), child.id());
+    assert!(signalled);
+    assert_eq!(status.and_then(|status| status.signal()), Some(9));
     Ok(())
 }

@@ -357,39 +357,83 @@ pub struct KeyLatencies {
     pub measured_ms: Vec<f64>,
     pub late: usize,
     pub missed: usize,
+    pub ambiguous: usize,
+    pub invalid_timestamps: bool,
+    pub record_limit_exceeded: bool,
 }
 
-/// A key is timed only if the first changed frame after it shows before the
-/// next key (last key: within `spacing_ticks`) and the previous key's did too;
-/// else it is late (the change may be a neighbor's) or missed (no change).
+// This bounds the sort and maps above nine minutes at 120 Hz; key workloads
+// currently post 100 events over 25 seconds plus a short capture tail.
+const MAX_KEY_RECORDS: usize = 65_536;
+
+/// Hash changes are diagnostic, never proof of the intended text or caret.
+/// One unresolved interval makes every later match ambiguous: a delayed
+/// response can otherwise look like a fast answer to a later key.
 pub fn key_latencies(
     events: &[InputEvent],
     frames: &[Frame],
     timebase: Timebase,
     spacing_ticks: u64,
 ) -> KeyLatencies {
-    let changes = changed_frames(frames);
-    let mut sorted: Vec<&InputEvent> = events.iter().collect();
-    sorted.sort_by_key(|event| event.mach);
     let mut result = KeyLatencies::default();
-    let mut previous_in_window = true;
-    for (index, event) in sorted.iter().enumerate() {
-        let window_end = sorted
+    if frames.len() > MAX_KEY_RECORDS || events.len() > MAX_KEY_RECORDS {
+        result.record_limit_exceeded = true;
+        result.ambiguous = events.len();
+        return result;
+    }
+    let changes = changed_frames(frames);
+    let mut by_sequence = BTreeMap::new();
+    let mut by_display = BTreeMap::new();
+    let bad_frames = frames.iter().any(|frame| {
+        frame.display_mach == 0
+            || frame.arrival_mach < frame.display_mach
+            || by_sequence
+                .insert(frame.seq, (frame.display_mach, frame.hash))
+                .is_some_and(|prior| prior != (frame.display_mach, frame.hash))
+            || by_display
+                .insert(frame.display_mach, frame.hash)
+                .is_some_and(|hash| hash != frame.hash)
+    });
+    result.invalid_timestamps = spacing_ticks == 0
+        || timebase.numer == 0
+        || timebase.denom == 0
+        || bad_frames
+        || events.iter().any(|event| event.mach == 0)
+        || events
+            .windows(2)
+            .any(|pair| pair[0].mach >= pair[1].mach || pair[0].seq >= pair[1].seq)
+        || events
+            .last()
+            .is_some_and(|event| event.mach.checked_add(spacing_ticks).is_none());
+    if result.invalid_timestamps {
+        result.ambiguous = events.len();
+        return result;
+    }
+    let mut ambiguous = events.first().is_none_or(|first| {
+        !frames.iter().any(|frame| frame.display_mach < first.mach)
+            || changes.iter().any(|frame| frame.display_mach < first.mach)
+    });
+    for (index, event) in events.iter().enumerate() {
+        let window_end = events
             .get(index + 1)
             .map_or(event.mach.saturating_add(spacing_ticks), |next| next.mach);
+        // `changes` is sorted by display time, so the first answer bisects.
         let response = changes
-            .iter()
-            .find(|frame| frame.display_mach > event.mach)
+            .get(changes.partition_point(|frame| frame.display_mach < event.mach))
             .map(|frame| frame.display_mach);
-        let in_window = response.is_some_and(|display| display < window_end);
         match response {
-            None => result.missed += 1,
-            Some(display) if in_window && previous_in_window => result
+            Some(display) if display > event.mach && display < window_end && !ambiguous => result
                 .measured_ms
                 .push(timebase.millis_between(event.mach, display)),
-            Some(_) => result.late += 1,
+            other => {
+                ambiguous = true;
+                match other {
+                    None => result.missed += 1,
+                    Some(display) if display >= window_end => result.late += 1,
+                    Some(_) => result.ambiguous += 1,
+                }
+            }
         }
-        previous_in_window = in_window;
     }
     result
 }
@@ -451,7 +495,10 @@ pub fn scroll_metrics(
 /// event to 100 ms after its last. Frames outside it are not its own.
 pub fn input_span(events: &[InputEvent], timebase: Timebase) -> Option<(u64, u64)> {
     let (first, last) = (events.first()?, events.last()?);
-    Some((first.mach, last.mach + timebase.ticks(100_000_000)))
+    Some((
+        first.mach,
+        last.mach.saturating_add(timebase.ticks(100_000_000)),
+    ))
 }
 
 /// The fewest distinct window states a scroll of `events` wheel events may
@@ -487,9 +534,13 @@ pub fn min_key_states(keys: usize) -> usize {
     (keys / 2).max(10).min(keys)
 }
 
-/// Why typing or a caret run did not land: it posted no keys, or its span shows
-/// too few distinct band states.
-pub fn key_refusal(events: &[InputEvent], frames: &[Frame], timebase: Timebase) -> Option<String> {
+/// A diagnostic warning about absent or sparse band changes. Slow or dropped
+/// responses remain measured outcomes, never replaceable environment failures.
+pub fn key_band_warning(
+    events: &[InputEvent],
+    frames: &[Frame],
+    timebase: Timebase,
+) -> Option<String> {
     let Some(span) = input_span(events, timebase) else {
         return Some("the helper posted no keys; the keys did not land".to_owned());
     };
@@ -532,11 +583,16 @@ pub fn settle_frame(
 }
 
 pub fn latency_metrics(phase: &str, latencies: &KeyLatencies, sent: usize) -> Vec<Metric> {
+    let complete = sent > 0
+        && latencies.measured_ms.len() == sent
+        && latencies.late + latencies.missed + latencies.ambiguous == 0
+        && !latencies.invalid_timestamps
+        && !latencies.record_limit_exceeded;
     let mut metrics = vec![
         Metric::new(phase, "keys_sent", to_f64(sent as u64), "count"),
         Metric::new(
             phase,
-            "keys_timed",
+            "keys_hash_timed",
             to_f64(latencies.measured_ms.len() as u64),
             "count",
         ),
@@ -547,12 +603,40 @@ pub fn latency_metrics(phase: &str, latencies: &KeyLatencies, sent: usize) -> Ve
             to_f64(latencies.missed as u64),
             "count",
         ),
+        Metric::new(
+            phase,
+            "keys_ambiguous",
+            to_f64(latencies.ambiguous as u64),
+            "count",
+        ),
+        Metric::new(
+            phase,
+            "key_timestamps_valid",
+            f64::from(!latencies.invalid_timestamps && !latencies.record_limit_exceeded),
+            "bool",
+        ),
+        Metric::new(
+            phase,
+            "key_hash_timing_complete",
+            f64::from(complete),
+            "bool",
+        ),
+        Metric::new(phase, "key_semantic_qualified", 0.0, "bool"),
+        Metric::new(
+            phase,
+            "key_analysis_within_limit",
+            f64::from(!latencies.record_limit_exceeded),
+            "bool",
+        ),
     ];
+    if !complete {
+        return metrics;
+    }
     for (suffix, quantile) in [("p50", 0.5), ("p95", 0.95), ("max", 1.0)] {
         if let Some(value) = stats::nearest_rank(&latencies.measured_ms, quantile) {
             metrics.push(Metric::new(
                 phase,
-                format!("key_to_screen_{suffix}"),
+                format!("key_hash_change_{suffix}"),
                 value,
                 "ms",
             ));
@@ -781,17 +865,38 @@ pub fn summarize_trials(trials: &[Vec<Metric>]) -> Vec<SummaryRow> {
         }
     }
     summarize(&filled)
+        .into_iter()
+        .filter(|row| {
+            let qualification = if row.name.starts_with("key_hash_change_") {
+                "key_hash_timing_complete"
+            } else if row.name.starts_with("key_to_screen_") {
+                "key_semantic_qualified"
+            } else {
+                return true;
+            };
+            trials.iter().all(|trial| {
+                trial
+                    .iter()
+                    .any(|metric| metric.phase == row.phase && metric.name == row.name)
+                    && trial.iter().any(|metric| {
+                        metric.phase == row.phase
+                            && metric.name == qualification
+                            && metric.value.total_cmp(&1.0).is_eq()
+                    })
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        KeyLatencies, Metric, PhaseWindow, Visibility, capture_region, child_names,
-        child_process_evidence, cpu_points, distinct_frames, frame_intervals, input_span,
-        interval_metrics, key_latencies, key_refusal, min_key_states, min_scroll_states,
-        phase_label, phase_metrics, phase_windows, quiet_since, reaped_child_cpu_ns,
-        scroll_metrics, scroll_refusal, settle_frame, summarize, summarize_trials, trial_metrics,
-        visibility,
+        KeyLatencies, MAX_KEY_RECORDS, Metric, PhaseWindow, Visibility, capture_region,
+        child_names, child_process_evidence, cpu_points, distinct_frames, frame_intervals,
+        input_span, interval_metrics, key_band_warning, key_latencies, latency_metrics,
+        min_key_states, min_scroll_states, phase_label, phase_metrics, phase_windows, quiet_since,
+        reaped_child_cpu_ns, scroll_metrics, scroll_refusal, settle_frame, summarize,
+        summarize_trials, trial_metrics, visibility,
     };
     use crate::helpers::{
         Appeared, Frame, InputEvent, Mark, ProcRow, SampleSet, SetKind, Timebase, WindowInfo,
@@ -1099,9 +1204,284 @@ mod tests {
     const MS: u64 = 1_000_000;
 
     #[test]
+    fn four_hundred_ms_responses_never_alias_to_one_hundred_fifty_ms() {
+        let events: Vec<_> = (0..6).map(|i| key(i + 1, (100 + i * 250) * MS)).collect();
+        let mut frames = vec![frame(1, 1, 0)];
+        frames.extend(
+            events
+                .iter()
+                .map(|event| frame(event.seq + 1, event.mach + 400 * MS, event.seq)),
+        );
+        let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
+        assert!(latencies.measured_ms.is_empty(), "{latencies:?}");
+    }
+
+    fn responses(events: &[InputEvent], delay: u64) -> Vec<Frame> {
+        let mut frames = vec![frame(0, 1, 0)];
+        frames.extend(
+            events
+                .iter()
+                .map(|event| frame(event.seq, event.mach + delay, event.seq)),
+        );
+        frames
+    }
+
+    fn assert_unqualified(latencies: &KeyLatencies, sent: usize, complete: bool) {
+        let metrics = latency_metrics("typing", latencies, sent);
+        assert_eq!(value(&metrics, "key_semantic_qualified"), Some(0.0));
+        assert_eq!(
+            value(&metrics, "key_hash_timing_complete"),
+            Some(f64::from(complete))
+        );
+        for suffix in ["p50", "p95", "max"] {
+            assert_eq!(value(&metrics, &format!("key_to_screen_{suffix}")), None);
+            assert_eq!(
+                value(&metrics, &format!("key_hash_change_{suffix}")).is_some(),
+                complete
+            );
+        }
+        assert_eq!(
+            latencies.measured_ms.len() + latencies.late + latencies.missed + latencies.ambiguous,
+            sent
+        );
+    }
+
+    #[test]
+    fn delay_sweep_is_complete_only_inside_every_interval() {
+        let events = key_run(8);
+        for delay in [0, 1, 8, 100, 249, 250, 400, 500, 750] {
+            let latencies = key_latencies(&events, &responses(&events, delay * MS), UNIT, 250 * MS);
+            let complete = delay > 0 && delay < 250;
+            assert_eq!(
+                latencies.measured_ms.len(),
+                if complete { 8 } else { 0 },
+                "{delay}"
+            );
+            assert_unqualified(&latencies, 8, complete);
+        }
+    }
+
+    #[test]
+    fn dropping_first_middle_or_last_key_suppresses_all_percentiles() {
+        let events = key_run(100);
+        for dropped in [0, 49, 99] {
+            let mut frames = responses(&events, 30 * MS);
+            frames.remove(dropped + 1);
+            let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
+            assert_eq!(latencies.measured_ms.len(), dropped);
+            assert_unqualified(&latencies, 100, false);
+            if dropped == 99 {
+                assert_eq!(latencies.missed, 1);
+            } else {
+                assert_eq!(latencies.late, 1);
+                assert_eq!(latencies.ambiguous, 99 - dropped);
+            }
+        }
+    }
+
+    #[test]
+    fn coalesced_responses_cannot_restore_identity() {
+        let events = key_run(6);
+        let mut frames = responses(&events, 30 * MS);
+        frames.remove(1);
+        frames.remove(2);
+        frames.remove(3);
+        let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
+        assert_eq!((latencies.late, latencies.ambiguous), (3, 3));
+        assert_unqualified(&latencies, 6, false);
+    }
+
+    #[test]
+    fn closely_spaced_inputs_still_require_disjoint_response_windows() {
+        let events = vec![key(1, MS), key(2, 2 * MS), key(3, 3 * MS)];
+        let fast = key_latencies(&events, &responses(&events, MS / 2), UNIT, MS);
+        assert_eq!(fast.measured_ms, vec![0.5; 3]);
+        assert_unqualified(&fast, 3, true);
+        let slow = key_latencies(&events, &responses(&events, MS * 3 / 2), UNIT, MS);
+        assert_unqualified(&slow, 3, false);
+        assert!(slow.measured_ms.is_empty());
+    }
+
+    #[test]
+    fn capture_arrival_reordering_and_identical_duplicates_do_not_change_display_timing() {
+        let events = key_run(3);
+        let expected = key_latencies(&events, &responses(&events, 30 * MS), UNIT, 250 * MS);
+        let mut frames = responses(&events, 30 * MS);
+        frames[1].arrival_mach += 1_000 * MS;
+        frames.push(frames[1]);
+        frames.reverse();
+        assert_eq!(key_latencies(&events, &frames, UNIT, 250 * MS), expected);
+    }
+
+    #[test]
+    fn malformed_event_or_capture_timestamps_fail_closed() {
+        let events = key_run(3);
+        let frames = responses(&events, 30 * MS);
+        let mut bad_events = vec![events.clone(); 4];
+        bad_events[0][1].mach = bad_events[0][0].mach;
+        bad_events[1].reverse();
+        bad_events[2][1].seq = bad_events[2][0].seq;
+        bad_events[3][2].mach = u64::MAX;
+        for events in bad_events {
+            let result = key_latencies(&events, &frames, UNIT, 250 * MS);
+            assert!(result.invalid_timestamps);
+            assert_unqualified(&result, 3, false);
+        }
+        let mut bad_frames = vec![frames.clone(); 3];
+        bad_frames[0][1].arrival_mach = 1;
+        bad_frames[1][2].seq = bad_frames[1][1].seq;
+        bad_frames[2][2].display_mach = bad_frames[2][1].display_mach;
+        for frames in bad_frames {
+            let result = key_latencies(&events, &frames, UNIT, 250 * MS);
+            assert!(result.invalid_timestamps);
+            assert_unqualified(&result, 3, false);
+        }
+        for (clock, spacing) in [
+            (Timebase { numer: 0, denom: 1 }, MS),
+            (Timebase { numer: 1, denom: 0 }, MS),
+            (UNIT, 0),
+        ] {
+            assert!(key_latencies(&events, &frames, clock, spacing).invalid_timestamps);
+        }
+    }
+
+    #[test]
+    fn absent_or_unstable_pre_input_baselines_are_ambiguous() {
+        let events = key_run(3);
+        let frames = responses(&events, 30 * MS);
+        let missing = key_latencies(&events, &frames[1..], UNIT, 250 * MS);
+        assert_unqualified(&missing, 3, false);
+        let mut unstable = frames;
+        unstable.push(frame(100, 500 * MS, 99));
+        let result = key_latencies(&events, &unstable, UNIT, 250 * MS);
+        assert_unqualified(&result, 3, false);
+        assert!(result.measured_ms.is_empty());
+    }
+
+    #[test]
+    fn missing_display_time_sentinel_cannot_be_a_pre_input_baseline() {
+        let events = key_run(3);
+        let frames = responses(&events, 30 * MS);
+        let mut missing_display = frames.clone();
+        missing_display[0].display_mach = 0;
+        let mut missing_arrival = frames.clone();
+        missing_arrival[0].arrival_mach = 0;
+        for capture in [missing_display, missing_arrival] {
+            let latencies = key_latencies(&events, &capture, UNIT, 250 * MS);
+            assert!(latencies.invalid_timestamps);
+            assert_unqualified(&latencies, 3, false);
+        }
+        let mut missing_event = events;
+        missing_event[0].mach = 0;
+        let latencies = key_latencies(&missing_event, &frames, UNIT, 250 * MS);
+        assert!(latencies.invalid_timestamps);
+        assert_unqualified(&latencies, 3, false);
+    }
+
+    #[test]
+    fn key_analysis_refuses_records_above_its_memory_bound() {
+        let events = key_run(1);
+        let mut frames = vec![frame(0, 1, 0); MAX_KEY_RECORDS];
+        frames[MAX_KEY_RECORDS - 1] = frame(1, events[0].mach + 30 * MS, 1);
+        let at_limit = key_latencies(&events, &frames, UNIT, 250 * MS);
+        assert!(!at_limit.record_limit_exceeded);
+        assert_unqualified(&at_limit, 1, true);
+        frames.push(frames[0]);
+        let above_limit = key_latencies(&events, &frames, UNIT, 250 * MS);
+        assert!(above_limit.record_limit_exceeded);
+        assert_unqualified(&above_limit, 1, false);
+        assert_eq!(
+            value(
+                &latency_metrics("typing", &above_limit, 1),
+                "key_timestamps_valid"
+            ),
+            Some(0.0)
+        );
+        let events = vec![events[0].clone(); MAX_KEY_RECORDS + 1];
+        assert!(key_latencies(&events, &[], UNIT, 250 * MS).record_limit_exceeded);
+    }
+
+    #[test]
+    fn no_input_and_blink_controls_never_become_screen_latency() {
+        let events = key_run(4);
+        let mut blink = responses(&events, 30 * MS);
+        for frame in &mut blink {
+            frame.hash = frame.seq % 2;
+        }
+        let latencies = key_latencies(&events, &blink, UNIT, 250 * MS);
+        assert_unqualified(&latencies, 4, true);
+        assert_unqualified(&key_latencies(&[], &blink, UNIT, 250 * MS), 0, false);
+        let unchanged = [frame(1, 1, 0), frame(2, 5_000 * MS, 0)];
+        let latencies = key_latencies(&events, &unchanged, UNIT, 250 * MS);
+        assert_eq!(latencies.missed, 4);
+        assert_unqualified(&latencies, 4, false);
+    }
+
+    #[test]
+    fn a_missing_response_prevents_fast_later_trials_from_restoring_summary_percentiles() {
+        let events = key_run(100);
+        let frames = responses(&events, 30 * MS);
+        let complete = key_latencies(&events, &frames, UNIT, 250 * MS);
+        let incomplete = key_latencies(&events, &frames[..100], UNIT, 250 * MS);
+        let mut trials = vec![latency_metrics("typing", &incomplete, 100)];
+        trials.extend((0..10).map(|_| latency_metrics("typing", &complete, 100)));
+        let rows = summarize_trials(&trials);
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.name.starts_with("key_hash_change_"))
+        );
+        assert!(
+            rows.iter().any(|row| row.name == "keys_missed"
+                && row.summary.n == 11
+                && row.summary.max > 0.0)
+        );
+        for (prefix, qualification) in [
+            ("key_hash_change_", "key_hash_timing_complete"),
+            ("key_to_screen_", "key_semantic_qualified"),
+        ] {
+            let complete = vec![
+                Metric::new("caret", format!("{prefix}p95"), 30.0, "ms"),
+                Metric::new("caret", qualification, 1.0, "bool"),
+            ];
+            let mut trials = vec![complete.clone(), complete];
+            assert!(
+                summarize_trials(&trials)
+                    .iter()
+                    .any(|row| row.name.starts_with(prefix))
+            );
+            trials[0].pop();
+            assert!(
+                !summarize_trials(&trials)
+                    .iter()
+                    .any(|row| row.name.starts_with(prefix))
+            );
+            trials[0].clear();
+            assert!(
+                !summarize_trials(&trials)
+                    .iter()
+                    .any(|row| row.name.starts_with(prefix))
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_summary_can_report_a_verified_response_after_the_next_input() {
+        let metrics = vec![
+            Metric::new("typing", "key_to_screen_p95", 400.0, "ms"),
+            Metric::new("typing", "key_semantic_qualified", 1.0, "bool"),
+            Metric::new("typing", "key_hash_timing_complete", 0.0, "bool"),
+        ];
+        let rows = summarize_trials(&vec![metrics; 10]);
+        assert!(rows.iter().any(|row| row.name == "key_to_screen_p95"
+            && row.summary.n == 10
+            && row.summary.mean.total_cmp(&400.0).is_eq()));
+    }
+
+    #[test]
     fn keys_are_timed_by_the_first_change_inside_their_own_window() {
         let frames = vec![
-            frame(1, 0, 1),
+            frame(1, 1, 1),
             frame(2, 10 * MS, 1),
             frame(3, 128 * MS, 2),
             frame(4, 360 * MS, 2),
@@ -1115,26 +1495,30 @@ mod tests {
                 measured_ms: vec![28.0, 42.0],
                 late: 0,
                 missed: 0,
+                ambiguous: 0,
+                invalid_timestamps: false,
+                record_limit_exceeded: false,
             }
         );
     }
 
     #[test]
-    fn a_response_after_the_next_key_is_late_and_so_is_that_key() {
+    fn a_response_after_the_next_key_is_late_and_makes_that_key_ambiguous() {
         // Key 1's change shows at 400, after key 2 at 350: key 1 is late,
-        // and key 2's first change (400) may be key 1's, so it is late too.
-        let frames = vec![frame(1, 0, 1), frame(2, 400 * MS, 2), frame(3, 420 * MS, 3)];
+        // and key 2's first change (400) may be key 1's, so it is ambiguous.
+        let frames = vec![frame(1, 1, 1), frame(2, 400 * MS, 2), frame(3, 420 * MS, 3)];
         let events = vec![key(1, 100 * MS), key(2, 350 * MS), key(3, 600 * MS)];
         let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
         assert!(latencies.measured_ms.is_empty());
-        assert_eq!(latencies.late, 2);
+        assert_eq!(latencies.late, 1);
+        assert_eq!(latencies.ambiguous, 1);
         assert_eq!(latencies.missed, 1);
     }
 
     #[test]
-    fn timing_resumes_once_a_key_is_answered_in_its_window() {
+    fn timing_never_resumes_after_an_unresolved_interval() {
         let frames = vec![
-            frame(1, 0, 1),
+            frame(1, 1, 1),
             frame(2, 400 * MS, 2),
             frame(3, 630 * MS, 3),
             frame(4, 880 * MS, 4),
@@ -1146,14 +1530,15 @@ mod tests {
             key(4, 850 * MS),
         ];
         let latencies = key_latencies(&events, &frames, UNIT, 250 * MS);
-        assert_eq!(latencies.measured_ms, vec![30.0, 30.0]);
-        assert_eq!(latencies.late, 2);
+        assert!(latencies.measured_ms.is_empty());
+        assert_eq!(latencies.late, 1);
+        assert_eq!(latencies.ambiguous, 3);
         assert_eq!(latencies.missed, 0);
     }
 
     #[test]
     fn the_last_key_gets_one_spacing_to_respond() {
-        let frames = vec![frame(1, 0, 1), frame(2, 400 * MS, 2)];
+        let frames = vec![frame(1, 1, 1), frame(2, 400 * MS, 2)];
         let events = vec![key(1, 100 * MS)];
         assert_eq!(key_latencies(&events, &frames, UNIT, 250 * MS).late, 1);
         let wider = key_latencies(&events, &frames, UNIT, 400 * MS);
@@ -1382,8 +1767,8 @@ mod tests {
                 (t / (50 * MS)) % count
             })
         };
-        assert_eq!(key_refusal(&keys, &states(50), UNIT), None);
-        let reason = key_refusal(&keys, &states(49), UNIT).unwrap_or_default();
+        assert_eq!(key_band_warning(&keys, &states(50), UNIT), None);
+        let reason = key_band_warning(&keys, &states(49), UNIT).unwrap_or_default();
         assert_eq!(
             reason,
             "100 keys left the band in 49 distinct states, fewer than the 50 required"
@@ -1393,15 +1778,15 @@ mod tests {
         let tiny = |count: u64| {
             frames_between(1_000 * MS, 3_300 * MS, 25 * MS, |t| (t / (25 * MS)) % count)
         };
-        assert_eq!(key_refusal(&few, &tiny(10), UNIT), None);
-        assert!(key_refusal(&few, &tiny(9), UNIT).is_some());
+        assert_eq!(key_band_warning(&few, &tiny(10), UNIT), None);
+        assert!(key_band_warning(&few, &tiny(9), UNIT).is_some());
     }
 
     #[test]
     fn keys_that_left_the_band_unchanged_are_refused_with_their_counts() {
         // The band never moved, so its one state was the whole span.
         let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |_| 7);
-        let reason = key_refusal(&key_run(100), &frames, UNIT).unwrap_or_default();
+        let reason = key_band_warning(&key_run(100), &frames, UNIT).unwrap_or_default();
         assert_eq!(
             reason,
             "100 keys left the band in 1 distinct state, fewer than the 50 required"
@@ -1417,7 +1802,7 @@ mod tests {
             u64::from(time > last_key + 1_030 * MS)
         });
         assert_eq!(distinct_frames(&frames, 0, u64::MAX), 2);
-        let reason = key_refusal(&key_run(100), &frames, UNIT).unwrap_or_default();
+        let reason = key_band_warning(&key_run(100), &frames, UNIT).unwrap_or_default();
         assert!(reason.contains("in 1 distinct state,"), "{reason}");
     }
 
@@ -1429,14 +1814,14 @@ mod tests {
         let keys = key_run(100);
         let (first, last) = input_span(&keys, UNIT).unwrap_or_default();
         assert!(frame_intervals(&frames, first, last, UNIT).len() >= 40);
-        let reason = key_refusal(&keys, &frames, UNIT).unwrap_or_default();
+        let reason = key_band_warning(&keys, &frames, UNIT).unwrap_or_default();
         assert!(reason.contains("in 2 distinct states,"), "{reason}");
     }
 
     #[test]
     fn a_band_that_changed_with_every_key_is_not_refused() {
         let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |t| keys_answered(t, 30 * MS));
-        assert_eq!(key_refusal(&key_run(100), &frames, UNIT), None);
+        assert_eq!(key_band_warning(&key_run(100), &frames, UNIT), None);
     }
 
     #[test]
@@ -1445,7 +1830,7 @@ mod tests {
         let (first, last) = input_span(&keys, UNIT).unwrap_or_default();
         let answered_after =
             |delay: u64| frames_between(860 * MS, 40_000 * MS, 8 * MS, |t| keys_answered(t, delay));
-        let verdict = |delay: u64| key_refusal(&keys, &answered_after(delay), UNIT);
+        let verdict = |delay: u64| key_band_warning(&keys, &answered_after(delay), UNIT);
         // Answers 400 ms late all land in the span but the last two keys'.
         assert_eq!(
             distinct_frames(&answered_after(400 * MS), first, last),
@@ -1469,7 +1854,7 @@ mod tests {
             20_000 + time / MS
         });
         let frames = [before, during, after].concat();
-        let reason = key_refusal(&keys, &frames, UNIT).unwrap_or_default();
+        let reason = key_band_warning(&keys, &frames, UNIT).unwrap_or_default();
         assert!(reason.contains("in 3 distinct states,"), "{reason}");
         // The refusal names the count `distinct_frames` gives over the span.
         assert_eq!(distinct_frames(&frames, first, last), 3);
@@ -1478,7 +1863,7 @@ mod tests {
     #[test]
     fn keys_that_posted_nothing_are_refused() {
         let frames = frames_between(860 * MS, 30_000 * MS, 8 * MS, |t| keys_answered(t, 30 * MS));
-        let reason = key_refusal(&[], &frames, UNIT).unwrap_or_default();
+        let reason = key_band_warning(&[], &frames, UNIT).unwrap_or_default();
         assert_eq!(reason, "the helper posted no keys; the keys did not land");
     }
 
@@ -1543,7 +1928,7 @@ mod tests {
                 "{name}"
             );
             assert_eq!(
-                key_refusal(&keys, &frames, MAC).as_deref(),
+                key_band_warning(&keys, &frames, MAC).as_deref(),
                 refusal,
                 "{name}"
             );

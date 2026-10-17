@@ -282,8 +282,12 @@ impl LspClient {
     }
 
     pub(crate) fn shutdown(&mut self) -> LspClientSnapshot {
+        let farewell = self.started.then(|| self.peer.farewell().ok()).flatten();
         self.started = false;
-        let process = self.process.shutdown();
+        let process = match farewell {
+            Some(bytes) => self.process.shutdown_with_farewell(&bytes),
+            None => self.process.shutdown(),
+        };
         LspClientSnapshot {
             started: false,
             process,
@@ -382,7 +386,9 @@ impl LspClient {
 #[cfg(test)]
 mod tests {
     use std::{
-        env, fs,
+        env,
+        ffi::OsStr,
+        fs,
         path::{Path, PathBuf},
         process::{self, Command},
         sync::OnceLock,
@@ -448,6 +454,9 @@ mod tests {
             output.status.success(),
             "failed to compile mock language server: {compiler_stderr}"
         );
+        // A new binary's first launch waits on a macOS assessment that took
+        // seconds under load; pay it here, outside any test's wait.
+        let _ = Command::new(&path).stdin(process::Stdio::null()).output();
         Ok(MockExecutable { directory, path })
     }
 
@@ -654,6 +663,39 @@ mod tests {
         let snapshot = client.shutdown();
         assert_eq!(snapshot.process.retained_bytes, 0);
         assert_eq!(snapshot.peer.pending_requests(), 0);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+    fn shutdown_sends_shutdown_then_exit_despite_a_pending_request() -> Result<(), Box<dyn Error>> {
+        let directory = env::temp_dir().join(format!("alpine-lsp-farewell-{}", process::id()));
+        fs::create_dir_all(&directory)?;
+        let record = directory.join("stdin");
+        let arguments = [OsStr::new("--record-stdin"), record.as_os_str()];
+        let spec = ProcessSpec::new(&mock_executable().path, arguments, None)?
+            .with_exit_grace_for_test(Duration::from_secs(30));
+        let mut client = LspClient::start(spec, identity(1))?;
+        let _ = wait_poll(&mut client, None, |poll| {
+            matches!(poll, LspClientPoll::Started { .. })
+        })?;
+        initialize_client(&mut client, None, "initialize timed out")?;
+        client.begin_request("test/slow", None, stamp(1))?;
+        let snapshot = client.shutdown();
+        let received = fs::read_to_string(&record);
+        let _ = fs::remove_dir_all(&directory);
+        let received = received?;
+        let shutdown = received.find(r#""id":3,"method":"shutdown""#);
+        let exit = received.find(r#""method":"exit""#);
+        assert!(
+            shutdown.is_some_and(|shutdown| exit.is_some_and(|exit| shutdown < exit)),
+            "stdin: {received}"
+        );
+        assert!(received.ends_with(r#"{"jsonrpc":"2.0","method":"exit"}"#));
+        assert_eq!(snapshot.peer.lifecycle(), PeerLifecycle::Exited);
+        assert_eq!(snapshot.peer.pending_requests(), 0);
+        assert_eq!(snapshot.process.exit_grace_timeouts, 0);
+        assert_eq!(snapshot.process.retained_bytes, 0);
         Ok(())
     }
 

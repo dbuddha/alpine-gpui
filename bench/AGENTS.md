@@ -1,17 +1,17 @@
 ---
 scope: bench/, the local black-box benchmark (never shipped, never in CI)
 parent: ../AGENTS.md
-updated: 2026-10-04
+updated: 2026-10-17
 gate: "in bench/: cargo build, test, clippy --all-targets -- -D warnings, fmt --check; then helpers/build.sh"
 known_defects:
   - "unverified: the reference editor's caret blink suppression"
+  - "typing/caret: hashes cannot verify text/caret; semantic timing unqualified"
 ---
 
 # Bench
 
-`bench/` measures Alpine Editor, Zed and an AppKit reference editor the same
-way: a std-only Cargo workspace outside the root one, plus Swift helpers
-(`xcrun swiftc`).
+`bench/` compares Alpine, Zed and AppKit: a std-only Cargo workspace plus
+Swift helpers (`xcrun swiftc`).
 
 ## Commands
 
@@ -24,41 +24,39 @@ target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
 
-Workloads live in `src/workload.rs`; `--dry-run` prints launches and
-input, starting nothing. Alpine is the installed
-`~/Applications/Alpine Editor.app`.
+`src/workload.rs` defines workloads; `--dry-run` starts nothing. Alpine is
+the clean installed `~/Applications/Alpine Editor.app`.
 
 ## Owner-present session
 
 1. Quit Zed; `bench zed-isolation --allow-window --open-fixture` must report
    no change.
-2. Grant the terminal running `bench` Accessibility and Screen Recording
-   (`bench permissions` checks); helpers never prompt.
-3. Stay hands-off from each run's `Hands off` line until its directory
-   prints.
+2. The runner app needs Accessibility and Screen Recording (`bench
+   permissions`); helpers never prompt.
+3. Stay hands-off from `Hands off` until the results directory prints.
 
 ## Protocol
 
 - Quiet machine, AC power, Low Power Mode off, clean trees. `bench baseline`
-  refuses anything else, needs ten valid measured trials, skips rows with
-  fewer values and counts a child absent from a trial as zero bytes.
-- Every workload runs one untimed warm-up, then fresh processes with a
-  disposable HOME under `/tmp/alpine-bench` and the Dock's PATH. Quit the
-  measured app first, or the bench refuses.
-- `highlight` (criterion 2.1) is an Alpine-only budget row, not a comparison:
-  each round opens a 20,000-line file per language group with an empty PATH
-  directory, and a child process voids the trial. `--trials` counts per group;
-  other rows pool them.
-- From before measuring, every second, the app must be frontmost and
+  needs ten valid measured trials. Typing/caret require complete, semantically
+  qualified evidence and latency rows in every measured trial, including raw
+  metrics; legacy or hash-only runs cannot qualify. Other short diagnostic
+  rows are skipped; an absent child counts as zero bytes.
+- Every workload uses one warm-up, then fresh processes with a
+  disposable HOME under `/tmp/alpine-bench` (`BENCH_HOME_ROOT`) and the
+  Dock's PATH. Quit the measured app first, or the bench refuses.
+- `highlight` (criterion 2.1) is Alpine-only: each round opens 20,000 lines
+  per language with an empty PATH; children void the trial. `--trials` counts
+  per group; other rows pool them.
+- Every second, including before measurement, the app must be frontmost and
   uncovered by other apps' visible windows at any layer but the pointer's; a
   failure stops the run before measuring (except what `--wait-idle` voids) and
   invalidates the trial after.
-- `--wait-idle MIN`: each trial waits MIN minutes without keyboard or mouse
-  input (per-type hardware timers; capture resets the any-input clock), on AC
-  power, screen unlocked; owner input, a lock or an unreadable clock voids a
-  trial (not replaced: pass spare `--trials`); display stays awake once the
-  gate first opens.
-- Report 95% Student t intervals over trials.
+- `--wait-idle MIN`: each trial waits for MIN idle minutes (per-type input
+  timers), AC power and an unlocked screen; owner input, a lock or an
+  unreadable clock voids it (not replaced: pass spare `--trials`). The display
+  stays awake once the gate opens.
+- Report 95% Student t intervals across trials.
 
 ## Permissions
 
@@ -81,12 +79,19 @@ reads them back and refuses another pid's window or a missing export.
   phase, and the largest per child name. `footprint_tool_end` cross-checks
   Apple's `footprint`.
 - CPU, wakeups and energy: deltas between phase boundary samples; startup
-  from process start. CPU and wakeups include reaped children;
-  energy, processes alive at the end.
-- Keypress-to-screen: keys 250 ms apart (`--key-interval-ms`) from line 11,
-  each timed to the first changed frame of the text band, else late or missed.
-  A typing or caret trial posting nothing, or leaving under
-  `min(keys, max(10, keys/2))` distinct band states, is invalid.
+  counts from process start. CPU and wakeups include reaped children;
+  energy counts processes alive at the end.
+- Keys are 250 ms apart (`--key-interval-ms`) from line 11. Hash timing is
+  diagnostic: `key_hash_change_*` never claims keypress-to-screen.
+  `keys_late`, `keys_missed` and `keys_ambiguous` count late, absent and
+  uncertain changes; an unresolved interval stops later matching. Missing or
+  unstable initial frames or bad timestamps leave timing incomplete, which
+  omits hash percentiles and summary timing; raw frames and events remain.
+- `key_semantic_qualified` stays zero until intended text and caret are
+  verified. No-input trials fail. Sparse changes stay measured adverse
+  outcomes (`key_band_distinct`, `key_band_states_sufficient`, a warning) at
+  the threshold `min(keys, max(10, keys/2))`; fast trials cannot replace
+  them.
 - Frame interval while scrolling: display-time gaps between changed frames;
   `frame_late_pct` counts gaps over 1.5 refresh periods. A scroll posting
   nothing, or leaving under `min(events, max(20, events/50))` distinct window
@@ -94,15 +99,14 @@ reads them back and refuses another pid's window or a missing export.
 - `highlight_first_frame_ms` (the 100 ms budget): `build_end_ns` minus
   `build_begin_ns` on the first row of Alpine's `perf-<s>-frames.tsv` with
   both; it must be the cold startup build (event 0), else the trial is refused.
-- Output: raw TSV in `results/<run>/`; `bench baseline` appends stamped rows
+- Raw TSV: `results/<run>/`; `bench baseline` appends stamped rows
   to `baseline.tsv`.
 
 ## Comparable and not
 
-Matched: fixture bytes (outside any git checkout), the requested window frame
-(960x572 pt, read after the last phase; over 1 pt off invalidates), Menlo 15 pt
-on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
-`CARGO_TARGET_DIR`, and the capture path. Not matched:
+Matched: fixtures outside git, 960x572 pt windows (over 1 pt off invalidates),
+Menlo 15 pt with 22 pt lines, steady caret, environment, rust-analyzer and its
+`CARGO_TARGET_DIR`, capture path. Not matched:
 
 - Zed runs non-default settings: no updates, telemetry, AI, sign-in server,
   completion popups or git decorations; trusted worktrees; `cursor_blink` off.
@@ -118,8 +122,8 @@ on 22 pt lines, a steady caret, environment, the rust-analyzer binary and its
 
 ## Isolation
 
-Trials set HOME and `CFFIXED_USER_HOME` to the disposable home; the latter
-moves `NSHomeDirectory` and user Library folders. Zed also gets
+Trials set HOME and `CFFIXED_USER_HOME` (which moves `NSHomeDirectory` and
+user Library folders) to the disposable home. Zed also gets
 `--user-data-dir`, seeded settings, `ZED_UPDATE_EXPLANATION` and a dead
 `ZED_SERVER_URL`. Only the reference editor gets `-ApplePersistenceIgnoreState
 YES` (why: `apps.rs`). cfprefsd still writes preferences to the real home, so

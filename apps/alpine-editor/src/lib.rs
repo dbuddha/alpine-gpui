@@ -8,6 +8,7 @@
 mod accessibility;
 mod commands;
 mod composition;
+mod crash;
 mod documents;
 mod dogfood_diagnostic;
 mod field_edit;
@@ -18,6 +19,7 @@ mod go_to_line;
 mod language_registry;
 mod language_services;
 mod legacy_migration;
+mod logs;
 #[cfg_attr(
     not(test),
     expect(
@@ -881,7 +883,8 @@ pub fn migrate_legacy_data() {
 pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_restored_app()?)
+        let hook = crash::CrashHook::install(std::env::var_os("HOME"));
+        run_native(native_restored_app()?, &hook)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -900,10 +903,11 @@ pub fn run() -> Result<(), RuntimeError> {
 pub fn run_file(path: impl AsRef<Path>) -> Result<(), EditorError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_explicit_path_app(
-            path.as_ref(),
-            ExplicitPathKind::File,
-        )?)
+        let hook = crash::CrashHook::install(std::env::var_os("HOME"));
+        run_native(
+            native_explicit_path_app(path.as_ref(), ExplicitPathKind::File)?,
+            &hook,
+        )
         .map_err(EditorError::from)
     }
 
@@ -934,10 +938,11 @@ mod entry_point_contract_tests {
 pub fn run_path(path: impl AsRef<Path>) -> Result<(), EditorError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        run_native(native_explicit_path_app(
-            path.as_ref(),
-            ExplicitPathKind::Any,
-        )?)
+        let hook = crash::CrashHook::install(std::env::var_os("HOME"));
+        run_native(
+            native_explicit_path_app(path.as_ref(), ExplicitPathKind::Any)?,
+            &hook,
+        )
         .map_err(EditorError::from)
     }
 
@@ -950,11 +955,14 @@ pub fn run_path(path: impl AsRef<Path>) -> Result<(), EditorError> {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg_attr(test, mutants::skip)] // Entering AppKit is qualified by native process E2E.
-fn run_native(app: EditorApp) -> Result<(), RuntimeError> {
+fn run_native(app: EditorApp, hook: &crash::CrashHook) -> Result<(), RuntimeError> {
     #[cfg(alpine_native_validation)]
     let mut app = app;
     #[cfg(not(alpine_native_validation))]
     let mut app = app;
+    if let Some(recovery) = app.recovery.as_ref() {
+        hook.attach_recovery(recovery.flush_handle());
+    }
     app.adopt_discovered_language_server();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
         .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;
@@ -1229,28 +1237,143 @@ impl ExplicitPathTarget {
     }
 }
 
-/// Writes `bytes` to `path` through a sibling temporary file and a rename.
-///
-/// A rename within a directory is atomic, so a crash or a full disk leaves the
-/// destination as it was instead of truncated.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
+const SAVE_AS_TEMPORARY_ATTEMPTS: u32 = 32;
 
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = directory.join(".alpine-save-as");
-    temporary.set_extension(format!("{}", std::process::id()));
-    let write = (|| {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()
-    })();
-    if let Err(error) = write {
+/// Writes `bytes` through a temporary file beside the file `path` resolves to,
+/// then renames it: a crash leaves the old bytes, a symlink stays a link, an
+/// existing mode is kept. The directory is synced last.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = save_as_target(path)?;
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let directory = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let permissions = match std::fs::metadata(&target) {
+        Ok(metadata) if cfg!(unix) => Some(metadata.permissions()),
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let private = permissions.is_some();
+    let (temporary, file) = create_save_as_temporary(directory, file_name, private)?;
+    let replaced = write_save_as_temporary(file, permissions, bytes)
+        .and_then(|()| std::fs::rename(&temporary, &target));
+    if let Err(error) = replaced {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
-    std::fs::rename(&temporary, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temporary);
-    })
+    sync_save_as_directory(directory)
+}
+
+// A dangling symlink is refused rather than replaced by a regular file.
+#[cfg(unix)]
+fn save_as_target(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(target) => Ok(target),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink()) =>
+        {
+            Ok(path.to_path_buf())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn save_as_target(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(path.to_path_buf())
+}
+
+// `create_new` never follows or truncates an existing entry at the name.
+// A `private` file starts at 0600 until it takes the replaced file's mode.
+fn create_save_as_temporary(
+    directory: &Path,
+    file_name: &std::ffi::OsStr,
+    private: bool,
+) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    for attempt in 0..SAVE_AS_TEMPORARY_ATTEMPTS {
+        let mut name = std::ffi::OsString::from(".");
+        name.push(file_name);
+        name.push(format!(".alpine-save-as-{}-{attempt}", std::process::id()));
+        let temporary = directory.join(name);
+        match options.open(&temporary) {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
+}
+
+fn write_save_as_temporary(
+    mut file: std::fs::File,
+    permissions: Option<std::fs::Permissions>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn sync_save_as_directory(directory: &Path) -> std::io::Result<()> {
+    use std::io::ErrorKind;
+
+    match std::fs::File::open(directory).and_then(|handle| handle.sync_all()) {
+        Ok(()) => {
+            #[cfg(test)]
+            SAVE_AS_DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
+            Ok(())
+        }
+        // The rename already landed; only a real I/O failure is worth reporting.
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::Unsupported | ErrorKind::InvalidInput
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_save_as_directory(_directory: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static SAVE_AS_DIRECTORY_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, unix))]
+fn reset_save_as_directory_syncs() {
+    SAVE_AS_DIRECTORY_SYNCS.with(|syncs| syncs.set(0));
+}
+
+#[cfg(all(test, unix))]
+fn save_as_directory_syncs() -> u64 {
+    SAVE_AS_DIRECTORY_SYNCS.with(std::cell::Cell::get)
 }
 
 fn record_project_settings_result(
@@ -1854,9 +1977,12 @@ impl EditorDocument {
                 editor,
                 recovery_base,
             } => {
-                let report = editor.save()?;
-                *recovery_base = editor.buffer().snapshot();
-                Ok(Some(report))
+                let report = editor.save();
+                // A directory-sync error arrives after the bytes landed.
+                if !editor.is_dirty() {
+                    *recovery_base = editor.buffer().snapshot();
+                }
+                report.map(Some)
             }
             Self::Recovered { conflict, .. } | Self::Unavailable { conflict, .. } => {
                 Err(FileError::Conflict(*conflict))
@@ -2170,23 +2296,31 @@ impl Drop for EditorApp {
         if let Some(capture) = self.dogfood_capture.take() {
             capture.capture(self);
         }
-        let _ = self.rust_diagnostics.shutdown();
+        // Persist before stopping servers: each shutdown can block up to 5 s,
+        // and a force quit in that window must not lose recovery or session.
         if self.recovery.is_some()
             && let Ok(request) = self.capture_recovery_request()
             && let Some(recovery) = self.recovery.as_ref()
         {
+            #[cfg(test)]
+            record_exit_step(ExitStep::RecoveryPublish);
             let _ = recovery.publish(request);
         }
         if let Some(mut recovery) = self.recovery.take() {
+            #[cfg(test)]
+            record_exit_step(ExitStep::RecoveryShutdown);
             let _ = recovery.shutdown();
         }
-        let Some(path) = self.session_path.clone() else {
-            return;
-        };
-        let Ok(state) = self.capture_session() else {
-            return;
-        };
-        let _ = session::save(&path, &state);
+        if let Some(path) = self.session_path.clone()
+            && let Ok(state) = self.capture_session()
+        {
+            #[cfg(test)]
+            record_exit_step(ExitStep::SessionSave);
+            let _ = session::save(&path, &state);
+        }
+        #[cfg(test)]
+        record_exit_step(ExitStep::ServerShutdown);
+        let _ = self.rust_diagnostics.shutdown();
     }
 }
 
@@ -7391,17 +7525,30 @@ impl EditorApp {
         EventEffect::document_replacement()
     }
 
+    // Matches resolved paths too, since a link may name a file already open.
+    fn tab_holds_file(&self, path: &Path) -> bool {
+        if self.tabs.index_for_path(path).is_some() {
+            return true;
+        }
+        let Ok(resolved) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        (0..self.tabs.len())
+            .filter_map(|index| self.tabs.path_at(index))
+            .any(|open| std::fs::canonicalize(open).is_ok_and(|open| open == resolved))
+    }
+
     /// Writes the active buffer to `path`, then opens that file as the tab.
     ///
-    /// Refuses a destination that is already open. That tab holds its own
+    /// Refuses a destination that is already open, even through a link. That tab holds its own
     /// buffer, and saving over the file underneath it would be silently
     /// overwritten again the next time that tab saved.
     ///
-    /// The write goes to a sibling temporary file and is renamed into place, so
-    /// an interrupted Save As leaves the destination untouched rather than
-    /// truncated.
+    /// The write goes to a temporary file beside the resolved destination and
+    /// is renamed into place, so an interrupted Save As leaves the destination
+    /// untouched rather than truncated.
     fn save_document_as(&mut self, path: &Path) -> EventEffect {
-        if self.tabs.index_for_path(path).is_some() {
+        if self.tab_holds_file(path) {
             return self.record_workspace_error(&WorkspaceSelectionError::Tabs(
                 DocumentTabError::DuplicatePath(path.to_path_buf()),
             ));
@@ -8129,6 +8276,31 @@ fn recovery_publish_calls() -> u64 {
     RECOVERY_PUBLISH_CALLS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExitStep {
+    RecoveryPublish,
+    RecoveryShutdown,
+    SessionSave,
+    ServerShutdown,
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXIT_STEPS: std::cell::RefCell<Vec<ExitStep>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn record_exit_step(step: ExitStep) {
+    EXIT_STEPS.with(|steps| steps.borrow_mut().push(step));
+}
+
+#[cfg(test)]
+fn take_exit_steps() -> Vec<ExitStep> {
+    EXIT_STEPS.with(|steps| std::mem::take(&mut *steps.borrow_mut()))
+}
+
 enum EditorWorkerOutput {
     Find(FindWorkerOutput),
     QuickOpen(QuickOpenWorkerOutput),
@@ -8753,6 +8925,48 @@ pub mod native_validation {
         app.publish_recovery();
         drop(app);
         Ok(journal)
+    }
+
+    /// Edits a document, installs the crash hook as `run` does, then panics
+    /// on a worker-named thread and aborts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a file, construction or persistence failure before the panic.
+    pub fn crash_probe(
+        home: &Path,
+        document_path: &Path,
+        local_text: &str,
+    ) -> Result<std::convert::Infallible, EditorError> {
+        let session_path = home
+            .join("Library")
+            .join("Application Support")
+            .join("Alpine Editor")
+            .join("session-v1.bin");
+        let mut app = native_explicit_path_app_with_session(
+            document_path,
+            super::ExplicitPathKind::File,
+            None,
+        )?;
+        app.configure_persistence(session_path)?;
+        let hook = crate::crash::CrashHook::install(Some(home.into()));
+        if let Some(recovery) = app.recovery.as_ref() {
+            hook.attach_recovery(recovery.flush_handle());
+        }
+        let invariant = || SurfaceError::invariant(SurfaceOperation::Application);
+        if !app
+            .handle_ime(&ImeEvent::Committed(local_text.into()))
+            .document_changed
+        {
+            return Err(invariant().into());
+        }
+        app.publish_recovery();
+        let worker = std::thread::Builder::new()
+            .name(String::from("alpine-worker-probe"))
+            .spawn(|| std::panic::panic_any("crash probe"))
+            .map_err(|_| invariant())?;
+        let _ = worker.join();
+        std::process::abort()
     }
 
     fn resolve_recovery_through_save(app: &mut EditorApp) -> Result<(), SurfaceError> {
@@ -10487,6 +10701,10 @@ pub mod native_validation {
 #[cfg(test)]
 #[path = "command_palette_tests.rs"]
 mod command_palette_tests;
+
+#[cfg(all(test, unix))]
+#[path = "crash_process_tests.rs"]
+mod crash_process_tests;
 
 #[cfg(test)]
 #[path = "keymap_parity_tests.rs"]

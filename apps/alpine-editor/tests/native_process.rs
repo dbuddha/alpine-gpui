@@ -334,6 +334,13 @@ fn qualify_shipping_executable() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
+        let crash_logs = std::fs::read_dir(home.join("Library/Logs/Alpine Editor"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("crash-"))
+            .count();
+        assert_eq!(crash_logs, 0, "a clean run wrote a crash log");
         let fields = stdout.split_whitespace().collect::<Vec<_>>();
         assert_eq!(fields.len(), 11);
         assert_eq!(fields[0], "alpine-native-journey");
