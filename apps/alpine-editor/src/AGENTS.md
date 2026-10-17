@@ -59,8 +59,8 @@ Slices, serial:
    requests, `processId`, capabilities, UTF-8 negotiation, event-driven test
    waits instead of fixed 5 s loops.
 2. Shutdown worker: a process group per server, shutdown then exit then kill,
-   an event-driven supervisor (no 2 ms polling), recovery published before
-   server shutdown on quit.
+   an event-driven supervisor (no 2 ms polling). Quit already persists
+   recovery and session before stopping servers.
 3. Pool and discovery: evict the least recently used server with no visible
    tab, a deadline thread, memory-pressure shutdown, discovery off the main
    thread, sync only on real changes, install hints. Closes 2.1 (cold path)
