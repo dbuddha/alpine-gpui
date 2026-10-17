@@ -2,9 +2,9 @@
 use std::{cell::RefCell, rc::Rc};
 use std::{
     ffi::OsString,
-    fs::{self, File},
+    fs::File,
     io::{self, BufWriter, Write},
-    path::{Path, PathBuf},
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -160,7 +160,7 @@ pub(super) fn save_performance_log(
     now: SystemTime,
     snapshot: &RecorderSnapshot,
 ) -> String {
-    let directory = match log_directory(home) {
+    let directory = match crate::logs::directory(home) {
         Ok(directory) => directory,
         Err(error) => return format!("Could not save the performance log: {error}"),
     };
@@ -178,15 +178,6 @@ pub(super) fn save_performance_log(
         Ok(()) => format!("Saved {frames} and {samples} in {shown}"),
         Err(error) => format!("Saved {frames} in {shown}, but not {samples}: {error}"),
     }
-}
-
-fn log_directory(home: Option<OsString>) -> io::Result<PathBuf> {
-    let home = home
-        .filter(|home| !home.is_empty())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    let directory = PathBuf::from(home).join("Library/Logs/Alpine Editor");
-    fs::create_dir_all(&directory)?;
-    Ok(directory)
 }
 
 fn write_tsv(
