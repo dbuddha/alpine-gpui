@@ -2851,6 +2851,49 @@ fn save_as_writes_through_a_symlink_destination() -> Result<(), Box<dyn std::err
 
 #[test]
 #[cfg(unix)]
+fn save_as_refuses_a_link_to_a_file_already_open() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("source.txt", "open")?;
+    let link = root.path().join("link.txt");
+    std::os::unix::fs::symlink("source.txt", &link)?;
+    let mut app = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+    let _effect = app.save_document_as(&link);
+    assert!(app.last_workspace_error.is_some());
+    assert_eq!(app.tabs.len(), 1);
+    assert!(fs::symlink_metadata(&link)?.file_type().is_symlink());
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn saves_into_a_folder_that_cannot_be_read_still_succeed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    root.create_dir("drop")?;
+    root.write("drop/existing.txt", "old")?;
+    root.write("source.txt", "new")?;
+    let folder = root.path().join("drop");
+    let mut app = EditorApp::open_file(TestTextSystem, folder.join("existing.txt"))?;
+    set_unix_mode(&folder, 0o300)?;
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        assert!(app.replace_range(0..3, "edited").document_changed);
+        let _effect = app.save_document();
+        assert!(app.last_file_error.is_none(), "{:?}", app.last_file_error);
+        assert!(!app.document.is_dirty());
+        let mut other = EditorApp::open_file(TestTextSystem, root.path().join("source.txt"))?;
+        let _effect = other.save_document_as(&folder.join("created.txt"));
+        assert_save_as_succeeded(&other);
+        Ok(())
+    })();
+    set_unix_mode(&folder, 0o700)?;
+    result?;
+    assert_eq!(fs::read_to_string(folder.join("existing.txt"))?, "edited");
+    assert_eq!(fs::read_to_string(folder.join("created.txt"))?, "new");
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
 fn save_as_leaves_files_at_temporary_names_untouched() -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
     root.write("source.txt", "new")?;

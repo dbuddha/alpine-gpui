@@ -1257,7 +1257,8 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    let (temporary, file) = create_save_as_temporary(directory, file_name)?;
+    let private = permissions.is_some();
+    let (temporary, file) = create_save_as_temporary(directory, file_name, private)?;
     let replaced = write_save_as_temporary(file, permissions, bytes)
         .and_then(|()| std::fs::rename(&temporary, &target));
     if let Err(error) = replaced {
@@ -1289,20 +1290,27 @@ fn save_as_target(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 // `create_new` never follows or truncates an existing entry at the name.
+// A `private` file starts at 0600 until it takes the replaced file's mode.
 fn create_save_as_temporary(
     directory: &Path,
     file_name: &std::ffi::OsStr,
+    private: bool,
 ) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
     for attempt in 0..SAVE_AS_TEMPORARY_ATTEMPTS {
         let mut name = std::ffi::OsString::from(".");
         name.push(file_name);
         name.push(format!(".alpine-save-as-{}-{attempt}", std::process::id()));
         let temporary = directory.join(name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
+        match options.open(&temporary) {
             Ok(file) => return Ok((temporary, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
@@ -1327,10 +1335,25 @@ fn write_save_as_temporary(
 
 #[cfg(unix)]
 fn sync_save_as_directory(directory: &Path) -> std::io::Result<()> {
-    std::fs::File::open(directory)?.sync_all()?;
-    #[cfg(test)]
-    SAVE_AS_DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
-    Ok(())
+    use std::io::ErrorKind;
+
+    match std::fs::File::open(directory).and_then(|handle| handle.sync_all()) {
+        Ok(()) => {
+            #[cfg(test)]
+            SAVE_AS_DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
+            Ok(())
+        }
+        // The rename already landed; only a real I/O failure is worth reporting.
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::Unsupported | ErrorKind::InvalidInput
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(not(unix))]
@@ -1954,9 +1977,12 @@ impl EditorDocument {
                 editor,
                 recovery_base,
             } => {
-                let report = editor.save()?;
-                *recovery_base = editor.buffer().snapshot();
-                Ok(Some(report))
+                let report = editor.save();
+                // A directory-sync error arrives after the bytes landed.
+                if !editor.is_dirty() {
+                    *recovery_base = editor.buffer().snapshot();
+                }
+                report.map(Some)
             }
             Self::Recovered { conflict, .. } | Self::Unavailable { conflict, .. } => {
                 Err(FileError::Conflict(*conflict))
@@ -7499,9 +7525,22 @@ impl EditorApp {
         EventEffect::document_replacement()
     }
 
+    // Matches resolved paths too, since a link may name a file already open.
+    fn tab_holds_file(&self, path: &Path) -> bool {
+        if self.tabs.index_for_path(path).is_some() {
+            return true;
+        }
+        let Ok(resolved) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        (0..self.tabs.len())
+            .filter_map(|index| self.tabs.path_at(index))
+            .any(|open| std::fs::canonicalize(open).is_ok_and(|open| open == resolved))
+    }
+
     /// Writes the active buffer to `path`, then opens that file as the tab.
     ///
-    /// Refuses a destination that is already open. That tab holds its own
+    /// Refuses a destination that is already open, even through a link. That tab holds its own
     /// buffer, and saving over the file underneath it would be silently
     /// overwritten again the next time that tab saved.
     ///
@@ -7509,7 +7548,7 @@ impl EditorApp {
     /// is renamed into place, so an interrupted Save As leaves the destination
     /// untouched rather than truncated.
     fn save_document_as(&mut self, path: &Path) -> EventEffect {
-        if self.tabs.index_for_path(path).is_some() {
+        if self.tab_holds_file(path) {
             return self.record_workspace_error(&WorkspaceSelectionError::Tabs(
                 DocumentTabError::DuplicatePath(path.to_path_buf()),
             ));

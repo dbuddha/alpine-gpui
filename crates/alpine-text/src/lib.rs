@@ -1658,11 +1658,14 @@ fn atomic_replace(
         temporary_name.push(file_name);
         temporary_name.push(format!(".alpine-save-{}-{sequence}", std::process::id()));
         let temporary_path = parent.join(temporary_name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_path)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary_path) {
             Ok(file) => {
                 created = Some((temporary_path, file));
                 break;
@@ -1720,18 +1723,32 @@ fn finish_atomic_replace(
 
 #[cfg(not(target_family = "windows"))]
 fn sync_directory(directory: &Path) -> Result<(), FileError> {
-    let handle = file_result(File::open(directory), "open-directory")?;
-    #[cfg(test)]
-    if let Some(kind) = DIRECTORY_SYNC_FAILURE.with(std::cell::Cell::take) {
-        return Err(FileError::Io {
-            operation: "sync-directory",
-            kind,
-        });
+    let synced = File::open(directory).and_then(|handle| {
+        #[cfg(test)]
+        if let Some(kind) = DIRECTORY_SYNC_FAILURE.with(std::cell::Cell::take) {
+            return Err(io::Error::from(kind));
+        }
+        handle.sync_all()
+    });
+    match synced {
+        Ok(()) => {
+            #[cfg(test)]
+            DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
+            Ok(())
+        }
+        // An unreadable folder or one without directory fsync still holds the
+        // renamed file; only a real I/O failure is worth reporting.
+        Err(error) if directory_sync_is_optional(error.kind()) => Ok(()),
+        Err(error) => Err(file_io("sync-directory", &error)),
     }
-    file_result(handle.sync_all(), "sync-directory")?;
-    #[cfg(test)]
-    DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
-    Ok(())
+}
+
+#[cfg(not(target_family = "windows"))]
+const fn directory_sync_is_optional(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
+    )
 }
 
 #[cfg(test)]
@@ -2533,6 +2550,42 @@ mod tests {
     #[cfg(not(target_family = "windows"))]
     fn directory_syncs() -> u64 {
         DIRECTORY_SYNCS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn a_dangling_link_is_never_replaced() -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let link = directory.join("dangling.txt");
+        std::os::unix::fs::symlink(directory.join("missing.txt"), &link)?;
+        let mut write = |file: &mut File| file.write_all(b"new");
+        assert!(atomic_replace(&link, fingerprint(b""), &mut write).is_err());
+        assert!(is_symlink(&link)?);
+        assert_eq!(sorted_entries(&directory)?, ["dangling.txt"]);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn a_save_into_an_unreadable_folder_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let path = directory.join("file.txt");
+        fs::write(&path, "old")?;
+        let mut editor = Editor::open(&path)?;
+        replace_all(&mut editor, "new")?;
+        set_file_mode(&directory, 0o300)?;
+        let saved = editor.save();
+        set_file_mode(&directory, 0o700)?;
+        saved?;
+        assert!(!editor.is_dirty());
+        assert_eq!(fs::read_to_string(&path)?, "new");
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[cfg(unix)]
