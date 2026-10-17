@@ -62,6 +62,7 @@ impl SymbolRequestKind {
 pub(crate) enum SymbolError {
     WireTooLarge,
     Malformed,
+    Server(i32),
     InvalidKind,
     InvalidRange,
     HierarchyTooDeep,

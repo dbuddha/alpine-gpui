@@ -14,7 +14,6 @@ use std::{
 };
 
 use alpine_text::BufferSnapshot;
-#[cfg(test)]
 use serde_json::value::RawValue;
 
 use crate::{
@@ -412,6 +411,7 @@ pub(crate) struct RustDiagnosticsSnapshot {
     pub(crate) stale_wakes: u64,
     pub(crate) stale_diagnostics: u64,
     pub(crate) restarts: u64,
+    pub(crate) request_retries: u64,
 }
 
 #[cfg(test)]
@@ -483,6 +483,8 @@ struct PendingCompletion {
     identity: LanguageIdentity,
     process_epoch: u64,
     lsp_version: i32,
+    position: LspPosition,
+    retried: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -504,6 +506,8 @@ struct PendingNavigation {
     identity: LanguageIdentity,
     process_epoch: u64,
     lsp_version: i32,
+    position: LspPosition,
+    retried: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -514,6 +518,7 @@ struct PendingWorkspaceEdit {
     identity: LanguageIdentity,
     process_epoch: u64,
     lsp_version: i32,
+    retried: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -545,6 +550,7 @@ struct PendingSymbols {
     process_epoch: u64,
     lsp_version: i32,
     query_revision: u64,
+    retried: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -605,7 +611,7 @@ fn completion_batch_from_response(
     });
     match value {
         ResponseValue::Result(result) => CompletionBatch::admit(result),
-        ResponseValue::Error(_) => Err(CompletionError::Malformed),
+        ResponseValue::Error(error) => Err(CompletionError::Server(error.code())),
     }
 }
 
@@ -621,13 +627,13 @@ fn navigation_from_response(
             NavigationRequestKind::Definition | NavigationRequestKind::References,
             ResponseValue::Result(result),
         ) => NavigationCandidate::Locations(SourceLocations::admit(result)),
-        (NavigationRequestKind::Hover, ResponseValue::Error(_)) => {
-            NavigationCandidate::Hover(Err(NavigationError::Malformed))
+        (NavigationRequestKind::Hover, ResponseValue::Error(error)) => {
+            NavigationCandidate::Hover(Err(NavigationError::Server(error.code())))
         }
         (
             NavigationRequestKind::Definition | NavigationRequestKind::References,
-            ResponseValue::Error(_),
-        ) => NavigationCandidate::Locations(Err(NavigationError::Malformed)),
+            ResponseValue::Error(error),
+        ) => NavigationCandidate::Locations(Err(NavigationError::Server(error.code()))),
     }
 }
 
@@ -638,8 +644,14 @@ fn symbols_from_response(
 ) -> Result<SymbolBatch, SymbolError> {
     match value {
         ResponseValue::Result(result) => SymbolBatch::admit(kind, result, document_uri),
-        ResponseValue::Error(_) => Err(SymbolError::Malformed),
+        ResponseValue::Error(error) => Err(SymbolError::Server(error.code())),
     }
+}
+
+/// `RequestCancelled`, `ContentModified` and `ServerCancelled`: the server
+/// dropped or outdated the reply, so the same request is worth one retry.
+const fn is_retryable_server_error(code: i32) -> bool {
+    matches!(code, -32_802..=-32_800)
 }
 
 struct RustSession {
@@ -663,7 +675,50 @@ struct RustSession {
     pending_symbols: Option<PendingSymbols>,
     symbols: Option<AdmittedSymbols>,
     pending_workspace_edit: Option<PendingWorkspaceEdit>,
+    workspace_edit_params: Option<Box<RawValue>>,
     client: LspClient,
+}
+
+impl RustSession {
+    fn begin_completion(
+        &mut self,
+        position: LspPosition,
+        stamp: RequestStamp,
+    ) -> Result<u32, RustDiagnosticsError> {
+        let params = self
+            .document
+            .completion_params(position)
+            .map_err(RustDiagnosticsError::Language)?;
+        self.begin_request("textDocument/completion", &params, stamp)
+    }
+
+    fn begin_navigation(
+        &mut self,
+        kind: NavigationRequestKind,
+        position: LspPosition,
+        stamp: RequestStamp,
+    ) -> Result<u32, RustDiagnosticsError> {
+        let params = match kind {
+            NavigationRequestKind::References => self.document.references_params(position),
+            NavigationRequestKind::Hover | NavigationRequestKind::Definition => {
+                self.document.position_params(position)
+            }
+        }
+        .map_err(RustDiagnosticsError::Language)?;
+        self.begin_request(kind.method(), &params, stamp)
+    }
+
+    fn begin_request(
+        &mut self,
+        method: &str,
+        params: &RawValue,
+        stamp: RequestStamp,
+    ) -> Result<u32, RustDiagnosticsError> {
+        self.client
+            .begin_request(method, Some(params), stamp)
+            .map(|request| request.request_id)
+            .map_err(RustDiagnosticsError::Client)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -683,7 +738,15 @@ pub(crate) enum RustDiagnosticsError {
 
 impl fmt::Display for RustDiagnosticsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "language diagnostics unavailable: {self:?}")
+        match self {
+            Self::Completion(CompletionError::Server(code))
+            | Self::Navigation(NavigationError::Server(code))
+            | Self::Symbols(SymbolError::Server(code))
+            | Self::WorkspaceEdit(WorkspaceEditError::Server(code)) => {
+                write!(formatter, "Language server reported error {code}.")
+            }
+            _ => write!(formatter, "language diagnostics unavailable: {self:?}"),
+        }
     }
 }
 
@@ -730,6 +793,7 @@ pub(crate) struct RustDiagnostics {
     stale_wakes: u64,
     stale_diagnostics: u64,
     restarts: u64,
+    request_retries: u64,
     document_switches: u64,
     #[cfg(test)]
     force_continuation_once: bool,
@@ -1437,24 +1501,16 @@ impl RustDiagnostics {
         let Some(stamp) = session.identity.request_stamp() else {
             return self.fail(RustDiagnosticsError::InvalidIdentity);
         };
-        let result = session
-            .document
-            .completion_params(position)
-            .map_err(RustDiagnosticsError::Language)
-            .and_then(|params| {
-                session
-                    .client
-                    .begin_request("textDocument/completion", Some(&params), stamp)
-                    .map_err(RustDiagnosticsError::Client)
-            });
-        match result {
-            Ok(request) => {
+        match session.begin_completion(position, stamp) {
+            Ok(request_id) => {
                 session.pending_completion = Some(PendingCompletion {
-                    request_id: request.request_id,
+                    request_id,
                     stamp,
                     identity: session.identity,
                     process_epoch: session.process_epoch,
                     lsp_version: session.lsp_version,
+                    position,
+                    retried: false,
                 });
                 self.completion_requests = self.completion_requests.saturating_add(1);
                 visual_changed |= replace_status(&mut self.status, None);
@@ -1496,29 +1552,17 @@ impl RustDiagnostics {
         let Some(stamp) = session.identity.request_stamp() else {
             return self.fail(RustDiagnosticsError::InvalidIdentity);
         };
-        let params = match kind {
-            NavigationRequestKind::References => session.document.references_params(position),
-            NavigationRequestKind::Hover | NavigationRequestKind::Definition => {
-                session.document.position_params(position)
-            }
-        };
-        let result = params
-            .map_err(RustDiagnosticsError::Language)
-            .and_then(|params| {
-                session
-                    .client
-                    .begin_request(kind.method(), Some(&params), stamp)
-                    .map_err(RustDiagnosticsError::Client)
-            });
-        match result {
-            Ok(request) => {
+        match session.begin_navigation(kind, position, stamp) {
+            Ok(request_id) => {
                 session.pending_navigation = Some(PendingNavigation {
-                    request_id: request.request_id,
+                    request_id,
                     stamp,
                     kind,
                     identity: session.identity,
                     process_epoch: session.process_epoch,
                     lsp_version: session.lsp_version,
+                    position,
+                    retried: false,
                 });
                 self.navigation_requests = self.navigation_requests.saturating_add(1);
                 visual_changed |= replace_status(&mut self.status, None);
@@ -1580,21 +1624,20 @@ impl RustDiagnostics {
         let Some(stamp) = session.identity.request_stamp() else {
             return self.fail(RustDiagnosticsError::InvalidIdentity);
         };
-        let request = match session
-            .client
-            .begin_request(kind.method(), Some(params), stamp)
-        {
-            Ok(request) => request,
-            Err(error) => return self.fail(RustDiagnosticsError::Client(error)),
+        let request_id = match session.begin_request(kind.method(), params, stamp) {
+            Ok(request_id) => request_id,
+            Err(error) => return self.fail(error),
         };
         session.pending_workspace_edit = Some(PendingWorkspaceEdit {
-            request_id: request.request_id,
+            request_id,
             stamp,
             kind,
             identity: session.identity,
             process_epoch: session.process_epoch,
             lsp_version: session.lsp_version,
+            retried: false,
         });
+        session.workspace_edit_params = Some(params.to_owned());
         self.workspace_edit_requests = self.workspace_edit_requests.saturating_add(1);
         let status_changed = replace_status(
             &mut self.status,
@@ -1726,12 +1769,12 @@ impl RustDiagnostics {
             picker: SymbolPicker::new(kind),
         });
         visual_changed = true;
-        let mut effect = self.issue_symbol_request();
+        let mut effect = self.issue_symbol_request(false);
         effect.visual_changed |= visual_changed;
         effect
     }
 
-    fn issue_symbol_request(&mut self) -> LanguageEffect {
+    fn issue_symbol_request(&mut self, retried: bool) -> LanguageEffect {
         let Some(session) = self.session.as_mut() else {
             return LanguageEffect::default();
         };
@@ -1759,24 +1802,24 @@ impl RustDiagnostics {
             SymbolRequestKind::Workspace => workspace_symbol_params(symbols.picker.query())
                 .map_err(RustDiagnosticsError::Symbols),
         };
-        let result = params.and_then(|params| {
-            session
-                .client
-                .begin_request(kind.method(), Some(&params), stamp)
-                .map_err(RustDiagnosticsError::Client)
-        });
+        let result = params.and_then(|params| session.begin_request(kind.method(), &params, stamp));
         match result {
-            Ok(request) => {
+            Ok(request_id) => {
                 session.pending_symbols = Some(PendingSymbols {
-                    request_id: request.request_id,
+                    request_id,
                     stamp,
                     kind,
                     identity: session.identity,
                     process_epoch: session.process_epoch,
                     lsp_version: session.lsp_version,
                     query_revision,
+                    retried,
                 });
-                self.symbol_requests = self.symbol_requests.saturating_add(1);
+                if retried {
+                    self.request_retries = self.request_retries.saturating_add(1);
+                } else {
+                    self.symbol_requests = self.symbol_requests.saturating_add(1);
+                }
                 LanguageEffect {
                     visual_changed: replace_status(&mut self.status, None),
                     continuation: None,
@@ -1865,7 +1908,7 @@ impl RustDiagnostics {
                 {
                     let _ = symbols.picker.clear_results();
                 }
-                let mut effect = self.issue_symbol_request();
+                let mut effect = self.issue_symbol_request(false);
                 effect.visual_changed = true;
                 effect
             }
@@ -2416,6 +2459,7 @@ impl RustDiagnostics {
             stale_wakes: self.stale_wakes,
             stale_diagnostics: self.stale_diagnostics,
             restarts: self.restarts,
+            request_retries: self.request_retries,
         }
     }
 
@@ -2490,6 +2534,7 @@ impl RustDiagnostics {
             pending_symbols: None,
             symbols: None,
             pending_workspace_edit: None,
+            workspace_edit_params: None,
             client,
         });
         Ok(())
@@ -2717,6 +2762,18 @@ impl RustDiagnostics {
         }
         let batch = match candidate {
             Ok(batch) => batch,
+            Err(CompletionError::Server(code))
+                if !pending.retried && is_retryable_server_error(code) =>
+            {
+                let retried = session.begin_completion(pending.position, pending.stamp);
+                return self.record_retry(retried, |session, request_id| {
+                    session.pending_completion = Some(PendingCompletion {
+                        request_id,
+                        retried: true,
+                        ..pending
+                    });
+                });
+            }
             Err(error) => {
                 return replace_status(
                     &mut self.status,
@@ -2815,6 +2872,19 @@ impl RustDiagnostics {
                 session.navigation = None;
                 return replace_status(&mut self.status, Some(Arc::from(kind.empty_status())));
             }
+            NavigationCandidate::Hover(Err(NavigationError::Server(code)))
+            | NavigationCandidate::Locations(Err(NavigationError::Server(code)))
+                if !pending.retried && is_retryable_server_error(code) =>
+            {
+                let retried = session.begin_navigation(kind, pending.position, pending.stamp);
+                return self.record_retry(retried, |session, request_id| {
+                    session.pending_navigation = Some(PendingNavigation {
+                        request_id,
+                        retried: true,
+                        ..pending
+                    });
+                });
+            }
             NavigationCandidate::Hover(Err(error)) | NavigationCandidate::Locations(Err(error)) => {
                 session.navigation = None;
                 return replace_status(
@@ -2888,6 +2958,11 @@ impl RustDiagnostics {
         }
         let batch = match candidate {
             Ok(batch) => batch,
+            Err(SymbolError::Server(code))
+                if !pending.retried && is_retryable_server_error(code) =>
+            {
+                return self.issue_symbol_request(true).visual_changed;
+            }
             Err(error) => {
                 let _ = symbols.picker.clear_results();
                 return replace_status(
@@ -2965,6 +3040,7 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
+        let params = session.workspace_edit_params.take();
         let Some(pending) = session.pending_workspace_edit.take() else {
             self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
             return false;
@@ -2979,9 +3055,22 @@ impl RustDiagnostics {
             self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
             return false;
         }
-        let wire = match candidate {
-            Ok(wire) => wire,
-            Err(error) => {
+        let wire = match (candidate, params) {
+            (Ok(wire), _) => wire,
+            (Err(WorkspaceEditError::Server(code)), Some(params))
+                if !pending.retried && is_retryable_server_error(code) =>
+            {
+                let retried = session.begin_request(pending.kind.method(), &params, pending.stamp);
+                return self.record_retry(retried, |session, request_id| {
+                    session.pending_workspace_edit = Some(PendingWorkspaceEdit {
+                        request_id,
+                        retried: true,
+                        ..pending
+                    });
+                    session.workspace_edit_params = Some(params);
+                });
+            }
+            (Err(error), _) => {
                 return replace_status(
                     &mut self.status,
                     Some(Arc::from(
@@ -3023,6 +3112,23 @@ impl RustDiagnostics {
             session.pending_workspace_edit = None;
         }
         self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
+        false
+    }
+
+    /// Installs a retried request as pending; retries change nothing visible.
+    fn record_retry(
+        &mut self,
+        retried: Result<u32, RustDiagnosticsError>,
+        install: impl FnOnce(&mut RustSession, u32),
+    ) -> bool {
+        let request_id = match retried {
+            Ok(request_id) => request_id,
+            Err(error) => return self.fail(error).visual_changed,
+        };
+        if let Some(session) = self.session.as_mut() {
+            install(session, request_id);
+        }
+        self.request_retries = self.request_retries.saturating_add(1);
         false
     }
 
@@ -3383,6 +3489,7 @@ fn test_session(
         pending_symbols: None,
         symbols: None,
         pending_workspace_edit: None,
+        workspace_edit_params: None,
         client,
     }
 }
@@ -3390,7 +3497,7 @@ fn test_session(
 fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, WorkspaceEditError> {
     match value {
         ResponseValue::Result(result) => WorkspaceEditWire::capture(result),
-        ResponseValue::Error(_) => Err(WorkspaceEditError::Malformed),
+        ResponseValue::Error(error) => Err(WorkspaceEditError::Server(error.code())),
     }
 }
 
@@ -3666,3 +3773,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "rust_diagnostics_coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(test)]
+#[path = "rust_diagnostics_retry_tests.rs"]
+mod retry_tests;

@@ -29,6 +29,7 @@ pub(crate) const MAX_LOCATION_RETAINED_BYTES: usize = 131_072;
 pub(crate) enum NavigationError {
     WireTooLarge,
     Malformed,
+    Server(i32),
     HoverTooLarge,
     TooManyHoverLines,
     UriTooLong,

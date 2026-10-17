@@ -16,6 +16,8 @@ const MAX_JSON_STRING_BYTES: usize = 1_048_576;
 const MAX_METHOD_BYTES: usize = 256;
 const MAX_ERROR_MESSAGE_BYTES: usize = 4_096;
 const MAX_PENDING_REQUESTS: usize = 64;
+const APPLY_EDIT_DECLINED: &str =
+    r#"{"applied":false,"failureReason":"Alpine Editor does not apply server edits yet."}"#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestStamp {
@@ -212,6 +214,12 @@ pub(crate) struct RemoteError<'a> {
     data: Option<&'a RawValue>,
 }
 
+impl RemoteError<'_> {
+    pub(crate) const fn code(&self) -> i32 {
+        self.code
+    }
+}
+
 struct RemoteErrorVisitor;
 
 impl<'de> Visitor<'de> for RemoteErrorVisitor {
@@ -262,8 +270,12 @@ pub(crate) enum ResponseValue<'a> {
 #[cfg(test)]
 impl ResponseValue<'static> {
     pub(crate) const fn error_for_test() -> Self {
+        Self::error_code_for_test(-32_000)
+    }
+
+    pub(crate) const fn error_code_for_test(code: i32) -> Self {
         Self::Error(RemoteError {
-            code: -32_000,
+            code,
             message: "test error",
             data: None,
         })
@@ -590,14 +602,14 @@ impl LspPeer {
         if self.lifecycle != PeerLifecycle::Running {
             return Err(ProtocolError::InvalidLifecycle);
         }
-        if method == "workspace/diagnostic/refresh" {
-            build_response(RequestId(id), Some("null"), None)
-        } else {
-            build_response(
+        match method {
+            "workspace/diagnostic/refresh" => build_response(RequestId(id), Some("null"), None),
+            "workspace/applyEdit" => build_response(RequestId(id), Some(APPLY_EDIT_DECLINED), None),
+            _ => build_response(
                 RequestId(id),
                 None,
                 Some(r#"{"code":-32601,"message":"Method not found"}"#),
-            )
+            ),
         }
     }
 
@@ -1028,6 +1040,11 @@ mod tests {
         let refresh = peer.respond_to_server_request(0, "workspace/diagnostic/refresh")?;
         assert_eq!(refresh.body(), br#"{"jsonrpc":"2.0","id":0,"result":null}"#);
         assert_eq!(refresh.request_id(), None);
+        let apply_edit = peer.respond_to_server_request(12, "workspace/applyEdit")?;
+        assert_eq!(
+            apply_edit.body(),
+            br#"{"jsonrpc":"2.0","id":12,"result":{"applied":false,"failureReason":"Alpine Editor does not apply server edits yet."}}"#
+        );
         let unsupported = peer.respond_to_server_request(9, "rust-analyzer/extension")?;
         assert_eq!(
             unsupported.body(),

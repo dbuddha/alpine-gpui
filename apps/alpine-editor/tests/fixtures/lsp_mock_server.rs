@@ -8,6 +8,13 @@ use std::{
 };
 
 const TRACE_ENVIRONMENT: &str = "ALPINE_EDITOR_NATIVE_LSP_TRACE";
+const APPLY_EDIT_REQUEST_ID: u64 = 41;
+
+struct InjectedError {
+    method: String,
+    code: i64,
+    remaining: u32,
+}
 
 struct PhaseTrace {
     file: Option<File>,
@@ -40,11 +47,24 @@ pub(crate) fn main() {
 fn run() -> io::Result<()> {
     let mut trace = PhaseTrace::from_environment()?;
     trace.record(&format!("process-spawned:{}", process::id()))?;
-    let arguments: Vec<String> = env::args().collect();
-    let mut stdin_record = match arguments.as_slice() {
-        [_, flag, path] if flag == "--record-stdin" => Some(File::create(path)?),
-        _ => None,
-    };
+    let arguments: Vec<String> = env::args().skip(1).collect();
+    let mut stdin_record = None;
+    let mut injected = Vec::new();
+    let mut errored_ids = Vec::new();
+    let mut apply_edit = false;
+    let mut rest = arguments.iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--record-stdin" => stdin_record = Some(File::create(next_argument(&mut rest)?)?),
+            "--error" => injected.push(InjectedError {
+                method: next_argument(&mut rest)?.clone(),
+                code: parse_argument(next_argument(&mut rest)?)?,
+                remaining: parse_argument(next_argument(&mut rest)?)?,
+            }),
+            "--apply-edit" => apply_edit = true,
+            _ => {}
+        }
+    }
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut buffered = Vec::new();
@@ -66,6 +86,24 @@ fn run() -> io::Result<()> {
             let message = std::str::from_utf8(&body)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 JSON"))?;
             let method = json_string(message, "method");
+            if initialized
+                && let Some(name) = method
+                && let Some(injection) = injected
+                    .iter_mut()
+                    .find(|injection| injection.method == name && injection.remaining > 0)
+            {
+                injection.remaining -= 1;
+                let id = json_id(message)?;
+                errored_ids.push(id);
+                write_frame(
+                    &mut output,
+                    &format!(
+                        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":{},"message":"injected"}}}}"#,
+                        injection.code
+                    ),
+                )?;
+                continue;
+            }
             match method {
                 Some("initialize") => {
                     trace.record("initialize-received")?;
@@ -81,6 +119,14 @@ fn run() -> io::Result<()> {
                 Some("initialized") => {
                     trace.record("initialized-received")?;
                     initialized = true;
+                    if apply_edit {
+                        write_frame(
+                            &mut output,
+                            &format!(
+                                r#"{{"jsonrpc":"2.0","id":{APPLY_EDIT_REQUEST_ID},"method":"workspace/applyEdit","params":{{"label":"mock","edit":{{"changes":{{}}}}}}}}"#
+                            ),
+                        )?;
+                    }
                 }
                 Some("textDocument/didOpen") if initialized => {
                     let uri = json_string(message, "uri").ok_or_else(|| {
@@ -265,6 +311,9 @@ fn run() -> io::Result<()> {
                 Some("test/slow") if initialized => {}
                 Some("$/cancelRequest") if initialized => {
                     let id = json_id(message)?;
+                    if errored_ids.contains(&id) {
+                        continue;
+                    }
                     write_frame(
                         &mut output,
                         &format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"late":true}}}}"#),
@@ -288,6 +337,8 @@ fn run() -> io::Result<()> {
                     )?;
                 }
                 Some("exit") if initialized => return Ok(()),
+                None if apply_edit
+                    && json_id(message).is_ok_and(|id| id == APPLY_EDIT_REQUEST_ID) => {}
                 None if initialized && message == r#"{"jsonrpc":"2.0","id":0,"result":null}"# => {
                     write_frame(
                         &mut output,
@@ -303,6 +354,17 @@ fn run() -> io::Result<()> {
             }
         }
     }
+}
+
+fn next_argument<'a>(rest: &mut impl Iterator<Item = &'a String>) -> io::Result<&'a String> {
+    rest.next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing mock argument"))
+}
+
+fn parse_argument<T: std::str::FromStr>(value: &str) -> io::Result<T> {
+    value
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid mock argument"))
 }
 
 fn take_frame(buffered: &mut Vec<u8>) -> io::Result<Option<Vec<u8>>> {

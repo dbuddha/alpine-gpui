@@ -19,6 +19,7 @@ pub(crate) const MAX_COMPLETION_RETAINED_BYTES: usize = 262_144;
 pub(crate) enum CompletionError {
     WireTooLarge,
     Malformed,
+    Server(i32),
     LabelTooLong,
     EditTooLong,
     UnsupportedAdditionalEdits,

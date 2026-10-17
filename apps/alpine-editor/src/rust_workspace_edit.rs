@@ -59,6 +59,7 @@ impl WorkspaceEditWire {
 pub(crate) enum WorkspaceEditError {
     WireTooLarge,
     Malformed,
+    Server(i32),
     UnsupportedShape,
     UnsupportedAnnotation,
     UnsupportedResourceOperation,
