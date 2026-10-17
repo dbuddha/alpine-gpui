@@ -6,8 +6,7 @@ use std::{
     any::Any,
     ffi::OsString,
     fmt::Write as _,
-    fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Write},
     panic::{self, PanicHookInfo},
     path::{Path, PathBuf},
     sync::{
@@ -23,15 +22,12 @@ use crate::{
     recovery::{self, FlushHandle, FlushOutcome},
 };
 
-const MAX_LOG_BYTES: usize = 65_536;
+const KIND: &str = "crash";
 const MAX_MESSAGE_BYTES: usize = 4_096;
-const MAX_IDENTITY_BYTES: u64 = 2_048;
-const KEPT_LOGS: usize = 10;
 const FLUSH_BOUND: Duration = Duration::from_secs(2);
 // The flush bound plus the backtrace and log write of the panic in flight.
 const WAIT_BOUND: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(5);
-const TRUNCATED: &str = "\n[truncated]\n";
 
 /// The shared state of the installed panic hook.
 pub(crate) struct CrashHook {
@@ -44,7 +40,7 @@ impl CrashHook {
     pub(crate) fn install(home: Option<OsString>) -> Self {
         let state = Arc::new(State::new(
             home,
-            bundle_identity_path(),
+            logs::bundle_identity_path(),
             FLUSH_BOUND,
             WAIT_BOUND,
         ));
@@ -101,7 +97,7 @@ fn message_of(payload: &(dyn Any + Send)) -> String {
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .map_or_else(
             || String::from("<non-string panic payload>"),
-            |message| truncated(message, MAX_MESSAGE_BYTES).to_owned(),
+            |message| logs::truncated(message, MAX_MESSAGE_BYTES).to_owned(),
         )
 }
 
@@ -187,11 +183,11 @@ impl State {
             unix,
             report,
             recovery,
-            &read_identity(self.identity.as_deref()),
+            &logs::read_identity(self.identity.as_deref()),
             &std::backtrace::Backtrace::force_capture().to_string(),
         );
         let path = write_new(&directory, unix, std::process::id(), &text)?;
-        prune(&directory, KEPT_LOGS, &path);
+        logs::prune(&directory, KIND, logs::KEPT_LOGS, &path);
         Ok(path)
     }
 }
@@ -210,87 +206,18 @@ fn render(
         std::process::id(),
         report.thread,
         report.location,
-        truncated(&report.message, MAX_MESSAGE_BYTES),
+        logs::truncated(&report.message, MAX_MESSAGE_BYTES),
     );
-    if text.len() > MAX_LOG_BYTES {
-        text.truncate(char_floor(&text, MAX_LOG_BYTES - TRUNCATED.len()));
-        text.push_str(TRUNCATED);
-    }
+    logs::cap(&mut text, logs::MAX_LOG_BYTES);
     text
-}
-
-fn truncated(text: &str, limit: usize) -> &str {
-    &text[..char_floor(text, limit)]
-}
-
-fn char_floor(text: &str, limit: usize) -> usize {
-    let mut end = limit.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    end
-}
-
-fn bundle_identity_path() -> Option<PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    Some(
-        executable
-            .parent()?
-            .parent()?
-            .join("Resources/alpine-build-identity.toml"),
-    )
-}
-
-fn read_identity(path: Option<&Path>) -> String {
-    let mut bytes = Vec::new();
-    let read = path.map(|path| {
-        File::open(path).and_then(|file| file.take(MAX_IDENTITY_BYTES).read_to_end(&mut bytes))
-    });
-    match read {
-        Some(Ok(length)) if length > 0 => String::from_utf8_lossy(&bytes).into_owned(),
-        _ => String::from("unavailable\n"),
-    }
 }
 
 /// Creates `crash-<unix>-<pid>.log`, never replacing an existing file.
 fn write_new(directory: &Path, unix: u64, pid: u32, text: &str) -> io::Result<PathBuf> {
-    let path = directory.join(format!("crash-{unix}-{pid}.log"));
-    let mut file = recovery::create_new_private(&path)?;
+    let (path, mut file) = logs::create(directory, KIND, unix, pid)?;
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     Ok(path)
-}
-
-fn log_stamp(name: &str) -> Option<(u64, u32)> {
-    let (unix, pid) = name
-        .strip_prefix("crash-")?
-        .strip_suffix(".log")?
-        .split_once('-')?;
-    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
-    if !digits(unix) || !digits(pid) {
-        return None;
-    }
-    Some((unix.parse().ok()?, pid.parse().ok()?))
-}
-
-/// Keeps `written` and the newest other crash logs, `keep` in all, even when
-/// a wrong clock stamps `written` oldest. Other files stay untouched.
-fn prune(directory: &Path, keep: usize, written: &Path) {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    let mut logs: Vec<_> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let stamp = log_stamp(entry.file_name().to_str()?)?;
-            let path = entry.path();
-            (path != written).then_some((stamp, path))
-        })
-        .collect();
-    logs.sort_unstable_by_key(|(stamp, _)| std::cmp::Reverse(*stamp));
-    for (_, path) in logs.into_iter().skip(keep.saturating_sub(1)) {
-        let _ = fs::remove_file(path);
-    }
 }
 
 #[cfg(test)]

@@ -7,10 +7,8 @@ use std::{
 
 use alpine_text::Buffer;
 
-use super::{
-    CrashReport, KEPT_LOGS, MAX_LOG_BYTES, MAX_MESSAGE_BYTES, State, TRUNCATED, log_stamp,
-    message_of, prune, render, write_new,
-};
+use super::{CrashReport, KIND, MAX_MESSAGE_BYTES, State, message_of, render, write_new};
+use crate::logs::{self, KEPT_LOGS, MAX_LOG_BYTES, TRUNCATED};
 use crate::recovery::{self, RecoveryCoordinator, RecoveryRequest, RecoverySnapshot};
 use crate::session::{
     SESSION_NODE_CAPACITY, SESSION_PANE_CAPACITY, SessionFileTree, SessionNode, SessionPane,
@@ -29,6 +27,14 @@ fn scratch(label: &str) -> Result<PathBuf, std::io::Error> {
     ));
     fs::create_dir_all(&root)?;
     Ok(root)
+}
+
+fn log_stamp(name: &str) -> Option<(u64, u32)> {
+    logs::stamp(name, KIND)
+}
+
+fn prune(directory: &Path, keep: usize, written: &Path) {
+    logs::prune(directory, KIND, keep, written);
 }
 
 fn logs_in(home: &Path) -> PathBuf {

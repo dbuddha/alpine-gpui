@@ -85,6 +85,7 @@ mod rust_workspace_ui;
 mod scene_paint;
 mod session;
 mod settings;
+mod stall;
 mod syntax;
 
 use std::path::PathBuf;
@@ -962,6 +963,10 @@ fn run_native(app: EditorApp, hook: &crash::CrashHook) -> Result<(), RuntimeErro
     let mut app = app;
     if let Some(recovery) = app.recovery.as_ref() {
         hook.attach_recovery(recovery.flush_handle());
+    }
+    match stall::Watch::start(stall::Config::new(std::env::var_os("HOME"))) {
+        Ok(watch) => app.stall = watch,
+        Err(error) => eprintln!("alpine-editor: no stall log: {error}"),
     }
     app.adopt_discovered_language_server();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
@@ -2177,6 +2182,7 @@ struct EditorApp {
     text_system: MeasuredTextSystem,
     profiler: EditorProfiler,
     dogfood_capture: Option<dogfood_diagnostic::CaptureSink>,
+    stall: stall::Watch,
     dogfood_accessibility_queries: u64,
     dogfood_accessibility_actions: u64,
     profile_event_timestamp: EventTimestamp,
@@ -2520,6 +2526,7 @@ impl EditorApp {
             text_system,
             profiler,
             dogfood_capture: None,
+            stall: stall::Watch::default(),
             dogfood_accessibility_queries: 0,
             dogfood_accessibility_actions: 0,
             profile_event_timestamp: EventTimestamp::new(0),
@@ -8337,10 +8344,12 @@ mod dogfood_accessibility_counter_tests {
     }
 }
 
-impl AppDelegate for EditorApp {
-    type WorkerOutput = EditorWorkerOutput;
-
-    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, EditorWorkerOutput>) {
+impl EditorApp {
+    fn dispatch_event(
+        &mut self,
+        event: &SurfaceEvent,
+        context: &mut AppContext<'_, EditorWorkerOutput>,
+    ) {
         #[cfg(all(alpine_native_validation, not(test)))]
         if let Ok(index) = usize::try_from(surface_event_kind(event).saturating_sub(1))
             && let Some(count) = NATIVE_VALIDATION_EVENT_COUNTS.get(index)
@@ -8397,9 +8406,8 @@ impl AppDelegate for EditorApp {
         self.finish_event(effect, selection_before, context);
     }
 
-    fn worker_result(
+    fn dispatch_worker_result(
         &mut self,
-        _token: alpine_runtime::WorkToken,
         result: EditorWorkerOutput,
         context: &mut AppContext<'_, EditorWorkerOutput>,
     ) {
@@ -8498,11 +8506,36 @@ impl AppDelegate for EditorApp {
             self.publish_recovery();
         }
     }
+}
+
+// Each entry marks its dispatch so the stall watchdog can time it.
+impl AppDelegate for EditorApp {
+    type WorkerOutput = EditorWorkerOutput;
+
+    fn event(&mut self, event: &SurfaceEvent, context: &mut AppContext<'_, EditorWorkerOutput>) {
+        self.stall.begin(stall::Kind::of_event(event));
+        self.dispatch_event(event, context);
+        self.stall.end();
+    }
+
+    fn worker_result(
+        &mut self,
+        _token: alpine_runtime::WorkToken,
+        result: EditorWorkerOutput,
+        context: &mut AppContext<'_, EditorWorkerOutput>,
+    ) {
+        self.stall.begin(stall::Kind::of_worker(&result));
+        self.dispatch_worker_result(result, context);
+        self.stall.end();
+    }
 
     fn frame(&mut self, context: WindowContext) -> Scene {
+        self.stall.begin(stall::Kind::Frame);
         #[cfg(all(alpine_native_validation, not(test)))]
         NATIVE_VALIDATION_FRAME_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.scene(context.scene_revision(), context.viewport())
+        let scene = self.scene(context.scene_revision(), context.viewport());
+        self.stall.end();
+        scene
     }
 }
 
