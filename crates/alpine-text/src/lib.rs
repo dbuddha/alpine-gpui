@@ -1704,14 +1704,13 @@ fn finish_atomic_replace(
     write: &mut FileWriter<'_>,
 ) -> Result<(), FileError> {
     let permissions = file_result(fs::metadata(path), "metadata")?.permissions();
+    // Before any bytes land, so a private file is never readable through its
+    // temporary copy.
+    file_result(temporary_file.set_permissions(permissions), "permissions")?;
     file_result(write(&mut temporary_file), "write")?;
     file_result(temporary_file.flush(), "flush")?;
     file_result(temporary_file.sync_all(), "sync")?;
     drop(temporary_file);
-    file_result(
-        fs::set_permissions(temporary_path, permissions),
-        "permissions",
-    )?;
     let current = file_result(fs::read(path), "conflict-check")?;
     if fingerprint(&current) != accepted {
         return Err(FileError::Conflict(ExternalChange::Modified));
@@ -2476,7 +2475,7 @@ mod tests {
                 &mut unlink_temporary,
             ),
             Err(FileError::Io {
-                operation: "permissions",
+                operation: "replace",
                 kind: io::ErrorKind::NotFound,
             })
         ));
@@ -2534,6 +2533,31 @@ mod tests {
     #[cfg(not(target_family = "windows"))]
     fn directory_syncs() -> u64 {
         DIRECTORY_SYNCS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn a_private_file_is_never_readable_through_its_temporary_copy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let target = directory.join("private.txt");
+        fs::write(&target, "old")?;
+        set_file_mode(&target, 0o600)?;
+        let mut mode_while_writing = None;
+        let mut write = |file: &mut File| {
+            mode_while_writing = Some(file.metadata()?.permissions().mode() & 0o7777);
+            file.write_all(b"new")
+        };
+        atomic_replace(&target, fingerprint(b"old"), &mut write)?;
+        assert_eq!(mode_while_writing, Some(0o600));
+        assert_eq!(file_mode(&target)?, 0o600);
+        assert_eq!(fs::read_to_string(&target)?, "new");
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[cfg(unix)]
