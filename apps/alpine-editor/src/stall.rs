@@ -499,11 +499,17 @@ impl Record {
         if room <= logs::TRUNCATED.len() {
             return Ok(());
         }
-        let mut text = text.to_owned();
-        logs::cap(&mut text, room);
-        self.file.write_all(text.as_bytes())?;
+        // Cut the borrowed text first, so a long stack is never copied.
+        let (head, marker) = if text.len() > room {
+            let limit = room.saturating_sub(logs::TRUNCATED.len());
+            (logs::truncated(text, limit), logs::TRUNCATED)
+        } else {
+            (text, "")
+        };
+        self.file.write_all(head.as_bytes())?;
+        self.file.write_all(marker.as_bytes())?;
         self.file.sync_all()?;
-        self.written += text.len();
+        self.written += head.len() + marker.len();
         Ok(())
     }
 
