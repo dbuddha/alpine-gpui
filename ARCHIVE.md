@@ -5,6 +5,34 @@ AGENTS.md files are. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
 
+## 2026-10-17: lead takeover and stabilization plan
+
+Deepak Buddha asked the lead to take over from Codex and bring Alpine Editor to
+a stable daily-driver state. Decisions: close M1 with the bench rows that work
+today (idle, scroll, file open, open-repo, highlight, memory, CPU) and move
+keypress-latency comparison to a later slice needing on-screen text checks;
+add milestone S (stability) before M2; keep `panic = "abort"` plus a panic hook
+that writes a crash log and flushes recovery; commit Codex's notes and prune
+the fully merged branches (untitled-quit-deadlock, daily-use-traps,
+phase-2-languages) and four obsolete stashes. Main CI at `f912b75` failed on
+the listed hosted display-link stall (run 37223087925; once on main and once
+on a PR branch in the last 30 runs);
+the failed job was re-run under the known-defect rule. Codex's bounded-restart
+fix in `pending-frame-progress` becomes slice S7 with a real failing-before
+test.
+
+## 2026-10-09: remote testing reassessment
+
+Deepak Buddha requested scheduled away-time testing or remote alternatives.
+[CI for #659 at 71517b8](https://github.com/dbuddha/alpine-gpui/actions/runs/37858685775)
+passed every required job; bench correctness remains separately tested locally.
+Scheduling stays paused while availability and spending preferences are pending.
+No runner was purchased and no physical benchmark was resumed.
+
+## 2026-10-08: scheduled continuation stopped
+
+Deepak Buddha requested that scheduled runs stop; `alpine-delivery-loop` is paused.
+
 ## 2026-10-08: offline key-attribution correction
 
 Deepak Buddha: `fix/bench-key-attribution` reproduces 400 ms responses being
@@ -15,8 +43,9 @@ timestamps and records beyond the 65,536-record analysis cap fail closed.
 Hash-change timings are diagnostic; typing/caret baselines require complete
 semantic evidence that the current capture path cannot provide. Independent
 review and the final lead bench gate passed: 162 tests, build, clippy, formatting
-and helper self-tests. The draft remains held for the pending-frame repair.
-Live checks and the M1 baseline are unfinished.
+and helper self-tests. [Draft #659](https://github.com/dbuddha/alpine-gpui/pull/659)
+is at `71517b8`, with CI running and auto-merge off, held for the pending-frame
+repair. Live checks and the M1 baseline are unfinished.
 
 ## 2026-10-08: idle-gate live diagnostic blocked by a system alert
 

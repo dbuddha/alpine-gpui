@@ -1,6 +1,6 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
-updated: 2026-10-08
+updated: 2026-10-17
 precedence: AGENTS.md files, code comments, README.md
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
@@ -29,6 +29,7 @@ milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
   - {id: M0e, name: "fix hosted native flakes", status: done}
   - {id: M1, name: "measurement: perf recorder and bench", status: active}
+  - {id: S, name: "stability: no lost text or hangs", status: planned}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
   - {id: M4, name: "language intelligence, phase 2 close", status: planned}
@@ -38,10 +39,9 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "Offline: fix/bench-key-attribution review/CI; semantic verification remains"
-  - "GUI deferred: pending-frame native/hosted qualification, restore main CI"
-  - "GUI deferred: #656 on repaired main, dismiss system alert first"
-  - "Complete baseline rows, M1.4 ten-trial comparisons, budgets, CP1 review"
+  - "Cleanup: land #660, then #656 after its live check"
+  - "M1 close: ten-trial baseline, budgets, CP1"
+  - "S: quit order, crash log, safe saves, servers off main thread"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
@@ -109,8 +109,8 @@ unfavorable results reported.
 - Briefs name objective, rationale, exact gate, invariants, budgets, scope,
   constraints, deliverables and stop condition. Each worktree owns `target/`;
   sharing caches build-script paths from the wrong checkout.
-- At most four active agents. The 30-minute chat heartbeat recovers work;
-  no duplicate work or unchanged-state pings. Stop at milestone checkpoints.
+- At most four active agents. An owner-enabled heartbeat recovers work
+  without duplicate work or unchanged-state pings. Stop at milestone checkpoints.
 - Before merging, the lead (never a subagent):
   1. re-runs the gate on the PR head;
   2. reads the full diff, including untracked files;
@@ -143,7 +143,8 @@ fixes), Evidence, Risk and scope, Test plan. Update frontmatter in the same PR.
 
 Only AGENTS.md files, ARCHIVE.md, README.md and LICENSE.md. Label targets;
 correct instructions with the code that changes them. No ledgers, registries
-or scripts that test scripts. Code-local contracts are comments of at most 3 lines. Caps: this file
+or scripts that test scripts. Code-local contracts are comments of at most 3
+lines. Caps: this file
 1,200 words, scoped files 900; rules overflow into a scoped AGENTS.md, history
 into ARCHIVE.md. Issues and the board are retired; defects live in scoped
 `known_defects` lists and close with the fixing PR.
