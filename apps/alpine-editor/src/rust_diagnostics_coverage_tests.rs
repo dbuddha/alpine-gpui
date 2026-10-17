@@ -1,4 +1,12 @@
-use std::{error::Error, path::Path, sync::Arc};
+use std::{
+    error::Error,
+    path::Path,
+    sync::{
+        Arc,
+        mpsc::{Receiver, RecvTimeoutError, sync_channel},
+    },
+    time::{Duration, Instant},
+};
 
 use crate::{
     lsp_client::LspClientPoll,
@@ -1151,40 +1159,68 @@ fn completion_cancellation_and_request_failures_are_bounded() -> Result<(), Box<
     Ok(())
 }
 
-fn wait_for_running_peer(model: &mut RustDiagnostics) -> Result<LanguageWake, Box<dyn Error>> {
+// Polls on each process wake until `ready` holds, so no fixed poll paces
+// it. The deadline only bounds a hang: under load the first launch of the
+// freshly linked mock alone has taken seconds.
+fn wait_for_model(
+    model: &mut RustDiagnostics,
+    wakes: &Receiver<()>,
+    ready: impl Fn(&RustDiagnostics) -> bool,
+) -> Result<LanguageWake, Box<dyn Error>> {
     let wake = model.current_wake_for_test().ok_or("language wake")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        let _ = model.poll(wake);
-        let running = model.session.as_ref().is_some_and(|session| {
-            let snapshot = session.client.snapshot();
-            snapshot.started && snapshot.peer.lifecycle() == crate::lsp_json::PeerLifecycle::Running
-        });
-        if running {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let effect = model.poll(wake);
+        if ready(model) {
             return Ok(wake);
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        if effect.continuation.is_some() {
+            continue;
+        }
+        match wakes.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => return Err("timed out waiting for the model".into()),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("the process wake was dropped".into());
+            }
+        }
     }
-    Err("timed out waiting for running language peer".into())
 }
 
-fn installed_process_model() -> Result<(RustDiagnostics, PathBuf), Box<dyn Error>> {
+fn wait_for_running_peer(
+    model: &mut RustDiagnostics,
+    wakes: &Receiver<()>,
+) -> Result<LanguageWake, Box<dyn Error>> {
+    wait_for_model(model, wakes, |model| {
+        model.session.as_ref().is_some_and(|session| {
+            let snapshot = session.client.snapshot();
+            snapshot.started && snapshot.peer.lifecycle() == crate::lsp_json::PeerLifecycle::Running
+        })
+    })
+}
+
+fn installed_process_model() -> Result<(RustDiagnostics, PathBuf, Receiver<()>), Box<dyn Error>> {
     let (root, path, snapshot, identity) = tests::fixture();
     let input = RustDocumentInput::new(&path, &root, identity, snapshot);
     let mut model = RustDiagnostics::with_server(tests::mock_executable());
-    let effect = model.sync(Some(input), |_| Arc::new(|| {}));
+    let (wake, wakes) = sync_channel(1);
+    let effect = model.sync(Some(input), move |_| {
+        Arc::new(move || {
+            let _ = wake.try_send(());
+        })
+    });
     if !effect.visual_changed {
         return Err("production language session did not start".into());
     }
-    Ok((model, root))
+    Ok((model, root, wakes))
 }
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn successful_completion_request_clears_status_and_reports_visual_change()
 -> Result<(), Box<dyn Error>> {
-    let (mut model, root) = installed_process_model()?;
-    let _wake = wait_for_running_peer(&mut model)?;
+    let (mut model, root, wakes) = installed_process_model()?;
+    let _wake = wait_for_running_peer(&mut model, &wakes)?;
     let identity = model.session.as_ref().ok_or("session")?.identity;
     let hover = completion_result(r#"{"contents":"completion supersedes hover"}"#)?;
     model.install_navigation_for_test(identity, NavigationRequestKind::Hover, &hover)?;
@@ -1211,19 +1247,11 @@ fn successful_completion_request_clears_status_and_reports_visual_change()
 #[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
 fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
 -> Result<(), Box<dyn Error>> {
-    let (mut model, root) = installed_process_model()?;
-    let wake = wait_for_running_peer(&mut model)?;
-    let mut diagnostics_observed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        let _ = model.poll(wake);
-        diagnostics_observed = model.snapshot().diagnostic_publications > 0;
-        if diagnostics_observed {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert!(diagnostics_observed);
+    let (mut model, root, wakes) = installed_process_model()?;
+    let _ = wait_for_running_peer(&mut model, &wakes)?;
+    let _ = wait_for_model(&mut model, &wakes, |model| {
+        model.snapshot().diagnostic_publications > 0
+    })?;
     let pending = {
         let session = model.session.as_mut().ok_or("session")?;
         let stamp = session.identity.request_stamp().ok_or("request stamp")?;
@@ -1238,20 +1266,12 @@ fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
     };
     model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
     let status = model.status_message();
-    let mut response_observed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        let _ = model.poll(wake);
-        response_observed = model
+    let _ = wait_for_model(&mut model, &wakes, |model| {
+        model
             .session
             .as_ref()
-            .is_some_and(|session| session.client.snapshot().peer.pending_requests() == 0);
-        if response_observed {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert!(response_observed);
+            .is_some_and(|session| session.client.snapshot().peer.pending_requests() == 0)
+    })?;
     assert_eq!(
         model.session.as_ref().ok_or("session")?.pending_completion,
         Some(pending)

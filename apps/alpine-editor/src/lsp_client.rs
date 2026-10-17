@@ -454,6 +454,9 @@ mod tests {
             output.status.success(),
             "failed to compile mock language server: {compiler_stderr}"
         );
+        // A new binary's first launch waits on a macOS assessment that took
+        // seconds under load; pay it here, outside any test's wait.
+        let _ = Command::new(&path).stdin(process::Stdio::null()).output();
         Ok(MockExecutable { directory, path })
     }
 
