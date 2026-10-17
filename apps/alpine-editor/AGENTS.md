@@ -1,7 +1,7 @@
 ---
 product: Alpine Editor
 parent: ../../AGENTS.md
-updated: 2026-10-03
+updated: 2026-10-08
 phase: "2, language agnostic: active, closes in M4"
 parity:
   core_editing: {status: partial, closes: M6}
@@ -65,6 +65,13 @@ refresh periods): typing, scroll, resize, selection drags, overlays, big files
 and 500 cursors, with servers and git running. Launch and file-open are exempt
 and get their own startup budgets. The AppKit and refresh targets each gate PRs
 once a milestone first meets them.
+
+Final comparisons use separate controlled and everyday settings, frozen before
+measurement. Require favorable confidence intervals on differences beyond
+measurement uncertainty in two independent sessions, with no fixed percentage
+margin. Report every required metric; missing values, ties and zero failures
+on both sides do not prove superiority. Never pool profiles or add trials
+until a result wins.
 
 ## Two bars
 

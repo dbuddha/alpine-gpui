@@ -5,6 +5,47 @@ AGENTS.md files are. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
 
+## 2026-10-08: offline key-attribution correction
+
+Deepak Buddha: `fix/bench-key-attribution` reproduces 400 ms responses being
+credited as four 150 ms measurements on base code. Attribution now stays
+ambiguous after unresolved input; incomplete trials suppress timing summaries,
+retain failure counts, and cannot be replaced by later fast trials. Missing
+timestamps and records beyond the 65,536-record analysis cap fail closed.
+Hash-change timings are diagnostic; typing/caret baselines require complete
+semantic evidence that the current capture path cannot provide. Independent
+review and the final lead bench gate passed: 162 tests, build, clippy, formatting
+and helper self-tests. The draft remains held for the pending-frame repair.
+Live checks and the M1 baseline are unfinished.
+
+## 2026-10-08: idle-gate live diagnostic blocked by a system alert
+
+Deepak Buddha authorized a battery-only safety check. An isolated copy under
+`idle-gate/bench/target/battery-diagnostic-20261008/` bypassed only the AC check,
+stamped diagnostic status and actual battery power, and disabled baseline output.
+The normal gate and #656 source stayed unchanged. Both trials in
+`20261008T220612Z-typing-appkit` stopped because UserNotificationCenter took focus
+or covered the app. No deliberate mouse move or successful typing trial occurred.
+All owned test processes and the keep-awake hold exited. Deepak deferred live
+checks and requested independent work; pending-frame work is parked while the
+offline attribution fix proceeds. Live checks need alert dismissal; performance
+qualification still requires AC and the full approved gates.
+
+## 2026-10-08: M1 resumed with lead-owned acceptance
+
+Deepak Buddha approved the continuation plan: repair the pending-frame CI stall,
+validate #656, correct typing attribution, then deliver the ten-trial baseline
+and CP1 owner review. Final claims require separate controlled/everyday profiles
+and repeatable wins in two independent sessions. A 30-minute chat heartbeat is
+active. This runner passes Accessibility, event-posting and Screen Recording
+preflights; installed Zed is 1.23.2. Parked branches, stashes and user edits remain.
+The retired lab moved to `../.archive/alpine-zed-lab/` with all local artifacts.
+
+## 2026-10-05: paused during M1
+
+Deepak paused the project. Main is at `f912b75` (#658); PR #656
+(`feat/bench-idle-gate`) stays open with auto-merge off. Resume from `next:` in AGENTS.md.
+
 ## 2026-10-03: M1 bench notes
 
 - **Moved from bench/AGENTS.md for space:** on 2026-10-02 a windowless Zed probe, with the owner's Zed running, migrated its databases in the disposable home, exited at the single-instance check after 409 ms and changed nothing real.
