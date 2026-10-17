@@ -15,7 +15,8 @@ add milestone S (stability) before M2; keep `panic = "abort"` plus a panic hook
 that writes a crash log and flushes recovery; commit Codex's notes and prune
 the fully merged branches (untitled-quit-deadlock, daily-use-traps,
 phase-2-languages) and four obsolete stashes. Main CI at `f912b75` failed on
-the listed hosted display-link stall (run 37223087925, 2 of the last 30 runs);
+the listed hosted display-link stall (run 37223087925; once on main and once
+on a PR branch in the last 30 runs);
 the failed job was re-run under the known-defect rule. Codex's bounded-restart
 fix in `pending-frame-progress` becomes slice S7 with a real failing-before
 test.
