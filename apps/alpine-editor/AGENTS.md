@@ -70,8 +70,8 @@ Final comparisons use separate controlled and everyday settings, frozen before
 measurement. Require favorable confidence intervals on differences beyond
 measurement uncertainty in two independent sessions, with no fixed percentage
 margin. Report every required metric; missing values, ties and zero failures
-on both sides do not prove superiority. Never pool profiles or add trials
-until a result wins.
+on both sides do not prove superiority. Never pool profiles, and never add
+trials after seeing results to force a win.
 
 ## Two bars
 
