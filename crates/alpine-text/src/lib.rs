@@ -23,6 +23,13 @@ const DEFAULT_HISTORY_BYTES: usize = 67_108_864;
 const TEMPORARY_FILE_ATTEMPTS: u64 = 32;
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(all(test, not(target_family = "windows")))]
+thread_local! {
+    static DIRECTORY_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static DIRECTORY_SYNC_FAILURE: std::cell::Cell<Option<io::ErrorKind>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// A monotonically increasing local buffer revision.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BufferRevision(u64);
@@ -1415,13 +1422,16 @@ impl Editor {
     }
 
     /// Atomically replaces the file only while its disk fingerprint remains
-    /// unchanged.
+    /// unchanged, then syncs its directory. A symlinked path stays a link: the
+    /// write goes to the file it resolves to at this save.
     ///
     /// # Errors
     ///
     /// Reports external conflicts, temporary-file failures, write failures,
     /// synchronization failures, and replacement failures. A pre-replacement
-    /// failure leaves the accepted file bytes unchanged.
+    /// failure leaves the accepted file bytes unchanged. A directory-sync
+    /// failure comes after the replacement and has already advanced the
+    /// accepted state, so the document is clean and a retry does not conflict.
     pub fn save(&mut self) -> Result<SaveReport, FileError> {
         #[cfg(target_family = "windows")]
         {
@@ -1436,10 +1446,11 @@ impl Editor {
             let snapshot = self.buffer.snapshot();
             let accepted = self.accepted_fingerprint;
             let mut write_snapshot = |file: &mut File| snapshot.write_to(file);
-            atomic_replace(&self.path, accepted, &mut write_snapshot)?;
+            let directory = atomic_replace(&self.path, accepted, &mut write_snapshot)?;
             let bytes = file_result(fs::read(&self.path), "verify")?;
             self.accepted_fingerprint = fingerprint(&bytes);
             self.saved_revision = snapshot.revision;
+            sync_directory(&directory)?;
             Ok(SaveReport {
                 revision: snapshot.revision,
                 bytes_written: snapshot.len_bytes(),
@@ -1622,17 +1633,24 @@ fn file_result<T>(result: io::Result<T>, operation: &'static str) -> Result<T, F
 #[cfg(not(target_family = "windows"))]
 type FileWriter<'a> = dyn FnMut(&mut File) -> io::Result<()> + 'a;
 
+// Replaces the file `path` resolves to and returns the directory to sync. The
+// temporary file sits beside that target, so a symlink stays a link and the
+// rename never crosses filesystems.
 #[cfg(not(target_family = "windows"))]
 fn atomic_replace(
     path: &Path,
     accepted: FileFingerprint,
     write: &mut FileWriter<'_>,
-) -> Result<(), FileError> {
-    let file_name = path.file_name().ok_or(FileError::Io {
+) -> Result<PathBuf, FileError> {
+    let target = resolve_replace_target(path)?;
+    let file_name = target.file_name().ok_or(FileError::Io {
         operation: "temporary-name",
         kind: io::ErrorKind::InvalidInput,
     })?;
-    let parent = path.with_file_name("");
+    let parent = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
     let mut created: Option<(PathBuf, File)> = None;
     for _ in 0..TEMPORARY_FILE_ATTEMPTS {
         let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1657,12 +1675,24 @@ fn atomic_replace(
         operation: "create-temporary",
         kind: io::ErrorKind::AlreadyExists,
     })?;
-    let operation = finish_atomic_replace(path, accepted, &temporary_path, temporary_file, write);
+    let operation =
+        finish_atomic_replace(&target, accepted, &temporary_path, temporary_file, write);
 
     if operation.is_err() {
         let _ = fs::remove_file(&temporary_path);
     }
-    operation
+    operation.map(|()| parent)
+}
+
+// A missing or dangling path is kept as given. A later step then fails with
+// NotFound before any rename, so a dangling link is never replaced.
+#[cfg(not(target_family = "windows"))]
+fn resolve_replace_target(path: &Path) -> Result<PathBuf, FileError> {
+    match fs::canonicalize(path) {
+        Ok(target) => Ok(target),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(file_io("resolve", &error)),
+    }
 }
 
 #[cfg(not(target_family = "windows"))]
@@ -1687,6 +1717,22 @@ fn finish_atomic_replace(
         return Err(FileError::Conflict(ExternalChange::Modified));
     }
     file_result(fs::rename(temporary_path, path), "replace")
+}
+
+#[cfg(not(target_family = "windows"))]
+fn sync_directory(directory: &Path) -> Result<(), FileError> {
+    let handle = file_result(File::open(directory), "open-directory")?;
+    #[cfg(test)]
+    if let Some(kind) = DIRECTORY_SYNC_FAILURE.with(std::cell::Cell::take) {
+        return Err(FileError::Io {
+            operation: "sync-directory",
+            kind,
+        });
+    }
+    file_result(handle.sync_all(), "sync-directory")?;
+    #[cfg(test)]
+    DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2448,6 +2494,205 @@ mod tests {
                 kind: io::ErrorKind::NotFound,
             })
         ));
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn file_mode(path: &Path) -> io::Result<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(fs::metadata(path)?.permissions().mode() & 0o7777)
+    }
+
+    #[cfg(unix)]
+    fn set_file_mode(path: &Path, mode: u32) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    }
+
+    #[cfg(unix)]
+    fn is_symlink(path: &Path) -> io::Result<bool> {
+        Ok(fs::symlink_metadata(path)?.file_type().is_symlink())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    fn sorted_entries(directory: &Path) -> io::Result<Vec<OsString>> {
+        let mut names = fs::read_dir(directory)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<Vec<_>>>()?;
+        names.sort();
+        Ok(names)
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    fn replace_all(editor: &mut Editor, text: &str) -> Result<(), TextError> {
+        let length = editor.buffer().snapshot().len_bytes();
+        let replace = transaction(editor.buffer(), 0..length, text);
+        editor.buffer_mut().apply(replace).map(|_| ())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    fn directory_syncs() -> u64 {
+        DIRECTORY_SYNCS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn save_writes_through_a_symlink_resolved_again_on_every_save()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let target = directory.join("target.txt");
+        let link = directory.join("link.txt");
+        fs::write(&target, "before")?;
+        set_file_mode(&target, 0o750)?;
+        std::os::unix::fs::symlink(&target, &link)?;
+        let mut editor = Editor::open(&link)?;
+        replace_all(&mut editor, "after")?;
+        editor.save()?;
+        assert!(is_symlink(&link)?);
+        assert_eq!(fs::read_link(&link)?, target);
+        assert_eq!(fs::read_to_string(&target)?, "after");
+        assert_eq!(file_mode(&target)?, 0o750);
+        assert!(!editor.is_dirty());
+        assert_eq!(editor.external_change()?, ExternalChange::Unchanged);
+        assert_eq!(sorted_entries(&directory)?, ["link.txt", "target.txt"]);
+
+        let retargeted = directory.join("retargeted.txt");
+        fs::write(&retargeted, "after")?;
+        fs::remove_file(&link)?;
+        std::os::unix::fs::symlink(&retargeted, &link)?;
+        replace_all(&mut editor, "again")?;
+        editor.save()?;
+        assert!(is_symlink(&link)?);
+        assert_eq!(fs::read_link(&link)?, retargeted);
+        assert_eq!(fs::read_to_string(&retargeted)?, "again");
+        assert_eq!(fs::read_to_string(&target)?, "after");
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn save_writes_through_a_relative_link_into_another_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let links = directory.join("links");
+        let real = directory.join("real");
+        fs::create_dir(&links)?;
+        fs::create_dir(&real)?;
+        let target = real.join("document.txt");
+        let link = links.join("document.txt");
+        let relative = Path::new("../real/document.txt");
+        fs::write(&target, "before")?;
+        set_file_mode(&target, 0o600)?;
+        std::os::unix::fs::symlink(relative, &link)?;
+        let mut editor = Editor::open(&link)?;
+        replace_all(&mut editor, "after")?;
+        editor.save()?;
+        assert!(is_symlink(&link)?);
+        assert_eq!(fs::read_link(&link)?, relative);
+        assert_eq!(fs::read_to_string(&target)?, "after");
+        assert_eq!(file_mode(&target)?, 0o600);
+        assert_eq!(sorted_entries(&links)?, ["document.txt"]);
+        assert_eq!(sorted_entries(&real)?, ["document.txt"]);
+        assert_eq!(editor.external_change()?, ExternalChange::Unchanged);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn save_writes_through_a_two_link_chain() -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let nested = directory.join("nested");
+        fs::create_dir(&nested)?;
+        let target = nested.join("target.txt");
+        let second = directory.join("second.txt");
+        let first = directory.join("first.txt");
+        let relative = Path::new("nested/target.txt");
+        fs::write(&target, "before")?;
+        set_file_mode(&target, 0o640)?;
+        std::os::unix::fs::symlink(relative, &second)?;
+        std::os::unix::fs::symlink(&second, &first)?;
+        let mut editor = Editor::open(&first)?;
+        replace_all(&mut editor, "after")?;
+        editor.save()?;
+        assert!(is_symlink(&first)?);
+        assert!(is_symlink(&second)?);
+        assert_eq!(fs::read_link(&first)?, second);
+        assert_eq!(fs::read_link(&second)?, relative);
+        assert_eq!(fs::read_to_string(&target)?, "after");
+        assert_eq!(file_mode(&target)?, 0o640);
+        assert_eq!(
+            sorted_entries(&directory)?,
+            ["first.txt", "nested", "second.txt"]
+        );
+        assert_eq!(sorted_entries(&nested)?, ["target.txt"]);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn every_successful_save_syncs_the_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let path = directory.join("document.txt");
+        fs::write(&path, "before")?;
+        DIRECTORY_SYNCS.with(|syncs| syncs.set(0));
+        let mut editor = Editor::open(&path)?;
+        replace_all(&mut editor, "first")?;
+        editor.save()?;
+        assert_eq!(directory_syncs(), 1);
+        replace_all(&mut editor, "second")?;
+        editor.save()?;
+        assert_eq!(directory_syncs(), 2);
+
+        replace_all(&mut editor, "third")?;
+        fs::write(&path, "external")?;
+        assert_eq!(
+            editor.save(),
+            Err(FileError::Conflict(ExternalChange::Modified))
+        );
+        assert_eq!(directory_syncs(), 2);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri isolation forbids filesystem syscalls")]
+    fn a_directory_sync_failure_after_the_rename_still_accepts_the_save()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _file_test = lock_file_tests();
+        let directory = test_directory()?;
+        let path = directory.join("document.txt");
+        fs::write(&path, "before")?;
+        let mut editor = Editor::open(&path)?;
+        replace_all(&mut editor, "after")?;
+        DIRECTORY_SYNC_FAILURE.with(|failure| failure.set(Some(io::ErrorKind::Other)));
+        assert_eq!(
+            editor.save(),
+            Err(FileError::Io {
+                operation: "sync-directory",
+                kind: io::ErrorKind::Other,
+            })
+        );
+        assert_eq!(fs::read_to_string(&path)?, "after");
+        assert!(!editor.is_dirty());
+        assert_eq!(editor.external_change()?, ExternalChange::Unchanged);
+
+        replace_all(&mut editor, "again")?;
+        editor.save()?;
+        assert_eq!(fs::read_to_string(&path)?, "again");
+        assert!(!editor.is_dirty());
         fs::remove_dir_all(directory)?;
         Ok(())
     }

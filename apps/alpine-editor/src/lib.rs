@@ -1229,28 +1229,120 @@ impl ExplicitPathTarget {
     }
 }
 
-/// Writes `bytes` to `path` through a sibling temporary file and a rename.
-///
-/// A rename within a directory is atomic, so a crash or a full disk leaves the
-/// destination as it was instead of truncated.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
+const SAVE_AS_TEMPORARY_ATTEMPTS: u32 = 32;
 
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = directory.join(".alpine-save-as");
-    temporary.set_extension(format!("{}", std::process::id()));
-    let write = (|| {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()
-    })();
-    if let Err(error) = write {
+/// Writes `bytes` through a temporary file beside the file `path` resolves to,
+/// then renames it: a crash leaves the old bytes, a symlink stays a link, an
+/// existing mode is kept. The directory is synced last.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = save_as_target(path)?;
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let directory = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let permissions = match std::fs::metadata(&target) {
+        Ok(metadata) if cfg!(unix) => Some(metadata.permissions()),
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let (temporary, file) = create_save_as_temporary(directory, file_name)?;
+    let replaced = write_save_as_temporary(file, permissions, bytes)
+        .and_then(|()| std::fs::rename(&temporary, &target));
+    if let Err(error) = replaced {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
-    std::fs::rename(&temporary, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temporary);
-    })
+    sync_save_as_directory(directory)
+}
+
+// A dangling symlink is refused rather than replaced by a regular file.
+#[cfg(unix)]
+fn save_as_target(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(target) => Ok(target),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink()) =>
+        {
+            Ok(path.to_path_buf())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn save_as_target(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(path.to_path_buf())
+}
+
+// `create_new` never follows or truncates an existing entry at the name.
+fn create_save_as_temporary(
+    directory: &Path,
+    file_name: &std::ffi::OsStr,
+) -> std::io::Result<(PathBuf, std::fs::File)> {
+    for attempt in 0..SAVE_AS_TEMPORARY_ATTEMPTS {
+        let mut name = std::ffi::OsString::from(".");
+        name.push(file_name);
+        name.push(format!(".alpine-save-as-{}-{attempt}", std::process::id()));
+        let temporary = directory.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
+}
+
+fn write_save_as_temporary(
+    mut file: std::fs::File,
+    permissions: Option<std::fs::Permissions>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn sync_save_as_directory(directory: &Path) -> std::io::Result<()> {
+    std::fs::File::open(directory)?.sync_all()?;
+    #[cfg(test)]
+    SAVE_AS_DIRECTORY_SYNCS.with(|syncs| syncs.set(syncs.get().saturating_add(1)));
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_save_as_directory(_directory: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static SAVE_AS_DIRECTORY_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, unix))]
+fn reset_save_as_directory_syncs() {
+    SAVE_AS_DIRECTORY_SYNCS.with(|syncs| syncs.set(0));
+}
+
+#[cfg(all(test, unix))]
+fn save_as_directory_syncs() -> u64 {
+    SAVE_AS_DIRECTORY_SYNCS.with(std::cell::Cell::get)
 }
 
 fn record_project_settings_result(
@@ -7397,9 +7489,9 @@ impl EditorApp {
     /// buffer, and saving over the file underneath it would be silently
     /// overwritten again the next time that tab saved.
     ///
-    /// The write goes to a sibling temporary file and is renamed into place, so
-    /// an interrupted Save As leaves the destination untouched rather than
-    /// truncated.
+    /// The write goes to a temporary file beside the resolved destination and
+    /// is renamed into place, so an interrupted Save As leaves the destination
+    /// untouched rather than truncated.
     fn save_document_as(&mut self, path: &Path) -> EventEffect {
         if self.tabs.index_for_path(path).is_some() {
             return self.record_workspace_error(&WorkspaceSelectionError::Tabs(
