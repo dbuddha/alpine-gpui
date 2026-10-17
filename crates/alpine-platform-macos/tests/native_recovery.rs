@@ -151,7 +151,8 @@ mod validation {
         native_validation::inject_pending_display_link_silence(surface, None);
         let revision = surface.request_frame(scene, clear)?;
         assert!(native_validation::frame_progress_evidence(surface).timer_armed());
-        native_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
+        // Three one-second restarts and the cancel take about four seconds.
+        native_validation::run_until_frame_terminal(surface, Duration::from_secs(10));
         native_validation::inject_pending_display_link_silence(surface, Some(0));
 
         let snapshot = surface.snapshot();
@@ -188,9 +189,8 @@ mod validation {
         assert_progress_idle(surface, progress)
     }
 
-    // The silence ends after three ticks whatever the restarts did. The first
-    // restart lands on the second tick, so a real update from the restarted
-    // link must draw the frame.
+    // The silence ends after 35 ticks (about 1.4 s) whatever the restarts did,
+    // so the first restart has landed and a real update must draw the frame.
     fn validate_ended_pending_silence(
         surface: &NativeSurface,
         scene: Scene,
@@ -198,9 +198,9 @@ mod validation {
     ) -> TestResult {
         let before = surface.snapshot();
         let progress_before = native_validation::frame_progress_evidence(surface);
-        native_validation::inject_pending_display_link_silence(surface, Some(3));
+        native_validation::inject_pending_display_link_silence(surface, Some(35));
         let revision = surface.request_frame(scene, clear)?;
-        native_validation::run_until_frame_terminal(surface, Duration::from_secs(5));
+        native_validation::run_until_frame_terminal(surface, Duration::from_secs(10));
 
         let snapshot = surface.snapshot();
         let progress = native_validation::frame_progress_evidence(surface);

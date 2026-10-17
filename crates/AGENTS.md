@@ -40,7 +40,7 @@ budgets; this file owns how the framework keeps them.
   and drains a close. It runs only while a frame is in flight or visible,
   sized work waits on a running link; idle and hidden work arm nothing.
   Drawables are released at GPU completion.
-- A pending frame whose link stays silent for 75 ms gets up to three
+- A pending frame whose link stays silent for 1 s gets up to three
   pause-and-resume restarts, then is cancelled with zero submissions and an
   error in `take_error`. A callback or a pause restores the budget; new
   requests and visible resizes do not.

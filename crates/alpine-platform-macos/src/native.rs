@@ -3379,9 +3379,9 @@ fn link_silent_for_tick(no_update_since_tick: bool, since_update: Option<Duratio
     no_update_since_tick && since_update.is_none_or(|since| since >= FRAME_PROGRESS_INTERVAL)
 }
 
-// Longer than two 30 Hz turns, so a live link that misses one is never
-// restarted, and short enough that restarts land every second tick.
-const PENDING_LINK_QUIET: Duration = Duration::from_millis(75);
+// A hosted link can lag a resume by hundreds of milliseconds and then call
+// back; only a full second of silence counts as stuck.
+const PENDING_LINK_QUIET: Duration = Duration::from_secs(1);
 const MAX_PENDING_LINK_RESTARTS: u8 = 3;
 
 const fn pending_waits_for_link(active: bool, pending: bool, link: DisplayLinkState) -> bool {
@@ -4513,13 +4513,14 @@ impl DisplayLinkDelegate {
         let updates = self.ivars().display_link_updates.get();
         let no_update_since_tick =
             self.ivars().frame_progress_seen_updates.replace(updates) == updates;
+        let now = Instant::now();
         let last_update = self.ivars().last_display_link_update.get();
-        let since_update = last_update.map(|at| at.elapsed());
+        let since_update = last_update.map(|at| now.saturating_duration_since(at));
         let link_silent = link_silent_for_tick(no_update_since_tick, since_update);
         let quiet_for = if no_update_since_tick {
             last_update
                 .max(self.ivars().last_display_link_resume.get())
-                .map_or(Duration::MAX, |at| at.elapsed())
+                .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
         } else {
             Duration::ZERO
         };
@@ -7436,9 +7437,12 @@ mod tests {
     fn pending_link_restarts_wait_for_a_full_quiet_interval() {
         let mut watchdog = PendingLinkWatchdog::default();
         let two_thirty_hertz_turns = Duration::from_micros(66_667);
+        // A hosted runner's first callback after a resume can lag this long.
+        let hosted_resume_lag = Duration::from_millis(400);
         for quiet in [
             Duration::ZERO,
             two_thirty_hertz_turns,
+            hosted_resume_lag,
             PENDING_LINK_QUIET.saturating_sub(Duration::from_millis(1)),
         ] {
             assert_eq!(watchdog.tick(true, quiet), PendingLinkStep::Wait);
@@ -7455,9 +7459,6 @@ mod tests {
             PendingLinkStep::Restart
         );
         assert_eq!(watchdog.tick(true, Duration::MAX), PendingLinkStep::Restart);
-        // Restarts land every second tick despite timer tolerance.
-        assert!(PENDING_LINK_QUIET > two_thirty_hertz_turns);
-        assert!(PENDING_LINK_QUIET + FRAME_PROGRESS_TOLERANCE <= FRAME_PROGRESS_INTERVAL * 2);
     }
 
     #[test]
