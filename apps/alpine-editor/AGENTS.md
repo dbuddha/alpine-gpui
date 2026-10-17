@@ -66,6 +66,13 @@ and 500 cursors, with servers and git running. Launch and file-open are exempt
 and get their own startup budgets. The AppKit and refresh targets each gate PRs
 once a milestone first meets them.
 
+Final comparisons use separate controlled and everyday settings, frozen before
+measurement. Require favorable confidence intervals on differences beyond
+measurement uncertainty in two independent sessions, with no fixed percentage
+margin. Report every required metric; missing values, ties and zero failures
+on both sides do not prove superiority. Never pool profiles, and never add
+trials after seeing results to force a win.
+
 ## Two bars
 
 **A real macOS app:** File, Edit and Window menus exist; new menus install
