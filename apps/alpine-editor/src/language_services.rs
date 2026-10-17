@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        mpsc::{self, Receiver, SyncSender, TrySendError},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
     time::{Duration, Instant},
@@ -469,14 +469,6 @@ impl LanguageServices {
             }
             Discovery::Needed => {}
         }
-        if self.discovery_worker.is_none() {
-            self.discovery_worker = DiscoveryWorker::spawn(Arc::clone(&self.discover));
-        }
-        let Some(worker) = self.discovery_worker.as_ref() else {
-            // Without a thread nothing is found: report a missing server.
-            self.slots[index].discovery = Discovery::Done;
-            return Some((input, wake_factory));
-        };
         #[cfg(not(test))]
         let environment = DiscoveryEnv::from_process(spec.env_override());
         #[cfg(test)]
@@ -484,7 +476,23 @@ impl LanguageServices {
             .discovery_env
             .clone()
             .unwrap_or_else(|| DiscoveryEnv::from_process(spec.env_override()));
-        let token = self.discovery_token.saturating_add(1);
+        // A pinned path needs no search, so it binds at once, as before.
+        if let Some(pinned) = environment.pinned.as_ref() {
+            let slot = &mut self.slots[index];
+            slot.model
+                .bind_discovered_server(Some(PathBuf::from(pinned)));
+            slot.discovery = Discovery::Done;
+            return Some((input, wake_factory));
+        }
+        if self.discovery_worker.is_none() {
+            self.discovery_worker = DiscoveryWorker::spawn(Arc::clone(&self.discover));
+        }
+        // A thread that failed to spawn is retried on a later sync.
+        let worker = self.discovery_worker.as_ref()?;
+        let Some(token) = self.discovery_token.checked_add(1) else {
+            self.slots[index].discovery = Discovery::Done;
+            return Some((input, wake_factory));
+        };
         let slot = &self.slots[index];
         let wake = wake_factory(slot.model.next_session_wake());
         let job = DiscoveryJob {
@@ -528,7 +536,16 @@ impl LanguageServices {
     fn admit_discoveries(&mut self) -> Option<(usize, RustDocumentInput, ProcessWake)> {
         let worker = self.discovery_worker.as_ref()?;
         let mut start = None;
-        while let Ok(result) = worker.results.try_recv() {
+        let mut dead = false;
+        loop {
+            let result = match worker.results.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    dead = true;
+                    break;
+                }
+            };
             let current = self.slots.iter().position(|slot| {
                 slot.workspace_root == result.workspace_root
                     && slot.server_id == result.server_id
@@ -552,6 +569,9 @@ impl LanguageServices {
             {
                 start = Some((index, input, wake));
             }
+        }
+        if dead {
+            self.replace_discovery_worker();
         }
         start
     }
@@ -1103,6 +1123,78 @@ mod tests {
         let _ = services.poll(wakes.recv_timeout(BACKSTOP)?);
         assert_eq!(services.stale_discoveries, 2);
         assert_eq!(services.server_processes().count(), 0);
+        let _ = services.shutdown();
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    fn sessions(services: &LanguageServices) -> usize {
+        services
+            .slots
+            .iter()
+            .filter(|slot| slot.model.has_session())
+            .count()
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri does not emulate the discovery thread's host walk"
+    )]
+    fn a_result_for_an_inactive_slot_waits_for_its_document() -> Result<(), Box<dyn Error>> {
+        let root = scratch_root("inactive");
+        let (_path, input) = python_document(&root)?;
+        let (discover, gate) = gated_discovery();
+        let mut services = discovering_services(discover);
+        let (publish, wakes) = mpsc::channel();
+        let _ = services.sync(Some(input.clone()), wake_into(&publish));
+        let _ = gate.started.recv_timeout(BACKSTOP)?;
+        // Focus leaves the document while its discovery runs.
+        let _ = services.sync(None, wake_into(&publish));
+        let server = crate::rust_diagnostics::tests::mock_executable().to_path_buf();
+        gate.release.send(Some(server))?;
+        let _ = services.poll(wakes.recv_timeout(BACKSTOP)?);
+        assert_eq!(sessions(&services), 0);
+        assert_eq!(services.stale_discoveries, 0);
+
+        let _ = services.sync(Some(input), wake_into(&publish));
+        assert_eq!(sessions(&services), 1);
+        let _ = services.shutdown();
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri does not emulate the discovery thread's host walk"
+    )]
+    fn discovery_starts_the_server_with_the_newest_input() -> Result<(), Box<dyn Error>> {
+        let root = scratch_root("newest");
+        let (path, input) = python_document(&root)?;
+        let (discover, gate) = gated_discovery();
+        let mut services = discovering_services(discover);
+        let (publish, wakes) = mpsc::channel();
+        let _ = services.sync(Some(input), wake_into(&publish));
+        let _ = gate.started.recv_timeout(BACKSTOP)?;
+        let identity = crate::rust_diagnostics::LanguageIdentity {
+            workspace_id: 1,
+            workspace_revision: 1,
+            document_id: 1,
+            document_revision: 9,
+            buffer_revision: 9,
+            selection_revision: 9,
+        };
+        let snapshot = alpine_text::Buffer::new("value = 2\n").snapshot();
+        let newer =
+            crate::rust_diagnostics::RustDocumentInput::new(&path, &root, identity, snapshot);
+        let _ = services.sync(Some(newer), wake_into(&publish));
+
+        let server = crate::rust_diagnostics::tests::mock_executable().to_path_buf();
+        gate.release.send(Some(server))?;
+        let _ = services.poll(wakes.recv_timeout(BACKSTOP)?);
+        let started = services.active_model().session_identity_for_test();
+        assert_eq!(started.map(|identity| identity.document_revision), Some(9));
         let _ = services.shutdown();
         fs::remove_dir_all(root)?;
         Ok(())

@@ -3212,6 +3212,11 @@ impl RustDiagnostics {
     }
 
     #[cfg(test)]
+    pub(crate) fn session_identity_for_test(&self) -> Option<LanguageIdentity> {
+        self.session.as_ref().map(|session| session.identity)
+    }
+
+    #[cfg(test)]
     pub(crate) fn force_continuation_once_for_test(&mut self) {
         self.force_continuation_once = true;
     }
