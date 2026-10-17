@@ -612,6 +612,7 @@ struct Supervisor {
 /// A stop in flight, from `begin_stop`: the farewell is queued and the
 /// control channel closed. Dropping it detaches the supervisor, which still
 /// signals, kills and reaps the server's group on its own.
+#[must_use = "dropping a stop detaches its supervisor"]
 pub(crate) struct ProcessStop {
     supervisor: Option<Supervisor>,
     counters: Arc<Counters>,
@@ -650,8 +651,16 @@ impl ProcessStop {
         )
     }
 
-    /// Stops tracking an unfinished supervisor, counted as a shutdown timeout.
-    pub(crate) fn detach(mut self) {
+    /// Stops tracking an unfinished supervisor; `Drop` counts it as a
+    /// shutdown timeout.
+    pub(crate) fn detach(self) {
+        drop(self);
+    }
+}
+
+// Any unfinished stop that goes away counts as a timeout, however it ends.
+impl Drop for ProcessStop {
+    fn drop(&mut self) {
         if self.supervisor.take().is_some() {
             self.counters
                 .shutdown_timeouts

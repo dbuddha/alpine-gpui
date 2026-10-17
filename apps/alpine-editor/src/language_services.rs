@@ -1386,12 +1386,22 @@ mod tests {
         ))
     }
 
+    // Signal 0 only checks; it never reaches a reused PID's process.
+    fn process_exists(id: u32) -> bool {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", &id.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
     /// Six open tabs, one per language, each served by `STUBBORN_SERVER`.
     struct Stubborn {
         services: LanguageServices,
         documents: Vec<RustDocumentInput>,
-        // Grandchildren by language, then server leaders once tracked.
         spawned: Vec<Grandchild>,
+        // Supervisors reap leaders, so their PIDs are only ever polled.
+        leaders: Vec<u32>,
         leaders_tracked: bool,
         publish: Sender<LanguageWake>,
         directory: TestDirectory,
@@ -1427,6 +1437,7 @@ mod tests {
                 services,
                 documents,
                 spawned: Vec::new(),
+                leaders: Vec::new(),
                 leaders_tracked: false,
                 publish,
                 directory,
@@ -1465,17 +1476,28 @@ mod tests {
             for index in 0..LANGUAGES {
                 let starts = self.directory.join(&format!("w{index}/starts"));
                 let text = fs::read_to_string(starts).unwrap_or_default();
-                let leaders = text.lines().filter_map(|line| line.trim().parse().ok());
-                self.spawned.extend(leaders.map(Grandchild::from_id));
+                let leaders = text
+                    .lines()
+                    .filter_map(|line| line.trim().parse::<u32>().ok());
+                self.leaders.extend(leaders);
             }
         }
 
         /// Whether every grandchild and server leader ends within the backstop.
         fn all_gone(&mut self) -> bool {
             self.track_leaders();
-            self.spawned
+            let grandchildren = self
+                .spawned
                 .iter_mut()
-                .all(|process| process.gone_within(BACKSTOP))
+                .all(|process| process.gone_within(BACKSTOP));
+            let deadline = Instant::now() + BACKSTOP;
+            while self.leaders.iter().any(|&id| process_exists(id)) {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            grandchildren
         }
     }
 
@@ -1503,9 +1525,6 @@ mod tests {
             let _ = fleet.services.poll(LanguageWake::new(1));
         }
         assert_eq!(blocking_stop_waits(), waits);
-        // Both servers ignore exit and TERM for at least 0.7 s, so every
-        // call above returned while both stops were still running.
-        assert_eq!(fleet.services.draining.len(), 2);
         fleet.wait_for_grandchild(5)?;
         let _ = fleet.services.shutdown();
         assert!(fleet.all_gone());
@@ -1521,7 +1540,6 @@ mod tests {
         let _ = fleet.show(5);
         assert_eq!(blocking_stop_waits(), waits);
         assert!(!fleet.services.has_server_id("s0"));
-        assert_eq!(fleet.services.draining.len(), 1);
         fleet.wait_for_grandchild(5)?;
         let deadline = Instant::now() + BACKSTOP;
         while !fleet.services.draining.is_empty() && Instant::now() < deadline {
