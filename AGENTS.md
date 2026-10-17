@@ -1,7 +1,7 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
-updated: 2026-10-03
-precedence: AGENTS.md files, code comments, README.md, vault notes
+updated: 2026-10-17
+precedence: AGENTS.md files, code comments, README.md
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
@@ -29,6 +29,7 @@ milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
   - {id: M0e, name: "fix hosted native flakes", status: done}
   - {id: M1, name: "measurement: perf recorder and bench", status: active}
+  - {id: S, name: "stability: no lost text or hangs", status: planned}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
   - {id: M4, name: "language intelligence, phase 2 close", status: planned}
@@ -38,9 +39,9 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "Idle gate (#656): per-type input timers, then a live check"
-  - "Bench: fix the misread 250 to 500 ms key lag"
-  - "M1.4 ten-trial baseline against Zed and AppKit, budgets, CP1"
+  - "Phase 0: rerun main CI; land #659, then #656"
+  - "M1 close: 12-trial baseline, budgets, CP1"
+  - "S: quit order, crash log, save safety, servers off the main thread"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
@@ -48,8 +49,7 @@ ask_first: [dependency changes, destructive actions, milestone design kickoff, n
 
 Alpine GPUI is a Rust application framework for Apple Silicon macOS with a
 Direct Metal renderer. Alpine Editor is the daily-driver editor built on it.
-This file is the program; scoped AGENTS.md files hold local rules. It
-overrides vault notes about Alpine.
+This file is the program; scoped AGENTS.md files hold local rules.
 
 ## Contract
 
@@ -106,10 +106,11 @@ unfavorable results reported.
 - One feature in flight. Explore agents search in parallel; a Plan agent
   drafts milestone designs; one implementer at a time works in its own
   worktree; a fresh-context reviewer checks every PR.
-- An implementer brief states: objective and why, the exact gate, invariants
-  and budgets in play, files in and out of scope, constraints, deliverables
-  and the stop condition. Implementers keep their worktree's own `target/`: a
-  shared one caches build-script paths from the wrong checkout.
+- Briefs name objective, rationale, exact gate, invariants, budgets, scope,
+  constraints, deliverables and stop condition. Each worktree owns `target/`;
+  sharing caches build-script paths from the wrong checkout.
+- At most four active agents. The 30-minute chat heartbeat recovers work;
+  no duplicate work or unchanged-state pings. Stop at milestone checkpoints.
 - Before merging, the lead (never a subagent):
   1. re-runs the gate on the PR head;
   2. reads the full diff, including untracked files;
@@ -140,10 +141,9 @@ fixes), Evidence, Risk and scope, Test plan. Update frontmatter in the same PR.
 
 ## Docs and issues
 
-Only AGENTS.md files, ARCHIVE.md and README.md, plus LICENSE.md. Document
-implemented behavior and label targets as targets. A change that makes an
-instruction wrong corrects it. No ledgers, registries or scripts that test
-scripts. Code-local contracts are comments of at most 3 lines. Caps: this file
+Only AGENTS.md files, ARCHIVE.md, README.md and LICENSE.md. Label targets;
+correct instructions with the code that changes them. No ledgers, registries
+or scripts that test scripts. Code-local contracts are comments of at most 3 lines. Caps: this file
 1,200 words, scoped files 900; rules overflow into a scoped AGENTS.md, history
 into ARCHIVE.md. Issues and the board are retired; defects live in scoped
 `known_defects` lists and close with the fixing PR.
