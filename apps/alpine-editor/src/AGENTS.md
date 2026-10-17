@@ -15,11 +15,10 @@ invariants and product rules.
 
 Today: one server per workspace and language, hard cap 5, idle shutdown of
 unattached slots, local-lexer highlighting, and the `known_defects` in
-../AGENTS.md. Each server leads its own process group. Shutdown sends
-`shutdown` and `exit`, closes stdin, then TERMs and KILLs the group within
-about 0.8 s; restarts and faults skip the farewell. A 2 ms poll still drives
-the supervisor. rust-analyzer alone is 1 to 4 GB on a real crate. A big
-project's first query still waits on the server's own indexing.
+../AGENTS.md. Each server leads a process group; shutdown sends `shutdown`
+and `exit`, then TERMs and KILLs the group within about 0.8 s.
+rust-analyzer alone is 1 to 4 GB on a real crate. A big project's first
+query still waits on the server's own indexing.
 
 Rules:
 - Lifetime: start a server on the first visible file of its language; folder

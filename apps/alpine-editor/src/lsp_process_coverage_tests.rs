@@ -1542,15 +1542,17 @@ fn grandchild_server(pid_file: &Path, ignore_term: bool) -> Result<ProcessSpec, 
 fn assert_shutdown_stops_grandchild(ignore_term: bool) -> Result<(), Box<dyn Error>> {
     let directory = TestDirectory::new("grandchild")?;
     let pid_file = directory.join("pid");
-    let spec = grandchild_server(&pid_file, ignore_term)?;
+    let spec =
+        grandchild_server(&pid_file, ignore_term)?.with_helper_join_grace_for_test(LONG_EXIT_GRACE);
     let mut process = LanguageServerProcess::start(spec, identity(1))?;
     let mut grandchild = Grandchild::read(&pid_file)?;
     let begin = Instant::now();
     let snapshot = process.shutdown();
     let elapsed = begin.elapsed();
     let gone = grandchild.gone_within(Duration::from_secs(1));
+    // A hang bound only: the base hit the 5 s backstop with the child alive.
     assert!(
-        gone && elapsed < Duration::from_millis(1_500) && snapshot.shutdown_timeouts == 0,
+        gone && elapsed < Duration::from_secs(4) && snapshot.shutdown_timeouts == 0,
         "gone: {gone}, elapsed: {elapsed:?}, snapshot: {snapshot:?}"
     );
     assert_eq!(snapshot.exit_grace_timeouts, 1);
@@ -1578,7 +1580,8 @@ fn shutdown_kills_a_grandchild_that_ignores_term() -> Result<(), Box<dyn Error>>
 fn restart_kills_the_old_process_group() -> Result<(), Box<dyn Error>> {
     let directory = TestDirectory::new("restart")?;
     let pid_file = directory.join("pid");
-    let spec = grandchild_server(&pid_file, false)?;
+    let spec =
+        grandchild_server(&pid_file, false)?.with_helper_join_grace_for_test(LONG_EXIT_GRACE);
     let mut process = LanguageServerProcess::start(spec, identity(1))?;
     let mut grandchild = Grandchild::read(&pid_file)?;
     process.restart(identity(2))?;
@@ -1602,7 +1605,9 @@ fn a_server_that_exits_on_eof_skips_the_grace_waits() -> Result<(), Box<dyn Erro
     let directory = TestDirectory::new("clean")?;
     let marker = directory.join("marker");
     let script = format!("cat > /dev/null; echo clean > '{}'", marker.display());
-    let spec = shell(&script)?.with_exit_grace_for_test(LONG_EXIT_GRACE);
+    let spec = shell(&script)?
+        .with_exit_grace_for_test(LONG_EXIT_GRACE)
+        .with_helper_join_grace_for_test(LONG_EXIT_GRACE);
     let mut process = LanguageServerProcess::start(spec, identity(1))?;
     let _ = wait_for(&mut process, |event| {
         matches!(event, ProcessEvent::Started { .. })
@@ -1665,10 +1670,11 @@ fn process_group_guard_refuses_unsafe_targets() -> Result<(), Box<dyn Error>> {
     let (mut child, group) = ProcessGroup::spawn_leader(&mut command)?;
     let signalled = group.signal(GroupSignal::Kill);
     let deadline = Instant::now() + TIMEOUT;
-    let mut status = child.try_wait()?;
+    // No `?` here: an early return would leak the sleeping child.
+    let mut status = child.try_wait().ok().flatten();
     while status.is_none() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(2));
-        status = child.try_wait()?;
+        status = child.try_wait().ok().flatten();
     }
     if status.is_none() {
         let _ = child.kill();

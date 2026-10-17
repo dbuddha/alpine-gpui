@@ -235,6 +235,7 @@ pub(crate) struct ProcessSpec {
     working_directory: Option<PathBuf>,
     retained_bytes: usize,
     exit_grace: Duration,
+    helper_join_grace: Duration,
 }
 
 impl ProcessSpec {
@@ -300,12 +301,19 @@ impl ProcessSpec {
             working_directory,
             retained_bytes,
             exit_grace: EXIT_GRACE,
+            helper_join_grace: HELPER_JOIN_GRACE,
         })
     }
 
     #[cfg(test)]
     pub(crate) fn with_exit_grace_for_test(mut self, exit_grace: Duration) -> Self {
         self.exit_grace = exit_grace;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_helper_join_grace_for_test(mut self, grace: Duration) -> Self {
+        self.helper_join_grace = grace;
         self
     }
 }
@@ -535,6 +543,7 @@ struct Running {
     child: Child,
     group: ProcessGroup,
     exit_grace: Duration,
+    helper_join_grace: Duration,
     identity: ProcessIdentity,
     epoch: ProcessEpoch,
     input: Option<SyncSender<WriteRequest>>,
@@ -1353,6 +1362,7 @@ fn spawn_process_with<S: ThreadSpawner>(
         child,
         group,
         exit_grace: spec.exit_grace,
+        helper_join_grace: spec.helper_join_grace,
         identity,
         epoch,
         input: Some(input_sender),
@@ -1468,7 +1478,7 @@ fn stop_group(process: &mut Running, readers_finished: bool, counters: &Counters
     let _ = process.child.wait();
     join_helpers_by(
         &mut process.helpers,
-        Instant::now() + HELPER_JOIN_GRACE,
+        Instant::now() + process.helper_join_grace,
         counters,
     )
 }
@@ -1480,7 +1490,7 @@ fn finish_exited(process: &mut Running, counters: &Counters) -> bool {
     process.input.take();
     join_helpers_by(
         &mut process.helpers,
-        Instant::now() + HELPER_JOIN_GRACE,
+        Instant::now() + process.helper_join_grace,
         counters,
     )
 }

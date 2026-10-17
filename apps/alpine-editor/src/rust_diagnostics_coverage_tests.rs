@@ -1174,6 +1174,9 @@ fn wait_for_model(
         if ready(model) {
             return Ok(wake);
         }
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for the model".into());
+        }
         if effect.continuation.is_some() {
             continue;
         }
