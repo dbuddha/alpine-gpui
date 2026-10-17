@@ -8,7 +8,8 @@ use std::{
 use alpine_text::Buffer;
 
 use super::{
-    CrashReport, KEPT_LOGS, MAX_LOG_BYTES, State, TRUNCATED, log_stamp, prune, render, write_new,
+    CrashReport, KEPT_LOGS, MAX_LOG_BYTES, MAX_MESSAGE_BYTES, State, TRUNCATED, log_stamp,
+    message_of, prune, render, write_new,
 };
 use crate::recovery::{self, RecoveryCoordinator, RecoveryRequest, RecoverySnapshot};
 use crate::session::{
@@ -218,9 +219,40 @@ fn only_the_newest_ten_crash_logs_survive() -> TestResult {
     ] {
         assert!(logs.join(unrelated).is_file(), "{unrelated} was removed");
     }
-    prune(&logs, 0);
-    assert!(crash_logs(&home)?.is_empty());
+    prune(&logs, 1, &path);
+    assert_eq!(crash_logs(&home)?, [newest]);
     Ok(())
+}
+
+#[test]
+fn a_log_stamped_by_a_wrong_clock_survives_its_own_pruning() -> TestResult {
+    let logs = scratch("wrong-clock")?;
+    for unix in 5_000..5_012 {
+        fs::write(logs.join(format!("crash-{unix}-77.log")), "newer")?;
+    }
+    let written = write_new(&logs, 0, 9, "clock reads zero")?;
+
+    prune(&logs, KEPT_LOGS, &written);
+
+    assert_eq!(fs::read_to_string(&written)?, "clock reads zero");
+    let kept = fs::read_dir(&logs)?.count();
+    assert_eq!(kept, KEPT_LOGS);
+    assert!(logs.join("crash-5011-77.log").is_file());
+    assert!(!logs.join("crash-5002-77.log").exists());
+    fs::remove_dir_all(logs)?;
+    Ok(())
+}
+
+#[test]
+fn panic_payloads_become_messages_copied_only_up_to_the_cap() {
+    assert_eq!(message_of(&"static text"), "static text");
+    let long = "\u{e9}".repeat(MAX_MESSAGE_BYTES);
+    let owned: Box<dyn std::any::Any + Send> = Box::new(long.clone());
+    let message = message_of(&*owned);
+    assert!(message.len() <= MAX_MESSAGE_BYTES, "{}", message.len());
+    assert!(message.len() > MAX_MESSAGE_BYTES - 4);
+    assert!(long.starts_with(&message));
+    assert_eq!(message_of(&7_i32), "<non-string panic payload>");
 }
 
 #[test]

@@ -61,6 +61,7 @@ fn journey_child() -> TestResult {
     match mode.to_str() {
         Some("panic") => panic_journey(&root, false),
         Some("panic-no-writer") => panic_journey(&root, true),
+        Some("writer-panic") => writer_panic_journey(&root),
         Some("kill") => kill_journey(&root),
         Some("relaunch") => relaunch_journey(&root),
         _ => Err("unknown journey".into()),
@@ -99,22 +100,39 @@ fn panic_journey(root: &Path, without_writer: bool) -> TestResult {
     std::process::abort();
 }
 
-fn kill_journey(root: &Path) -> TestResult {
+fn writer_panic_journey(root: &Path) -> TestResult {
     let mut app = edited_app(root)?;
+    let hook = CrashHook::install(std::env::var_os("HOME"));
+    let coordinator = app.recovery.as_ref().ok_or("recovery")?;
+    hook.attach_recovery(coordinator.flush_handle());
+    wait_until_durable(coordinator)?;
+    coordinator.panic_on_next_write();
     assert!(app.replace_range(0..4, "edited").document_changed);
     app.publish_recovery();
-    let coordinator = app.recovery.as_ref().ok_or("recovery")?;
+    // The join returns once the writer's panic, and so the hook, has run.
+    let _ = app.recovery.as_mut().ok_or("recovery")?.shutdown();
+    std::process::abort();
+}
+
+fn wait_until_durable(coordinator: &RecoveryCoordinator) -> TestResult {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         let status = coordinator.status();
         if status.completed_generation >= status.published_generation {
-            break;
+            return Ok(());
         }
         if Instant::now() >= deadline {
             return Err("the recovery writer never caught up".into());
         }
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn kill_journey(root: &Path) -> TestResult {
+    let mut app = edited_app(root)?;
+    assert!(app.replace_range(0..4, "edited").document_changed);
+    app.publish_recovery();
+    wait_until_durable(app.recovery.as_ref().ok_or("recovery")?)?;
     println!("journey-ready");
     std::io::stdout().flush()?;
     thread::sleep(TIMEOUT);
@@ -194,11 +212,21 @@ fn journey_root(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(root)
 }
 
+const PROBE: Panicked = Panicked {
+    thread: "alpine-worker-probe",
+    message: "journey panic marker",
+};
+
+struct Panicked {
+    thread: &'static str,
+    message: &'static str,
+}
+
 #[test]
 fn worker_panic_leaves_a_crash_log_and_the_edit_on_disk() -> TestResult {
     let root = journey_root("panic")?;
     let mut run = run_child("panic", &root)?;
-    assert_panic_journey(&root, &mut run, |flushed| {
+    assert_panic_journey(&root, &mut run, &PROBE, |flushed| {
         flushed == "already durable" || flushed.starts_with("flushed generation ")
     })
 }
@@ -207,12 +235,29 @@ fn worker_panic_leaves_a_crash_log_and_the_edit_on_disk() -> TestResult {
 fn worker_panic_flushes_an_edit_the_writer_never_wrote() -> TestResult {
     let root = journey_root("panic-no-writer")?;
     let mut run = run_child("panic-no-writer", &root)?;
-    assert_panic_journey(&root, &mut run, |flushed| flushed == "flushed generation 1")
+    assert_panic_journey(&root, &mut run, &PROBE, |flushed| {
+        flushed == "flushed generation 1"
+    })
+}
+
+#[test]
+fn recovery_writer_panic_flushes_the_edit_it_was_writing() -> TestResult {
+    let root = journey_root("writer-panic")?;
+    let mut run = run_child("writer-panic", &root)?;
+    let writer = Panicked {
+        thread: "alpine-recovery",
+        message: "recovery writer panic marker",
+    };
+    // Generation 1 is the launch snapshot; the edit is generation 2.
+    assert_panic_journey(&root, &mut run, &writer, |flushed| {
+        flushed == "flushed generation 2"
+    })
 }
 
 fn assert_panic_journey(
     root: &Path,
     run: &mut Run,
+    panicked: &Panicked,
     flushed_as_expected: impl Fn(&str) -> bool,
 ) -> TestResult {
     let status = run.wait()?;
@@ -222,18 +267,18 @@ fn assert_panic_journey(
     assert_eq!(logs.len(), 1, "stderr: {}", run.stderr());
     let log = fs::read_to_string(&logs[0])?;
     for expected in [
-        "\nthread: alpine-worker-probe\n",
-        "\nmessage: journey panic marker\n",
-        "\nbacktrace:\n",
+        format!("\nthread: {}\n", panicked.thread),
+        format!("\nmessage: {}\n", panicked.message),
+        String::from("\nbacktrace:\n"),
     ] {
-        assert!(log.contains(expected), "missing {expected:?} in {log}");
+        assert!(log.contains(&expected), "missing {expected:?} in {log}");
     }
     let flushed = log
         .lines()
         .find_map(|line| line.strip_prefix("recovery: "))
         .ok_or("recovery line")?;
     assert!(flushed_as_expected(flushed), "{flushed}");
-    assert!(run.stderr().contains("journey panic marker"));
+    assert!(run.stderr().contains(panicked.message));
     let state = recovery::load(&journal(root))?;
     assert_eq!(state.documents.len(), 1);
     assert_eq!(&*state.documents[0].local, "edited");

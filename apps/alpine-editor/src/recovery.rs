@@ -152,6 +152,8 @@ struct Shared {
     last_error: Mutex<Option<RecoveryError>>,
     published_generation: AtomicU64,
     completed_generation: AtomicU64,
+    #[cfg(test)]
+    panic_before_write: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -164,6 +166,8 @@ impl Shared {
             last_error: Mutex::new(None),
             published_generation: AtomicU64::new(0),
             completed_generation: AtomicU64::new(0),
+            #[cfg(test)]
+            panic_before_write: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -249,6 +253,14 @@ impl RecoveryCoordinator {
             .latest
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes the writer thread panic before it writes its next snapshot.
+    #[cfg(test)]
+    pub(crate) fn panic_on_next_write(&self) {
+        self.shared
+            .panic_before_write
+            .store(true, Ordering::Release);
     }
 
     /// A handle that writes the last published snapshot on the caller's thread.
@@ -349,7 +361,8 @@ pub(crate) struct FlushHandle {
 }
 
 impl FlushHandle {
-    /// Returns once everything published is on disk, or after `bound`.
+    /// Returns once everything published is on disk, or once a lock has stayed
+    /// busy for `bound`. A write already started is not cut short.
     pub(crate) fn flush(&self, bound: Duration) -> FlushOutcome {
         let deadline = Instant::now() + bound;
         loop {
@@ -369,14 +382,11 @@ impl FlushHandle {
         }
     }
 
-    // None while a lock is busy or the snapshot is not stored yet.
+    // None while a lock is busy or nothing newer than the journal is stored.
     fn write_latest(&self) -> Option<FlushOutcome> {
         let _writer = try_lock(&self.shared.write)?;
-        let (generation, request) = {
-            let latest = try_lock(&self.shared.latest)?;
-            let pending = latest.as_ref()?;
-            (pending.generation, pending.request.clone())
-        };
+        let (generation, request) =
+            unwritten(&self.shared, try_lock(&self.shared.latest)?.as_ref())?;
         let result = encode(&request).and_then(|bytes| write_journal(&self.shared.path, &bytes));
         Some(match result {
             Ok(()) => {
@@ -425,29 +435,61 @@ pub(crate) fn load(path: &Path) -> Result<RecoveryState, RecoveryError> {
 fn worker_loop(shared: &Shared, receiver: &Receiver<()>) {
     while receiver.recv().is_ok() {
         loop {
-            let _writer = shared.write.lock().unwrap_or_else(PoisonError::into_inner);
-            let pending = shared
-                .latest
-                .lock()
-                .ok()
-                .and_then(|mut latest| latest.take());
-            let Some(pending) = pending else {
+            let latest = shared.latest.lock().unwrap_or_else(PoisonError::into_inner);
+            let next = unwritten(shared, latest.as_ref());
+            drop(latest);
+            let Some((generation, request)) = next else {
                 break;
             };
-            let result =
-                encode(&pending.request).and_then(|bytes| write_journal(&shared.path, &bytes));
-            let error = result.err();
-            let failed = error.is_some();
-            if let Ok(mut last_error) = shared.last_error.lock() {
-                *last_error = error;
-            }
-            if failed && let Ok(mut identity) = shared.identity.lock() {
-                *identity = None;
-            }
-            shared
-                .completed_generation
-                .store(pending.generation, Ordering::Release);
+            #[cfg(test)]
+            panic_if_asked(shared);
+            // Encoding holds no lock and the snapshot stays published, so a
+            // panic here leaves the hook's flush free to write it.
+            complete_generation(shared, generation, encode(&request));
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, reason = "tests need a real panic on the writer thread")]
+fn panic_if_asked(shared: &Shared) {
+    if shared.panic_before_write.swap(false, Ordering::AcqRel) {
+        std::panic::panic_any("recovery writer panic marker");
+    }
+}
+
+// The newest published snapshot, if the journal on disk is older.
+fn unwritten(shared: &Shared, latest: Option<&Pending>) -> Option<(u64, RecoveryRequest)> {
+    let pending = latest?;
+    (pending.generation > shared.completed_generation.load(Ordering::Acquire))
+        .then(|| (pending.generation, pending.request.clone()))
+}
+
+fn complete_generation(shared: &Shared, generation: u64, encoded: Result<Vec<u8>, RecoveryError>) {
+    let _writer = shared.write.lock().unwrap_or_else(PoisonError::into_inner);
+    // A flush may have written this generation, or a newer one, meanwhile.
+    if shared.completed_generation.load(Ordering::Acquire) < generation {
+        let error = encoded
+            .and_then(|bytes| write_journal(&shared.path, &bytes))
+            .err();
+        if let Ok(mut last_error) = shared.last_error.lock() {
+            *last_error = error;
+        }
+        if error.is_some()
+            && let Ok(mut identity) = shared.identity.lock()
+        {
+            *identity = None;
+        }
+        shared
+            .completed_generation
+            .fetch_max(generation, Ordering::AcqRel);
+    }
+    let mut latest = shared.latest.lock().unwrap_or_else(PoisonError::into_inner);
+    if latest
+        .as_ref()
+        .is_some_and(|pending| pending.generation <= generation)
+    {
+        *latest = None;
     }
 }
 
@@ -1563,6 +1605,54 @@ mod tests {
 
         drop(held);
         assert_eq!(handle.flush(bound), FlushOutcome::Written(generation));
+        Ok(())
+    }
+
+    #[test]
+    fn flush_gives_up_within_its_bound_when_the_writer_holds_its_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (path, coordinator, _receiver) = pending_journal("flush-writer-held")?;
+        coordinator.publish(request("held", 1))?;
+        let handle = coordinator.flush_handle();
+        let bound = Duration::from_millis(150);
+
+        let writer = coordinator
+            .shared
+            .write
+            .lock()
+            .map_err(|_| "write lock poisoned")?;
+        let (sender, outcome) = mpsc::channel();
+        let flushing = thread::spawn(move || sender.send(handle.flush(bound)));
+        // A blocking lock would never answer; the timeout keeps that a failure.
+        let outcome = outcome.recv_timeout(bound + Duration::from_secs(2));
+        drop(writer);
+        let _ = flushing.join();
+
+        assert_eq!(outcome, Ok(FlushOutcome::TimedOut));
+        assert!(!path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_panic_in_the_writer_leaves_its_snapshot_for_the_flush()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = test_root("writer-panic")?
+            .join("state")
+            .join("recovery.bin");
+        let mut coordinator = RecoveryCoordinator::new(path.clone())?;
+        coordinator.panic_on_next_write();
+        let generation = coordinator.publish(request("unwritten", 1))?;
+        assert!(matches!(
+            coordinator.shutdown(),
+            Err(RecoveryError::WorkerPanicked)
+        ));
+        assert!(!path.exists());
+
+        assert_eq!(
+            coordinator.flush_handle().flush(Duration::from_secs(1)),
+            FlushOutcome::Written(generation)
+        );
+        assert_eq!(&*load(&path)?.documents[0].local, "unwritten");
         Ok(())
     }
 

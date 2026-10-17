@@ -3,6 +3,7 @@
 //! selection-only change since that publish can be lost.
 
 use std::{
+    any::Any,
     ffi::OsString,
     fmt::Write as _,
     fs::{self, File},
@@ -39,7 +40,7 @@ pub(crate) struct CrashHook {
 
 impl CrashHook {
     /// Chains a hook that flushes recovery, then writes a crash log under
-    /// `~/Library/Logs/Alpine Editor/`, after the previous hook has run.
+    /// `~/Library/Logs/Alpine Editor/`, before the previous hook runs.
     pub(crate) fn install(home: Option<OsString>) -> Self {
         let state = Arc::new(State::new(
             home,
@@ -50,10 +51,12 @@ impl CrashHook {
         let previous = panic::take_hook();
         let hook_state = Arc::clone(&state);
         panic::set_hook(Box::new(move |info| {
+            // Data first: a full stderr pipe could stall the previous hook.
+            let recorded = hook_state.record(&CrashReport::from_hook(info));
             previous(info);
             let mut stderr = io::stderr();
             // A failed write must not become a second panic inside the hook.
-            let _ = match hook_state.record(&CrashReport::from_hook(info)) {
+            let _ = match recorded {
                 Some(Ok(path)) => writeln!(stderr, "alpine-editor: crash log: {}", path.display()),
                 Some(Err(error)) => writeln!(stderr, "alpine-editor: no crash log: {error}"),
                 None => Ok(()),
@@ -80,20 +83,26 @@ struct CrashReport {
 
 impl CrashReport {
     fn from_hook(info: &PanicHookInfo<'_>) -> Self {
-        let payload = info.payload();
-        let message = payload
-            .downcast_ref::<&str>()
-            .map(|message| (*message).to_owned())
-            .or_else(|| payload.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| String::from("<non-string panic payload>"));
         Self {
-            message,
+            message: message_of(info.payload()),
             location: info
                 .location()
                 .map_or_else(|| String::from("<unknown>"), ToString::to_string),
             thread: thread::current().name().unwrap_or("<unnamed>").to_owned(),
         }
     }
+}
+
+/// The payload's text, copied only up to the message cap.
+fn message_of(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .map_or_else(
+            || String::from("<non-string panic payload>"),
+            |message| truncated(message, MAX_MESSAGE_BYTES).to_owned(),
+        )
 }
 
 struct State {
@@ -182,7 +191,7 @@ impl State {
             &std::backtrace::Backtrace::force_capture().to_string(),
         );
         let path = write_new(&directory, unix, std::process::id(), &text)?;
-        prune(&directory, KEPT_LOGS);
+        prune(&directory, KEPT_LOGS, &path);
         Ok(path)
     }
 }
@@ -264,8 +273,9 @@ fn log_stamp(name: &str) -> Option<(u64, u32)> {
     Some((unix.parse().ok()?, pid.parse().ok()?))
 }
 
-/// Deletes all but the newest `keep` crash logs; other files stay untouched.
-fn prune(directory: &Path, keep: usize) {
+/// Keeps `written` and the newest other crash logs, `keep` in all, even when
+/// a wrong clock stamps `written` oldest. Other files stay untouched.
+fn prune(directory: &Path, keep: usize, written: &Path) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -273,11 +283,12 @@ fn prune(directory: &Path, keep: usize) {
         .flatten()
         .filter_map(|entry| {
             let stamp = log_stamp(entry.file_name().to_str()?)?;
-            Some((stamp, entry.path()))
+            let path = entry.path();
+            (path != written).then_some((stamp, path))
         })
         .collect();
     logs.sort_unstable_by_key(|(stamp, _)| std::cmp::Reverse(*stamp));
-    for (_, path) in logs.into_iter().skip(keep) {
+    for (_, path) in logs.into_iter().skip(keep.saturating_sub(1)) {
         let _ = fs::remove_file(path);
     }
 }
