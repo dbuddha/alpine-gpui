@@ -15,7 +15,10 @@ invariants and product rules.
 
 Today: one server per workspace and language, hard cap 5, idle shutdown of
 unattached slots, local-lexer highlighting, and the `known_defects` in
-../AGENTS.md. rust-analyzer alone is 1 to 4 GB on a real crate. A big
+../AGENTS.md. Each server leads its own process group. Shutdown sends
+`shutdown` and `exit`, closes stdin, then TERMs and KILLs the group within
+about 0.8 s; restarts and faults skip the farewell. A 2 ms poll still drives
+the supervisor. rust-analyzer alone is 1 to 4 GB on a real crate. A big
 project's first query still waits on the server's own indexing.
 
 Rules:
@@ -58,8 +61,7 @@ Slices, serial:
 1. Wire format: the `Cow<str>` JSON fix, string ids, answers to server
    requests, `processId`, capabilities, UTF-8 negotiation, event-driven test
    waits instead of fixed 5 s loops.
-2. Shutdown worker: a process group per server, shutdown then exit then kill,
-   an event-driven supervisor (no 2 ms polling).
+2. Event-driven supervisor: no 2 ms polling.
 3. Pool and discovery: evict the least recently used server with no visible
    tab, a deadline thread, memory-pressure shutdown, discovery off the main
    thread, sync only on real changes, install hints. Closes 2.1 (cold path)

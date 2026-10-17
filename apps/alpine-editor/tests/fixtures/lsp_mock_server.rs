@@ -40,6 +40,11 @@ pub(crate) fn main() {
 fn run() -> io::Result<()> {
     let mut trace = PhaseTrace::from_environment()?;
     trace.record(&format!("process-spawned:{}", process::id()))?;
+    let arguments: Vec<String> = env::args().collect();
+    let mut stdin_record = match arguments.as_slice() {
+        [_, flag, path] if flag == "--record-stdin" => Some(File::create(path)?),
+        _ => None,
+    };
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut buffered = Vec::new();
@@ -50,6 +55,9 @@ fn run() -> io::Result<()> {
 
     loop {
         let read = input.read(&mut chunk)?;
+        if let Some(record) = stdin_record.as_mut() {
+            record.write_all(&chunk[..read])?;
+        }
         if read == 0 {
             return Ok(());
         }

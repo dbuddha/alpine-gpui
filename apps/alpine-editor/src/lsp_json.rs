@@ -648,6 +648,30 @@ impl LspPeer {
         Ok(message)
     }
 
+    /// Ends the session without waiting for replies or pending requests:
+    /// `shutdown` then `exit` while running, otherwise `exit` alone.
+    pub(crate) fn farewell(&mut self) -> Result<Box<[u8]>, ProtocolError> {
+        let shutdown = match self.lifecycle {
+            PeerLifecycle::Exited => return Err(ProtocolError::InvalidLifecycle),
+            PeerLifecycle::Running => {
+                let id = self
+                    .next_id
+                    .checked_add(1)
+                    .ok_or(ProtocolError::IdExhausted)?;
+                self.next_id = id;
+                Some(build_call("shutdown", Some(RequestId(id)), Some("null"))?)
+            }
+            _ => None,
+        };
+        let exit = build_call("exit", None, None)?;
+        let shutdown = shutdown.as_ref().map_or(&[][..], OutboundMessage::bytes);
+        let bytes = [shutdown, exit.bytes()].concat().into_boxed_slice();
+        self.pending = Vec::new();
+        self.cancelled = Vec::new();
+        self.lifecycle = PeerLifecycle::Exited;
+        Ok(bytes)
+    }
+
     pub(crate) fn receive<'a>(
         &mut self,
         body: &'a [u8],
@@ -1080,6 +1104,46 @@ mod tests {
         assert_eq!(peer.snapshot().lifecycle, PeerLifecycle::Exited);
         assert_eq!(peer.snapshot().retained_bytes, 0);
         assert!(peer.snapshot().peak_retained_bytes > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn farewell_ends_the_session_without_waiting_for_pending_requests() -> Result<(), ProtocolError>
+    {
+        let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+        let framed_exit = format!("Content-Length: {}\r\n\r\n{exit}", exit.len());
+        let mut created = LspPeer::new();
+        assert_eq!(&*created.farewell()?, framed_exit.as_bytes());
+        assert_eq!(created.farewell(), Err(ProtocolError::InvalidLifecycle));
+
+        let mut peer = LspPeer::new();
+        initialize(&mut peer);
+        peer.begin_request("textDocument/hover", None, stamp(1))?;
+        let cancelled = peer.begin_request("textDocument/hover", None, stamp(1))?;
+        peer.cancel(
+            cancelled
+                .request_id()
+                .ok_or(ProtocolError::InvalidEnvelope)?,
+        )?;
+        assert_eq!(
+            peer.begin_shutdown(),
+            Err(ProtocolError::PendingRequestsRemain)
+        );
+        let shutdown = r#"{"jsonrpc":"2.0","id":4,"method":"shutdown","params":null}"#;
+        let expected = format!(
+            "Content-Length: {}\r\n\r\n{shutdown}{framed_exit}",
+            shutdown.len()
+        );
+        assert_eq!(&*peer.farewell()?, expected.as_bytes());
+        let snapshot = peer.snapshot();
+        assert_eq!(snapshot.lifecycle(), PeerLifecycle::Exited);
+        assert_eq!(snapshot.pending_requests(), 0);
+        assert_eq!(snapshot.retained_bytes(), 0);
+
+        let mut shutting_down = LspPeer::new();
+        initialize(&mut shutting_down);
+        shutting_down.begin_shutdown()?;
+        assert_eq!(&*shutting_down.farewell()?, framed_exit.as_bytes());
         Ok(())
     }
 

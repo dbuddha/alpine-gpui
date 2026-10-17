@@ -14,7 +14,7 @@ criteria:
   "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
   "2.4": "passes on main"
 known_defects:
-  - "eviction and idle shutdown block the main thread up to 5 s (evict_one, reap_idle)"
+  - "eviction and idle shutdown block the main thread, up to about 0.8 s per server that ignores exit (evict_one, reap_idle)"
   - "a sixth language with five attached slots kills an open tab's server"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "workspace.applyEdit is advertised but server requests get MethodNotFound"
