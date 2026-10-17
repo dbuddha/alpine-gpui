@@ -37,8 +37,9 @@ const DISCOVERY_QUEUE: usize = MAX_WARM_SERVERS;
 // Stops from eviction and idle reap in flight at once; each ends within
 // about 0.8 s, so later syncs and polls reap them.
 const MAX_DRAINING: usize = MAX_WARM_SERVERS + 1;
-// Quit waits this long in total for every server's stop.
-const QUIT_DEADLINE: Duration = Duration::from_secs(1);
+// Quit waits this long in total for every server's stop: well past the
+// about 0.8 s a stubborn server takes to reach KILL, so none outlives quit.
+const QUIT_DEADLINE: Duration = Duration::from_millis(1_500);
 
 struct Slot {
     workspace_root: PathBuf,
@@ -1581,7 +1582,7 @@ mod tests {
         let begin = Instant::now();
         let _ = fleet.services.shutdown();
         let elapsed = begin.elapsed();
-        // A hang bound only: one 1 s deadline for all six, where waiting for
+        // A hang bound only: one 1.5 s deadline for all six, where waiting for
         // each stop in turn took about 0.8 s apiece.
         assert!(
             elapsed < Duration::from_millis(2_500),

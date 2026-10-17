@@ -17,7 +17,7 @@ Today: off-main-thread discovery, one server per workspace and language (cap
 5), idle shutdown of unattached slots, local-lexer highlighting, plus
 ../AGENTS.md `known_defects`. A stop sends `shutdown` and `exit`, then TERMs
 and KILLs the server's process group within about 0.8 s. Eviction and idle
-stops never wait on the main thread; quit waits 1 s at most. rust-analyzer
+stops never wait on the main thread; quit waits 1.5 s at most. rust-analyzer
 takes 1 to 4 GB on a real crate; a first query waits on its indexing.
 
 Rules:
