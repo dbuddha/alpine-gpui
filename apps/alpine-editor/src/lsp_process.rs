@@ -13,8 +13,10 @@ use std::{
         mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+use group::{GroupSignal, ProcessGroup};
 
 const CONTROL_CAPACITY: usize = 8;
 const EVENT_CAPACITY: usize = 16;
@@ -31,6 +33,9 @@ const MAX_ARGUMENT_BYTES: usize = 4_096;
 const MAX_CONFIGURATION_BYTES: usize = 65_536;
 const SUPERVISOR_POLL: Duration = Duration::from_millis(2);
 const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const EXIT_GRACE: Duration = Duration::from_millis(500);
+const TERM_GRACE: Duration = Duration::from_millis(200);
+const HELPER_JOIN_GRACE: Duration = Duration::from_millis(100);
 
 pub(crate) type ProcessWake = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -229,6 +234,8 @@ pub(crate) struct ProcessSpec {
     arguments: Box<[OsString]>,
     working_directory: Option<PathBuf>,
     retained_bytes: usize,
+    exit_grace: Duration,
+    helper_join_grace: Duration,
 }
 
 impl ProcessSpec {
@@ -293,7 +300,21 @@ impl ProcessSpec {
             arguments: owned.into_boxed_slice(),
             working_directory,
             retained_bytes,
+            exit_grace: EXIT_GRACE,
+            helper_join_grace: HELPER_JOIN_GRACE,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_exit_grace_for_test(mut self, exit_grace: Duration) -> Self {
+        self.exit_grace = exit_grace;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_helper_join_grace_for_test(mut self, grace: Duration) -> Self {
+        self.helper_join_grace = grace;
+        self
     }
 }
 
@@ -332,6 +353,7 @@ struct Counters {
     restarts: AtomicU64,
     exits: AtomicU64,
     shutdown_timeouts: AtomicU64,
+    exit_grace_timeouts: AtomicU64,
     // The running child's PID, or 0. Cleared before the child is killed or
     // reaped, since the OS may reuse a reaped PID at once.
     process_id: AtomicU32,
@@ -519,6 +541,9 @@ struct OutputPacket {
 
 struct Running {
     child: Child,
+    group: ProcessGroup,
+    exit_grace: Duration,
+    helper_join_grace: Duration,
     identity: ProcessIdentity,
     epoch: ProcessEpoch,
     input: Option<SyncSender<WriteRequest>>,
@@ -545,6 +570,7 @@ pub(crate) struct ProcessSnapshot {
     pub(crate) restarts: u64,
     pub(crate) exits: u64,
     pub(crate) shutdown_timeouts: u64,
+    pub(crate) exit_grace_timeouts: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -582,7 +608,8 @@ pub(crate) struct LanguageServerProcess {
     events: Receiver<ProcessEvent>,
     supervisor: Option<JoinHandle<()>>,
     supervisor_complete: Receiver<()>,
-    shutdown: Arc<AtomicBool>,
+    // A shutdown request, carrying the protocol's farewell bytes if any.
+    shutdown: Option<SyncSender<Option<Payload>>>,
     counters: Arc<Counters>,
     configuration_bytes: usize,
     identity: ProcessIdentity,
@@ -621,12 +648,11 @@ impl LanguageServerProcess {
             wake,
             ..Counters::default()
         });
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let (shutdown, shutdown_receiver) = sync_channel(1);
         let (control_sender, control_receiver) = sync_channel(CONTROL_CAPACITY);
         let (event_sender, event_receiver) = sync_channel(EVENT_CAPACITY);
         let (completion_sender, completion_receiver) = sync_channel(1);
         let worker_counters = Arc::clone(&counters);
-        let worker_shutdown = Arc::clone(&shutdown);
         let epoch = ProcessEpoch(1);
         let supervisor = spawner
             .spawn(
@@ -639,7 +665,7 @@ impl LanguageServerProcess {
                         epoch,
                         control_receiver,
                         event_sender,
-                        worker_shutdown,
+                        shutdown_receiver,
                         worker_counters,
                     );
                     let _ = completion_sender.try_send(());
@@ -651,7 +677,7 @@ impl LanguageServerProcess {
             events: event_receiver,
             supervisor: Some(supervisor),
             supervisor_complete: completion_receiver,
-            shutdown,
+            shutdown: Some(shutdown),
             counters,
             configuration_bytes,
             identity,
@@ -667,7 +693,6 @@ impl LanguageServerProcess {
     #[cfg(test)]
     pub(crate) fn inert_for_test(identity: ProcessIdentity) -> Self {
         let counters = Arc::new(Counters::default());
-        let shutdown = Arc::new(AtomicBool::new(false));
         let (control_sender, control_receiver) = sync_channel(CONTROL_CAPACITY);
         let (event_sender, event_receiver) = sync_channel(EVENT_CAPACITY);
         let (_, completion_receiver) = sync_channel(1);
@@ -676,7 +701,7 @@ impl LanguageServerProcess {
             events: event_receiver,
             supervisor: None,
             supervisor_complete: completion_receiver,
-            shutdown,
+            shutdown: None,
             counters,
             configuration_bytes: 0,
             identity,
@@ -791,12 +816,27 @@ impl LanguageServerProcess {
             restarts: self.counters.restarts.load(Ordering::Acquire),
             exits: self.counters.exits.load(Ordering::Acquire),
             shutdown_timeouts: self.counters.shutdown_timeouts.load(Ordering::Acquire),
+            exit_grace_timeouts: self.counters.exit_grace_timeouts.load(Ordering::Acquire),
         }
     }
 
     pub(crate) fn shutdown(&mut self) -> ProcessSnapshot {
+        self.stop(None)
+    }
+
+    /// Like `shutdown`, but first writes `farewell` to the server's stdin.
+    pub(crate) fn shutdown_with_farewell(&mut self, farewell: &[u8]) -> ProcessSnapshot {
+        let payload = (farewell.len() <= MAX_MESSAGE_BYTES)
+            .then(|| Payload::copy(farewell, &self.counters, ProcessStage::Input).ok())
+            .flatten();
+        self.stop(payload)
+    }
+
+    fn stop(&mut self, farewell: Option<Payload>) -> ProcessSnapshot {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.try_send(farewell);
+        }
         self.control.take();
-        self.shutdown.store(true, Ordering::Release);
         if let Some(supervisor) = self.supervisor.take() {
             join_supervisor(
                 supervisor,
@@ -845,12 +885,13 @@ fn supervise(
     first_epoch: ProcessEpoch,
     controls: Receiver<Control>,
     events: SyncSender<ProcessEvent>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: Receiver<Option<Payload>>,
     counters: Arc<Counters>,
 ) {
     let mut running = start_running(&spec, first_identity, first_epoch, &events, &counters);
     let mut continue_supervising = true;
-    while continue_supervising && !shutdown.load(Ordering::Acquire) {
+    let mut farewell = None;
+    while continue_supervising && !shutdown_requested(&shutdown, &mut farewell) {
         match controls.recv_timeout(SUPERVISOR_POLL) {
             Ok(Control::Input {
                 identity,
@@ -905,7 +946,7 @@ fn supervise(
                 &counters,
             ));
             if exited && let Some(mut stopped) = running.take() {
-                let _ = stop_running(&mut stopped, false, &counters);
+                let _ = finish_exited(&mut stopped, &counters);
             }
             terminate = merge_stop_reason(terminate, wait_reason);
         }
@@ -915,7 +956,24 @@ fn supervise(
         }
     }
     if let Some(mut process) = running {
-        let _ = stop_running(&mut process, true, &counters);
+        if farewell.is_none() {
+            let _ = shutdown_requested(&shutdown, &mut farewell);
+        }
+        let _ = shut_down(&mut process, farewell, &counters);
+    }
+}
+
+fn shutdown_requested(
+    requests: &Receiver<Option<Payload>>,
+    farewell: &mut Option<Payload>,
+) -> bool {
+    match requests.try_recv() {
+        Ok(bytes) => {
+            *farewell = bytes;
+            true
+        }
+        Err(TryRecvError::Empty) => false,
+        Err(TryRecvError::Disconnected) => true,
     }
 }
 
@@ -930,7 +988,9 @@ fn interpret_wait(decision: WaitDecision) -> (bool, Option<StopReason>) {
     match decision {
         WaitDecision::Running => (false, None),
         WaitDecision::Exited => (true, None),
-        WaitDecision::Terminate => (false, Some(StopReason::OutputOverflow)),
+        // A failed wait may mean the leader was reaped elsewhere, so it is
+        // finished like an exit: its group is no longer safe to signal.
+        WaitDecision::Terminate => (true, Some(StopReason::OutputOverflow)),
     }
 }
 
@@ -959,7 +1019,7 @@ fn start_running(
                 Some(process)
             } else {
                 let mut process = process;
-                let _ = stop_running(&mut process, true, counters);
+                let _ = force_stop(&mut process, counters);
                 None
             }
         }
@@ -1136,7 +1196,7 @@ fn stop_for_reason(
     };
     let identity = process.identity;
     let epoch = process.epoch;
-    let _ = stop_running(&mut process, true, counters);
+    let _ = force_stop(&mut process, counters);
     let _ = emit_terminal(
         events,
         ProcessEvent::Stopped {
@@ -1152,7 +1212,7 @@ fn stop_for_reason(
 fn stop_for_restart(mut process: Running, events: &SyncSender<ProcessEvent>, counters: &Counters) {
     let identity = process.identity;
     let epoch = process.epoch;
-    let panicked = stop_running(&mut process, true, counters);
+    let panicked = force_stop(&mut process, counters);
     let _ = emit_terminal(
         events,
         ProcessEvent::Stopped {
@@ -1242,8 +1302,7 @@ fn spawn_process_with<S: ThreadSpawner>(
     if let Some(directory) = &spec.working_directory {
         command.current_dir(directory);
     }
-    let mut child = command
-        .spawn()
+    let (mut child, group) = ProcessGroup::spawn_leader(&mut command)
         .map_err(|error| ProcessFailure::io(ProcessStage::SpawnChild, &error))?;
     let stdin = take_pipe(child.stdin.take(), ProcessStage::SpawnInput)?;
     let stdout = take_pipe(child.stdout.take(), ProcessStage::SpawnStdout)?;
@@ -1301,6 +1360,9 @@ fn spawn_process_with<S: ThreadSpawner>(
     }
     Ok(Running {
         child,
+        group,
+        exit_grace: spec.exit_grace,
+        helper_join_grace: spec.helper_join_grace,
         identity,
         epoch,
         input: Some(input_sender),
@@ -1379,20 +1441,102 @@ fn reader<R: Read>(
     }
 }
 
-fn stop_running(process: &mut Running, kill: bool, counters: &Counters) -> bool {
-    // Unpublish before the kill and the reap, after which the OS may reuse
-    // the PID.
+// Unpublishes the PID before any signal or reap, after which the OS may
+// reuse it, then lets the server exit on its own before the group stop.
+fn shut_down(process: &mut Running, farewell: Option<Payload>, counters: &Counters) -> bool {
     counters.process_id.store(0, Ordering::Release);
-    process.input.take();
-    if kill {
-        let _ = process.child.kill();
+    if let (Some(payload), Some(input)) = (farewell, process.input.as_ref()) {
+        // Sequence 0 is never issued; nothing forwards this write's result.
+        let sequence = InputSequence(0);
+        let _ = input.try_send(WriteRequest { sequence, payload });
     }
-    let _ = process.child.wait();
-    join_helpers(&mut process.helpers)
+    process.input.take();
+    let exited = readers_finished_by(&process.output, Instant::now() + process.exit_grace);
+    if !exited {
+        counters.exit_grace_timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+    stop_group(process, exited, counters)
 }
 
-fn join_helpers(helpers: &mut Vec<JoinHandle<()>>) -> bool {
-    helpers.drain(..).any(|helper| helper.join().is_err())
+fn force_stop(process: &mut Running, counters: &Counters) -> bool {
+    counters.process_id.store(0, Ordering::Release);
+    process.input.take();
+    stop_group(process, false, counters)
+}
+
+// Signal the group only while its leader is unreaped (alive or a zombie):
+// until the wait below, the leader's PID, the group ID, cannot be reused.
+// So nothing may try_wait or wait on the leader before this runs.
+fn stop_group(process: &mut Running, readers_finished: bool, counters: &Counters) -> bool {
+    let _ = process.group.signal(GroupSignal::Term);
+    if !readers_finished {
+        let _ = readers_finished_by(&process.output, Instant::now() + TERM_GRACE);
+    }
+    let _ = process.group.signal(GroupSignal::Kill);
+    // Backs up a group signal that could not run, so the wait cannot hang.
+    let _ = process.child.kill();
+    let _ = process.child.wait();
+    join_helpers_by(
+        &mut process.helpers,
+        Instant::now() + process.helper_join_grace,
+        counters,
+    )
+}
+
+// The leader is reaped, or a failed wait cannot rule that out, so its
+// group ID may have been reused: never signal the group here.
+fn finish_exited(process: &mut Running, counters: &Counters) -> bool {
+    counters.process_id.store(0, Ordering::Release);
+    process.input.take();
+    join_helpers_by(
+        &mut process.helpers,
+        Instant::now() + process.helper_join_grace,
+        counters,
+    )
+}
+
+// Both readers drop their senders once both pipes reach EOF, that is once
+// every process holding them has closed them. Output is discarded.
+fn readers_finished_by(output: &Receiver<OutputPacket>, deadline: Instant) -> bool {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match output.recv_timeout(remaining) {
+            Ok(_) if remaining.is_zero() => return false,
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => return false,
+            Err(RecvTimeoutError::Disconnected) => return true,
+        }
+    }
+}
+
+// Joins the helpers that finish by the deadline and detaches the rest,
+// counting each as a shutdown timeout. Returns whether any join panicked.
+fn join_helpers_by(
+    helpers: &mut Vec<JoinHandle<()>>,
+    deadline: Instant,
+    counters: &Counters,
+) -> bool {
+    let mut panicked = false;
+    loop {
+        let mut index = 0;
+        while index < helpers.len() {
+            if helpers[index].is_finished() {
+                panicked |= helpers.swap_remove(index).join().is_err();
+            } else {
+                index += 1;
+            }
+        }
+        let now = Instant::now();
+        if helpers.is_empty() || now >= deadline {
+            break;
+        }
+        thread::sleep(SUPERVISOR_POLL.min(deadline - now));
+    }
+    for helper in helpers.drain(..) {
+        counters.shutdown_timeouts.fetch_add(1, Ordering::Relaxed);
+        drop(helper);
+    }
+    panicked
 }
 
 fn take_pipe<T>(pipe: Option<T>, stage: ProcessStage) -> Result<T, ProcessFailure> {
@@ -1423,6 +1567,71 @@ fn broken_pipe(stage: ProcessStage) -> ProcessFailure {
         stage,
         &io::Error::new(io::ErrorKind::BrokenPipe, "language-server pipe is closed"),
     )
+}
+
+mod group {
+    use std::{
+        io,
+        process::{self, Child, Command, Stdio},
+    };
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum GroupSignal {
+        Term,
+        Kill,
+    }
+
+    /// The process group a spawned server leads, so a stop also reaches its
+    /// children. Only `spawn_leader` builds one.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) struct ProcessGroup(u32);
+
+    impl ProcessGroup {
+        pub(super) fn spawn_leader(command: &mut Command) -> io::Result<(Child, Self)> {
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::process_group(command, 0);
+            let mut child = command.spawn()?;
+            if let Some(group) = Self::admit(child.id()) {
+                return Ok((child, group));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(io::Error::other("refused language-server process group"))
+        }
+
+        // `kill -- -0` names the caller's own group and `-1` every process it
+        // may signal; the editor's PID may lead the editor's own group.
+        fn admit(id: u32) -> Option<Self> {
+            let valid = id > 1 && id != process::id() && i32::try_from(id).is_ok();
+            valid.then_some(Self(id))
+        }
+
+        /// Sends `signal` to every process in the group. False only when
+        /// `/bin/kill` could not run.
+        pub(super) fn signal(self, signal: GroupSignal) -> bool {
+            let name = match signal {
+                GroupSignal::Term => "TERM",
+                GroupSignal::Kill => "KILL",
+            };
+            Command::new("/bin/kill")
+                .args(["-s", name, "--", &format!("-{}", self.0)])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok()
+        }
+
+        #[cfg(test)]
+        pub(super) fn refuses(id: u32) -> bool {
+            Self::admit(id).is_none()
+        }
+
+        #[cfg(test)]
+        pub(super) const fn id(self) -> u32 {
+            self.0
+        }
+    }
 }
 
 #[cfg(test)]

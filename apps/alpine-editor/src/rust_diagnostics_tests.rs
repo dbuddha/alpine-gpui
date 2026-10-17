@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::{self, Command},
+    process::{self, Command, Stdio},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -45,6 +45,9 @@ pub(crate) fn mock_executable() -> &'static Path {
                 "failed to compile Rust diagnostics mock: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            // A new binary's first launch waits on a macOS assessment that
+            // took seconds under load; pay it here, outside any test's wait.
+            let _ = Command::new(&path).stdin(Stdio::null()).output();
             path
         })
         .as_path()
