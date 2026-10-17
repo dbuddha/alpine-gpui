@@ -2941,7 +2941,7 @@ fn quit_persists_recovery_and_session_before_stopping_servers()
         ],
         "a clean quit persists recovery and session, then stops servers"
     );
-    session::load(&clean_session)?;
+    assert_eq!(session::load(&clean_session)?.tabs.len(), 1);
 
     let dirty_session = root.path().join("dirty").join("session-v1.bin");
     let mut app = EditorApp::open_file(TestTextSystem, &document_path)?;
