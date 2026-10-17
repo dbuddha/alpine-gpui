@@ -1021,7 +1021,7 @@ fn workspace_edit_not_ready_and_admission_axes_are_observable() -> Result<(), Bo
     assert!(!unavailable.reject_stale_workspace_edit(1));
     assert!(matches!(
         workspace_edit_wire(ResponseValue::error_for_test()),
-        Err(WorkspaceEditError::Server(-32_000))
+        Err(WorkspaceEditError::Server(error)) if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
     let params = RawValue::from_string(String::from("{}"))?;
     assert!(

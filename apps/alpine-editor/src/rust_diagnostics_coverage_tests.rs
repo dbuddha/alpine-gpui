@@ -756,14 +756,16 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
             NavigationRequestKind::Hover,
             ResponseValue::error_for_test()
         ),
-        NavigationCandidate::Hover(Err(NavigationError::Server(-32_000)))
+        NavigationCandidate::Hover(Err(NavigationError::Server(error)))
+            if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
     assert!(matches!(
         navigation_from_response(
             NavigationRequestKind::Definition,
             ResponseValue::error_for_test()
         ),
-        NavigationCandidate::Locations(Err(NavigationError::Server(-32_000)))
+        NavigationCandidate::Locations(Err(NavigationError::Server(error)))
+            if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
 
     let (_, _, _, identity) = tests::fixture();
@@ -1088,7 +1090,7 @@ fn completion_result_admission_rejects_every_stale_or_invalid_shape() -> Result<
 
     assert!(matches!(
         completion_batch_from_response(ResponseValue::error_for_test()),
-        Err(CompletionError::Server(-32_000))
+        Err(CompletionError::Server(error)) if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
 
     let empty = completion_result("null")?;
@@ -1460,7 +1462,9 @@ fn absent_symbol_guards_and_error_statuses_are_explicit() -> Result<(), Box<dyn 
             error_value,
             "file:///tmp/main.rs"
         ),
-        Err(SymbolError::Server(-32_000))
+        Err(SymbolError::Server(crate::lsp_json::ServerError::for_test(
+            -32_000, false
+        )))
     );
     let mut empty = RustDiagnostics::default();
     assert!(!empty.snapshot().symbol_pending());

@@ -611,7 +611,7 @@ fn completion_batch_from_response(
     });
     match value {
         ResponseValue::Result(result) => CompletionBatch::admit(result),
-        ResponseValue::Error(error) => Err(CompletionError::Server(error.code())),
+        ResponseValue::Error(error) => Err(CompletionError::Server(error.server_error())),
     }
 }
 
@@ -628,12 +628,12 @@ fn navigation_from_response(
             ResponseValue::Result(result),
         ) => NavigationCandidate::Locations(SourceLocations::admit(result)),
         (NavigationRequestKind::Hover, ResponseValue::Error(error)) => {
-            NavigationCandidate::Hover(Err(NavigationError::Server(error.code())))
+            NavigationCandidate::Hover(Err(NavigationError::Server(error.server_error())))
         }
         (
             NavigationRequestKind::Definition | NavigationRequestKind::References,
             ResponseValue::Error(error),
-        ) => NavigationCandidate::Locations(Err(NavigationError::Server(error.code()))),
+        ) => NavigationCandidate::Locations(Err(NavigationError::Server(error.server_error()))),
     }
 }
 
@@ -644,14 +644,8 @@ fn symbols_from_response(
 ) -> Result<SymbolBatch, SymbolError> {
     match value {
         ResponseValue::Result(result) => SymbolBatch::admit(kind, result, document_uri),
-        ResponseValue::Error(error) => Err(SymbolError::Server(error.code())),
+        ResponseValue::Error(error) => Err(SymbolError::Server(error.server_error())),
     }
-}
-
-/// `RequestCancelled`, `ContentModified` and `ServerCancelled`: the server
-/// dropped or outdated the reply, so the same request is worth one retry.
-const fn is_retryable_server_error(code: i32) -> bool {
-    matches!(code, -32_802..=-32_800)
 }
 
 struct RustSession {
@@ -680,6 +674,12 @@ struct RustSession {
 }
 
 impl RustSession {
+    /// Ends the pending workspace edit and drops its retry params with it.
+    fn take_workspace_edit(&mut self) -> Option<PendingWorkspaceEdit> {
+        self.workspace_edit_params = None;
+        self.pending_workspace_edit.take()
+    }
+
     fn begin_completion(
         &mut self,
         position: LspPosition,
@@ -739,11 +739,15 @@ pub(crate) enum RustDiagnosticsError {
 impl fmt::Display for RustDiagnosticsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Completion(CompletionError::Server(code))
-            | Self::Navigation(NavigationError::Server(code))
-            | Self::Symbols(SymbolError::Server(code))
-            | Self::WorkspaceEdit(WorkspaceEditError::Server(code)) => {
-                write!(formatter, "Language server reported error {code}.")
+            Self::Completion(CompletionError::Server(error))
+            | Self::Navigation(NavigationError::Server(error))
+            | Self::Symbols(SymbolError::Server(error))
+            | Self::WorkspaceEdit(WorkspaceEditError::Server(error)) => {
+                write!(
+                    formatter,
+                    "Language server reported error {}.",
+                    error.code()
+                )
             }
             _ => write!(formatter, "language diagnostics unavailable: {self:?}"),
         }
@@ -1272,7 +1276,7 @@ impl RustDiagnostics {
                 let _ = session.client.cancel(pending.request_id);
                 self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
             }
-            if let Some(pending) = session.pending_workspace_edit.take() {
+            if let Some(pending) = session.take_workspace_edit() {
                 let _ = session.client.cancel(pending.request_id);
                 self.workspace_edit_cancellations =
                     self.workspace_edit_cancellations.saturating_add(1);
@@ -1666,7 +1670,7 @@ impl RustDiagnostics {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        let Some(pending) = session.pending_workspace_edit.take() else {
+        let Some(pending) = session.take_workspace_edit() else {
             return false;
         };
         match session.client.cancel(pending.request_id) {
@@ -2645,7 +2649,7 @@ impl RustDiagnostics {
                 let _ = session.client.cancel(pending.request_id);
                 self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
             }
-            if let Some(pending) = session.pending_workspace_edit.take() {
+            if let Some(pending) = session.take_workspace_edit() {
                 let _ = session.client.cancel(pending.request_id);
                 self.workspace_edit_cancellations =
                     self.workspace_edit_cancellations.saturating_add(1);
@@ -2762,9 +2766,7 @@ impl RustDiagnostics {
         }
         let batch = match candidate {
             Ok(batch) => batch,
-            Err(CompletionError::Server(code))
-                if !pending.retried && is_retryable_server_error(code) =>
-            {
+            Err(CompletionError::Server(error)) if !pending.retried && error.retryable() => {
                 let retried = session.begin_completion(pending.position, pending.stamp);
                 return self.record_retry(retried, |session, request_id| {
                     session.pending_completion = Some(PendingCompletion {
@@ -2872,9 +2874,9 @@ impl RustDiagnostics {
                 session.navigation = None;
                 return replace_status(&mut self.status, Some(Arc::from(kind.empty_status())));
             }
-            NavigationCandidate::Hover(Err(NavigationError::Server(code)))
-            | NavigationCandidate::Locations(Err(NavigationError::Server(code)))
-                if !pending.retried && is_retryable_server_error(code) =>
+            NavigationCandidate::Hover(Err(NavigationError::Server(error)))
+            | NavigationCandidate::Locations(Err(NavigationError::Server(error)))
+                if !pending.retried && error.retryable() =>
             {
                 let retried = session.begin_navigation(kind, pending.position, pending.stamp);
                 return self.record_retry(retried, |session, request_id| {
@@ -2958,9 +2960,7 @@ impl RustDiagnostics {
         }
         let batch = match candidate {
             Ok(batch) => batch,
-            Err(SymbolError::Server(code))
-                if !pending.retried && is_retryable_server_error(code) =>
-            {
+            Err(SymbolError::Server(error)) if !pending.retried && error.retryable() => {
                 return self.issue_symbol_request(true).visual_changed;
             }
             Err(error) => {
@@ -3057,8 +3057,8 @@ impl RustDiagnostics {
         }
         let wire = match (candidate, params) {
             (Ok(wire), _) => wire,
-            (Err(WorkspaceEditError::Server(code)), Some(params))
-                if !pending.retried && is_retryable_server_error(code) =>
+            (Err(WorkspaceEditError::Server(error)), Some(params))
+                if !pending.retried && error.retryable() =>
             {
                 let retried = session.begin_request(pending.kind.method(), &params, pending.stamp);
                 return self.record_retry(retried, |session, request_id| {
@@ -3109,7 +3109,7 @@ impl RustDiagnostics {
             .pending_workspace_edit
             .is_some_and(|pending| pending.request_id == id);
         if matches {
-            session.pending_workspace_edit = None;
+            session.take_workspace_edit();
         }
         self.stale_workspace_edits = self.stale_workspace_edits.saturating_add(1);
         false
@@ -3212,7 +3212,7 @@ impl RustDiagnostics {
             session.navigation = None;
             session.pending_symbols = None;
             session.symbols = None;
-            session.pending_workspace_edit = None;
+            session.take_workspace_edit();
             self.workspace_edit_preparation = None;
             return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
         }
@@ -3246,7 +3246,7 @@ impl RustDiagnostics {
         session.navigation = None;
         session.pending_symbols = None;
         session.symbols = None;
-        session.pending_workspace_edit = None;
+        session.take_workspace_edit();
         self.workspace_edit_preparation = None;
         self.restarts = self.restarts.saturating_add(1);
         replace_status(
@@ -3264,7 +3264,7 @@ impl RustDiagnostics {
             session.navigation = None;
             session.pending_symbols = None;
             session.symbols = None;
-            session.pending_workspace_edit = None;
+            session.take_workspace_edit();
         }
         self.workspace_edit_preparation = None;
         LanguageEffect {
@@ -3497,7 +3497,7 @@ fn test_session(
 fn workspace_edit_wire(value: ResponseValue<'_>) -> Result<WorkspaceEditWire, WorkspaceEditError> {
     match value {
         ResponseValue::Result(result) => WorkspaceEditWire::capture(result),
-        ResponseValue::Error(error) => Err(WorkspaceEditError::Server(error.code())),
+        ResponseValue::Error(error) => Err(WorkspaceEditError::Server(error.server_error())),
     }
 }
 

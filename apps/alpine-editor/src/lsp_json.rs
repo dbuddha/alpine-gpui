@@ -18,6 +18,9 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 4_096;
 const MAX_PENDING_REQUESTS: usize = 64;
 const APPLY_EDIT_DECLINED: &str =
     r#"{"applied":false,"failureReason":"Alpine Editor does not apply server edits yet."}"#;
+const REQUEST_CANCELLED: i32 = -32_800;
+const CONTENT_MODIFIED: i32 = -32_801;
+const SERVER_CANCELLED: i32 = -32_802;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestStamp {
@@ -215,8 +218,75 @@ pub(crate) struct RemoteError<'a> {
 }
 
 impl RemoteError<'_> {
-    pub(crate) const fn code(&self) -> i32 {
+    pub(crate) fn server_error(&self) -> ServerError {
+        let retryable = match self.code {
+            REQUEST_CANCELLED | CONTENT_MODIFIED => true,
+            SERVER_CANCELLED => self.data.is_some_and(retrigger_requested),
+            _ => false,
+        };
+        ServerError {
+            code: self.code,
+            retryable,
+        }
+    }
+}
+
+/// A server's error reply: its code, and whether the server dropped or
+/// outdated the reply so that one retry of the same request is allowed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ServerError {
+    code: i32,
+    retryable: bool,
+}
+
+impl ServerError {
+    pub(crate) const fn code(self) -> i32 {
         self.code
+    }
+
+    pub(crate) const fn retryable(self) -> bool {
+        self.retryable
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(code: i32, retryable: bool) -> Self {
+        Self { code, retryable }
+    }
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "server error {}", self.code)
+    }
+}
+
+/// `ServerCancelled` allows a retry only with `retriggerRequest: true`.
+fn retrigger_requested(data: &RawValue) -> bool {
+    let mut deserializer = serde_json::Deserializer::from_str(data.get());
+    (&mut deserializer)
+        .deserialize_map(RetriggerVisitor)
+        .unwrap_or(false)
+}
+
+struct RetriggerVisitor;
+
+impl<'de> Visitor<'de> for RetriggerVisitor {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerCancelled error data")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut retrigger = false;
+        while let Some(key) = map.next_key::<&str>()? {
+            if key == "retriggerRequest" {
+                retrigger = map.next_value()?;
+            } else {
+                let _: IgnoredAny = map.next_value()?;
+            }
+        }
+        Ok(retrigger)
     }
 }
 
@@ -1060,6 +1130,50 @@ mod tests {
             Err(ProtocolError::InvalidEnvelope)
         );
         Ok(())
+    }
+
+    #[test]
+    fn only_dropped_or_retriggered_error_replies_are_retryable() {
+        for (error, code, retryable) in [
+            (r#"{"code":-32800,"message":"x"}"#, -32_800, true),
+            (r#"{"code":-32801,"message":"x"}"#, -32_801, true),
+            (r#"{"code":-32802,"message":"x"}"#, -32_802, false),
+            (
+                r#"{"code":-32802,"message":"x","data":{"retriggerRequest":false}}"#,
+                -32_802,
+                false,
+            ),
+            (
+                r#"{"code":-32802,"message":"x","data":{"other":1,"retriggerRequest":true}}"#,
+                -32_802,
+                true,
+            ),
+            (
+                r#"{"code":-32802,"message":"x","data":"retrigger"}"#,
+                -32_802,
+                false,
+            ),
+            (
+                r#"{"code":-32603,"message":"x","data":{"retriggerRequest":true}}"#,
+                -32_603,
+                false,
+            ),
+            (r#"{"code":-32799,"message":"x"}"#, -32_799, false),
+            (r#"{"code":-32803,"message":"x"}"#, -32_803, false),
+        ] {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":3,"error":{error}}}"#);
+            let ParsedMessage::Response {
+                value: ResponseValue::Error(remote),
+                ..
+            } = protocol_ok(parse_message(body.as_bytes()))
+            else {
+                unreachable!("{error} is an error response");
+            };
+            let server = remote.server_error();
+            assert_eq!(server.code(), code, "{error}");
+            assert_eq!(server.retryable(), retryable, "{error}");
+            assert_eq!(server.to_string(), format!("server error {code}"));
+        }
     }
 
     #[test]

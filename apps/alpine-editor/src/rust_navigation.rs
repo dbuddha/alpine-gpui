@@ -12,6 +12,7 @@ use alpine_text::BufferSnapshot;
 use serde_json::{Value, value::RawValue};
 
 use crate::{
+    lsp_json::ServerError,
     lsp_language::{LspRange, parse_range},
     rust_completion::byte_range,
 };
@@ -29,7 +30,7 @@ pub(crate) const MAX_LOCATION_RETAINED_BYTES: usize = 131_072;
 pub(crate) enum NavigationError {
     WireTooLarge,
     Malformed,
-    Server(i32),
+    Server(ServerError),
     HoverTooLarge,
     TooManyHoverLines,
     UriTooLong,
@@ -49,7 +50,10 @@ pub(crate) enum NavigationError {
 
 impl fmt::Display for NavigationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Rust navigation rejected input: {self:?}")
+        match self {
+            Self::Server(error) => write!(formatter, "{error}"),
+            _ => write!(formatter, "Rust navigation rejected input: {self:?}"),
+        }
     }
 }
 

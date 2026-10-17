@@ -14,6 +14,7 @@ struct InjectedError {
     method: String,
     code: i64,
     remaining: u32,
+    data: Option<String>,
 }
 
 struct PhaseTrace {
@@ -60,7 +61,14 @@ fn run() -> io::Result<()> {
                 method: next_argument(&mut rest)?.clone(),
                 code: parse_argument(next_argument(&mut rest)?)?,
                 remaining: parse_argument(next_argument(&mut rest)?)?,
+                data: None,
             }),
+            "--data" => {
+                let data = next_argument(&mut rest)?.clone();
+                if let Some(injection) = injected.last_mut() {
+                    injection.data = Some(data);
+                }
+            }
             "--apply-edit" => apply_edit = true,
             _ => {}
         }
@@ -95,10 +103,14 @@ fn run() -> io::Result<()> {
                 injection.remaining -= 1;
                 let id = json_id(message)?;
                 errored_ids.push(id);
+                let data = injection
+                    .data
+                    .as_ref()
+                    .map_or_else(String::new, |data| format!(r#","data":{data}"#));
                 write_frame(
                     &mut output,
                     &format!(
-                        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":{},"message":"injected"}}}}"#,
+                        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":{},"message":"injected"{data}}}}}"#,
                         injection.code
                     ),
                 )?;
