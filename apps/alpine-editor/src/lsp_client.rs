@@ -9,8 +9,8 @@ use crate::{
     lsp_json::{LspPeer, OutboundMessage, PeerEvent, PeerSnapshot, ProtocolError, RequestStamp},
     lsp_process::{
         InputSequence, LanguageServerProcess, ProcessEpoch, ProcessEvent, ProcessFailure,
-        ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStream, ProcessWake, StopReason,
-        SubmitError, SupervisorStopped,
+        ProcessIdentity, ProcessSnapshot, ProcessSpec, ProcessStop, ProcessStream, ProcessWake,
+        StopReason, SubmitError, SupervisorStopped,
     },
 };
 
@@ -281,9 +281,14 @@ impl LspClient {
         }
     }
 
+    /// Stops the server without waiting; the caller finishes the stop.
+    pub(crate) fn begin_stop(&mut self) -> ProcessStop {
+        let farewell = self.take_farewell();
+        self.process.begin_stop(farewell.as_deref())
+    }
+
     pub(crate) fn shutdown(&mut self) -> LspClientSnapshot {
-        let farewell = self.started.then(|| self.peer.farewell().ok()).flatten();
-        self.started = false;
+        let farewell = self.take_farewell();
         let process = match farewell {
             Some(bytes) => self.process.shutdown_with_farewell(&bytes),
             None => self.process.shutdown(),
@@ -294,6 +299,12 @@ impl LspClient {
             framing: self.framer.snapshot(),
             peer: self.peer.snapshot(),
         }
+    }
+
+    fn take_farewell(&mut self) -> Option<Box<[u8]>> {
+        let farewell = self.started.then(|| self.peer.farewell().ok()).flatten();
+        self.started = false;
+        farewell
     }
 
     fn require_started(&self) -> Result<(), LspClientError> {
