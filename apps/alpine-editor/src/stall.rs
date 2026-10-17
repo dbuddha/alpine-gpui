@@ -17,7 +17,7 @@ use std::{
         },
         mpsc,
     },
-    thread::{self, JoinHandle},
+    thread::{self, JoinHandle, Thread},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,6 +33,7 @@ const MIN_GAP: Duration = Duration::from_secs(30);
 const SAMPLER: &str = "/usr/bin/sample";
 const SAMPLE_BOUND: Duration = Duration::from_secs(10);
 const SAMPLE_READ_BYTES: u64 = 1 << 20;
+const SAMPLE_ERROR_BYTES: u64 = 512;
 const POLL: Duration = Duration::from_millis(20);
 // Room kept under the cap for the closing duration line.
 const END_RESERVE: usize = 64;
@@ -162,6 +163,10 @@ struct Shared {
     dispatch: AtomicU64,
     // End micros plus one of the watched dispatch, 0 until it ends.
     ended: AtomicU64,
+    // A long dispatch no check saw, and its end micros. `end` fills the slot
+    // only when it is empty; the watchdog empties it.
+    missed: AtomicU64,
+    missed_end: AtomicU64,
     parked: AtomicBool,
     stop: AtomicBool,
     wakeups: AtomicU64,
@@ -174,6 +179,8 @@ impl Shared {
             epoch: Instant::now(),
             dispatch: AtomicU64::new(0),
             ended: AtomicU64::new(0),
+            missed: AtomicU64::new(0),
+            missed_end: AtomicU64::new(0),
             parked: AtomicBool::new(true),
             stop: AtomicBool::new(false),
             wakeups: AtomicU64::new(0),
@@ -200,11 +207,28 @@ struct Inner {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     word: u64,
+    threshold: u64,
+}
+
+/// Lets the crash hook stop the watchdog, so a panic held open while the
+/// hook runs is not logged as a stall.
+#[derive(Clone)]
+pub(crate) struct StopHandle {
+    shared: Arc<Shared>,
+    thread: Thread,
+}
+
+impl StopHandle {
+    pub(crate) fn stop(&self) {
+        self.shared.stop.store(true, SeqCst);
+        self.thread.unpark();
+    }
 }
 
 impl Watch {
     /// Starts the watchdog thread, parked until the first dispatch.
     pub(crate) fn start(config: Config) -> io::Result<Self> {
+        let threshold = u64::try_from(config.threshold.as_micros()).unwrap_or(u64::MAX);
         let shared = Arc::new(Shared::new());
         let watched = Arc::clone(&shared);
         let thread = thread::Builder::new()
@@ -215,7 +239,16 @@ impl Watch {
                 shared,
                 thread: Some(thread),
                 word: 0,
+                threshold,
             }),
+        })
+    }
+
+    pub(crate) fn stop_handle(&self) -> Option<StopHandle> {
+        let inner = self.inner.as_ref()?;
+        Some(StopHandle {
+            shared: Arc::clone(&inner.shared),
+            thread: inner.thread.as_ref()?.thread().clone(),
         })
     }
 
@@ -235,14 +268,26 @@ impl Watch {
         }
     }
 
-    /// Marks the dispatch's end; reads the clock only if the watchdog asked.
+    /// Marks the dispatch's end: a swap and a clock read. A long dispatch
+    /// the watchdog never watched goes to it through the missed slot.
     pub(crate) fn end(&mut self) {
         let Some(inner) = self.inner.as_ref() else {
             return;
         };
         let shared = &inner.shared;
-        if shared.dispatch.swap(inner.word & !RUNNING, SeqCst) & WATCHED != 0 {
-            shared.ended.store(shared.micros() + 1, SeqCst);
+        let previous = shared.dispatch.swap(inner.word & !RUNNING, SeqCst);
+        let end = shared.micros();
+        if previous & WATCHED != 0 {
+            shared.ended.store(end + 1, SeqCst);
+        } else if end.saturating_sub(inner.word >> START_SHIFT) >= inner.threshold
+            && shared.missed.load(SeqCst) == 0
+        {
+            shared.missed_end.store(end, SeqCst);
+            shared.missed.store(inner.word, SeqCst);
+            shared.parked.store(false, SeqCst);
+            if let Some(thread) = inner.thread.as_ref() {
+                thread.thread().unpark();
+            }
         }
     }
 }
@@ -311,10 +356,12 @@ impl<'a> Watcher<'a> {
 
     fn step(&mut self) -> Next {
         let word = self.shared.dispatch.load(SeqCst);
+        // Read before any log I/O, so a slow write cannot age this snapshot.
+        let now = self.shared.epoch.elapsed();
+        self.take_missed();
         if !self.resolve(word) {
             return Next::Sleep(POLL);
         }
-        let now = self.shared.epoch.elapsed();
         let threshold = self.config.threshold;
         let pending = self
             .pending
@@ -329,25 +376,21 @@ impl<'a> Watcher<'a> {
                     state,
                 });
             }
-        } else if word & RUNNING != 0 {
+        } else if word & RUNNING != 0
+            && self
+                .shared
+                .dispatch
+                .compare_exchange(word, word | WATCHED, SeqCst, SeqCst)
+                .is_ok()
+        {
+            // A failed exchange means it ended; `end` reports it if long.
             let elapsed = now.saturating_sub(start_of(word));
-            let watched =
-                self.shared
-                    .dispatch
-                    .compare_exchange(word, word | WATCHED, SeqCst, SeqCst);
-            if watched.is_err() {
-                // It ended after the load, so its end time is about now.
-                if elapsed >= threshold {
-                    self.log_ended(word, elapsed);
-                }
+            let state = if elapsed >= threshold {
+                self.detect(word, elapsed)
             } else {
-                let state = if elapsed >= threshold {
-                    self.detect(word, elapsed)
-                } else {
-                    State::Watching
-                };
-                self.pending = Some(Pending { word, state });
-            }
+                State::Watching
+            };
+            self.pending = Some(Pending { word, state });
         }
         let next = match self.pending.as_ref() {
             Some(Pending {
@@ -355,7 +398,8 @@ impl<'a> Watcher<'a> {
                 state: State::Watching,
             }) => {
                 let due = start_of(*word) + threshold;
-                Next::Sleep(due.saturating_sub(now).min(self.config.interval))
+                let left = due.saturating_sub(self.shared.epoch.elapsed());
+                Next::Sleep(left.min(self.config.interval))
             }
             None if word == self.seen => Next::Park,
             _ => Next::Sleep(self.config.interval),
@@ -381,6 +425,17 @@ impl<'a> Watcher<'a> {
             thread::park();
             shared.wakeups.fetch_add(1, Relaxed);
         }
+    }
+
+    /// Logs a long dispatch that `end` reported because no check saw it.
+    fn take_missed(&mut self) {
+        let word = self.shared.missed.load(SeqCst);
+        if word == 0 {
+            return;
+        }
+        let end = Duration::from_micros(self.shared.missed_end.load(SeqCst));
+        self.shared.missed.store(0, SeqCst);
+        self.log_ended(word & !RUNNING, end.saturating_sub(start_of(word)));
     }
 
     /// Closes the pending dispatch once it has ended. False while its end
@@ -413,6 +468,9 @@ impl<'a> Watcher<'a> {
 
     /// Logs a stall still running, with its stack, unless rate-limited.
     fn detect(&mut self, word: u64, elapsed: Duration) -> State {
+        if self.shared.stop.load(SeqCst) {
+            return State::Suppressed;
+        }
         self.shared.stalls.fetch_add(1, Relaxed);
         if !self.admit() {
             return State::Suppressed;
@@ -420,6 +478,7 @@ impl<'a> Watcher<'a> {
         let Ok(mut record) = self.record(word, elapsed) else {
             return State::Suppressed;
         };
+        let running = self.shared.dispatch.load(SeqCst) == word | WATCHED;
         let stack = match capture_stack(
             &self.config.sampler,
             self.config.sample_bound,
@@ -428,12 +487,15 @@ impl<'a> Watcher<'a> {
             Ok(stack) => format!("main thread stack:\n{stack}"),
             Err(reason) => format!("main thread stack: unavailable ({reason})\n"),
         };
-        let _ = record.append(&stack);
+        let _ = record.append(&format!("running_at_sample: {running}\n{stack}"));
         State::Logged(record)
     }
 
     /// Logs a stall that ended before the watchdog saw it pass the threshold.
     fn log_ended(&mut self, word: u64, duration: Duration) {
+        if self.shared.stop.load(SeqCst) {
+            return;
+        }
         self.shared.stalls.fetch_add(1, Relaxed);
         if self.admit()
             && let Ok(mut record) = self.record(word, duration)
@@ -534,15 +596,17 @@ fn capture_stack(
         .ok_or_else(|| String::from("no sampler"))?;
     let mut child = Command::new(program)
         .args(leading)
-        .args([&std::process::id().to_string(), "1", "-file", "/dev/stdout"])
+        .args([&std::process::id().to_string(), "1", "10"])
+        .args(["-file", "/dev/stdout"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("spawn failed: {:?}", error.kind()))?;
     let deadline = Instant::now() + bound;
     let (sender, receiver) = mpsc::sync_channel(1);
-    let reader = child.stdout.take().map(|mut output| {
+    let pipes = child.stdout.take().zip(child.stderr.take());
+    let reader = pipes.map(|(mut output, errors)| {
         thread::Builder::new()
             .name(String::from("alpine-stall-sample"))
             .spawn(move || {
@@ -552,7 +616,10 @@ fn capture_stack(
                     .read_to_end(&mut bytes);
                 // Drain the rest so a long report cannot block the sampler.
                 let _ = io::copy(&mut output, &mut io::sink());
-                let _ = sender.send(bytes);
+                // Read last: one that fills stderr is killed at the bound.
+                let mut error = Vec::new();
+                let _ = errors.take(SAMPLE_ERROR_BYTES).read_to_end(&mut error);
+                let _ = sender.send((bytes, error));
             })
     });
     if !matches!(reader, Some(Ok(_))) {
@@ -572,14 +639,25 @@ fn capture_stack(
         }
     };
     let status = finish(&mut child, deadline, stop);
-    let bytes = outcome?;
+    let (bytes, error) = outcome?;
+    let error = String::from_utf8_lossy(&error)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let reason = |what: &str| {
+        if error.is_empty() {
+            what.to_owned()
+        } else {
+            format!("{what}: {error}")
+        }
+    };
     match status {
         Some(status) if status.success() => {}
-        Some(status) => return Err(format!("sampler failed: {status}")),
+        Some(status) => return Err(reason(&format!("sampler failed: {status}"))),
         None => return Err(cut_short(bound, stop)),
     }
     main_thread_stack(&String::from_utf8_lossy(&bytes))
-        .ok_or_else(|| String::from("no main thread in the report"))
+        .ok_or_else(|| reason("no main thread in the report"))
 }
 
 fn cut_short(bound: Duration, stop: &AtomicBool) -> String {

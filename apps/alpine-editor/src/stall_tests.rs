@@ -1,16 +1,17 @@
 use std::{
     ffi::OsString,
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    thread,
-    time::{Duration, Instant},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use super::{
-    Config, KIND, KIND_SHIFT, Kind, Pending, RUNNING, SAMPLER, START_SHIFT, Shared, State, WATCHED,
-    Watch, Watcher, capture_stack, main_thread_stack,
+    Config, KIND, KIND_SHIFT, KINDS, Kind, Pending, RUNNING, SAMPLER, START_SHIFT, Shared, State,
+    WATCHED, Watch, Watcher, capture_stack, main_thread_stack,
 };
 use crate::logs::{self, KEPT_LOGS, MAX_LOG_BYTES};
 
@@ -64,6 +65,86 @@ fn config(home: &Path, threshold_ms: u64, interval_ms: u64) -> Config {
         sampler: vec![home.join("no-such-sampler").into_os_string()],
         sample_bound: SPAWN_BOUND,
     }
+}
+
+impl Config {
+    /// For other modules' tests: `threshold`, a 10 ms interval, no sampler.
+    pub(crate) fn for_tests(home: &Path, threshold: Duration) -> Self {
+        Self {
+            threshold,
+            ..config(home, 0, 10)
+        }
+    }
+}
+
+impl Watch {
+    pub(crate) fn watchdog_exited(&self) -> bool {
+        self.inner
+            .as_ref()
+            .and_then(|inner| inner.thread.as_ref())
+            .is_some_and(JoinHandle::is_finished)
+    }
+}
+
+/// A FIFO build identity, held open for writing: each log blocks reading
+/// it until `release` writes one whole identity.
+struct SlowIdentity {
+    path: PathBuf,
+    writer: Option<fs::File>,
+}
+
+impl SlowIdentity {
+    fn new(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        if !Command::new("/usr/bin/mkfifo")
+            .arg(path)
+            .status()?
+            .success()
+        {
+            return Err("mkfifo failed".into());
+        }
+        // Read and write, so this open never waits for a reader.
+        let writer = fs::OpenOptions::new().read(true).write(true).open(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            writer: Some(writer),
+        })
+    }
+
+    fn release(&mut self) -> std::io::Result<()> {
+        // Exactly the identity read cap, so one read takes it all.
+        let identity = format!("{:<2047}\n", "revision = \"fifo\"");
+        match self.writer.as_mut() {
+            Some(writer) => writer.write_all(identity.as_bytes()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for SlowIdentity {
+    fn drop(&mut self) {
+        // Later reads find a plain file; a blocked read sees end of file.
+        let _ = fs::remove_file(&self.path);
+        let _ = fs::write(&self.path, "revision = \"plain\"\n");
+        self.writer.take();
+    }
+}
+
+fn stamp_of(path: &Path) -> Option<u64> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| logs::stamp(name, KIND))
+        .map(|stamp| stamp.0)
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// Waits past the second in `path`'s name, so the next log cannot collide.
+fn next_second(path: &Path) -> Result<(), String> {
+    wait_until("the next second", || stamp_of(path) < Some(unix_now()))
 }
 
 // Run through sh: a first exec of a new file waits on a system scan.
@@ -178,9 +259,12 @@ fn a_dispatch_past_the_threshold_writes_one_log_with_its_duration() -> TestResul
         ..config(&home, 50, 25)
     })?;
 
-    stall(&mut watch, Kind::Keyboard)?;
+    watch.begin(Kind::Keyboard);
     wait_until("the stall log", || stall_logs(&home).len() == 1)?;
     let path = stall_logs(&home).pop().ok_or("stall log")?;
+    // Held open until the stack is in, so the sample saw it running.
+    wait_until("the stack", || read(&path).contains("handle_key"))?;
+    watch.end();
     let text = finished(&path)?;
     drop(watch);
 
@@ -197,9 +281,9 @@ fn a_dispatch_past_the_threshold_writes_one_log_with_its_duration() -> TestResul
         String::from("\ndispatch: Keyboard\n"),
         String::from("\nthreshold_ms: 50\n"),
         String::from("\nbuild identity:\nrevision = \"0123abc\"\n"),
-        String::from("\nmain thread stack:\n"),
+        String::from("\nrunning_at_sample: true\nmain thread stack:\n"),
         String::from("com.apple.main-thread"),
-        format!("args: {pid} 1 -file /dev/stdout\n"),
+        format!("args: {pid} 1 10 -file /dev/stdout\n"),
         String::from("handle_key  (in alpine-editor)"),
     ] {
         assert!(text.contains(&expected), "missing {expected:?} in {text}");
@@ -391,18 +475,7 @@ fn one_log_per_stall_and_none_inside_the_gap() -> TestResult {
     let first = stall_logs(&home).pop().ok_or("first log")?;
     finished(&first)?;
     // A second log would need a new second in its name.
-    let stamp = |path: &Path| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| logs::stamp(name, KIND))
-            .map(|stamp| stamp.0)
-    };
-    let unix_now = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs())
-    };
-    wait_until("the next second", || stamp(&first) < Some(unix_now()))?;
+    next_second(&first)?;
     stall(&mut watch, Kind::Pointer)?;
     wait_until("the watchdog to park", || parked(&watch))?;
 
@@ -460,6 +533,139 @@ fn a_stall_that_ends_between_checks_is_still_logged() -> TestResult {
     }
     fs::remove_dir_all(home)?;
     Ok(())
+}
+
+#[test]
+fn a_long_dispatch_no_check_saw_is_logged_once_at_its_end() -> TestResult {
+    let home = scratch("unseen")?;
+    let path = home.join("identity.fifo");
+    let mut watch = Watch::start(Config {
+        identity: Some(path.clone()),
+        ..config(&home, 30, 10)
+    })?;
+    let mut identity = SlowIdentity::new(&path)?;
+
+    // The watchdog logs a first stall and blocks reading the identity.
+    watch.begin(Kind::Keyboard);
+    wait_until("the first log", || stall_logs(&home).len() == 1)?;
+    watch.end();
+    let first = stall_logs(&home).pop().ok_or("first log")?;
+    next_second(&first)?;
+    // So no check sees this one run past the threshold and end.
+    watch.begin(Kind::Menu);
+    thread::sleep(Duration::from_millis(100));
+    watch.end();
+    identity.release()?;
+    identity.release()?;
+    wait_until("the second log", || stall_logs(&home).len() == 2)?;
+    let second = stall_logs(&home)
+        .into_iter()
+        .find(|path| *path != first)
+        .ok_or("second log")?;
+    let text = finished(&second)?;
+    finished(&first)?;
+    wait_until("the watchdog to park", || parked(&watch))?;
+
+    assert_eq!(stalls(&watch), 2);
+    drop(identity);
+    drop(watch);
+    assert_eq!(stall_logs(&home).len(), 2);
+    for expected in [
+        "\ndispatch: Menu\n",
+        "\nmain thread stack: not captured, it had ended\n",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in {text}");
+    }
+    let duration = field(&text, "duration_ms")?;
+    assert!(duration >= 100, "{duration}");
+    assert_eq!(field(&text, "elapsed_at_detection_ms")?, duration);
+    fs::remove_dir_all(home)?;
+    Ok(())
+}
+
+#[test]
+fn a_short_dispatch_during_slow_log_io_is_not_a_stall() -> TestResult {
+    let home = scratch("slow-io")?;
+    let path = home.join("identity.fifo");
+    let mut watch = Watch::start(Config {
+        identity: Some(path.clone()),
+        ..config(&home, 500, 10)
+    })?;
+    let mut identity = SlowIdentity::new(&path)?;
+
+    watch.begin(Kind::Keyboard);
+    wait_until("the first log", || stall_logs(&home).len() == 1)?;
+    watch.end();
+    let first = stall_logs(&home).pop().ok_or("first log")?;
+    next_second(&first)?;
+    // Long and unseen: logging it blocks on the identity a second time.
+    watch.begin(Kind::Menu);
+    thread::sleep(Duration::from_millis(600));
+    watch.end();
+    // The watchdog loads this one as running just before that blocked log.
+    watch.begin(Kind::Pointer);
+    identity.release()?;
+    wait_until("the second log", || stall_logs(&home).len() == 2)?;
+    watch.end();
+    // An elapsed time read after the blocked log would pass the threshold.
+    thread::sleep(Duration::from_millis(600));
+    identity.release()?;
+    for log in stall_logs(&home) {
+        finished(&log)?;
+    }
+    wait_until("the watchdog to park", || parked(&watch))?;
+
+    assert_eq!(stalls(&watch), 2, "the short dispatch was logged");
+    drop(identity);
+    drop(watch);
+    let logs = stall_logs(&home);
+    assert_eq!(logs.len(), 2);
+    assert!(
+        logs.iter()
+            .all(|log| !read(log).contains("dispatch: Pointer"))
+    );
+    fs::remove_dir_all(home)?;
+    Ok(())
+}
+
+#[test]
+fn a_failing_sampler_leaves_its_reason_in_the_log() -> TestResult {
+    let home = scratch("sampler-error")?;
+    let script = "echo 'sample: not permitted' >&2\n\
+                  /usr/bin/yes denied | /usr/bin/head -c 4000 >&2\nexit 1\n";
+    let sampler = fake_sampler(&home, script)?;
+    let mut watch = Watch::start(Config {
+        sampler,
+        ..config(&home, 30, 10)
+    })?;
+
+    stall(&mut watch, Kind::Focus)?;
+    wait_until("the stall log", || stall_logs(&home).len() == 1)?;
+    let path = stall_logs(&home).pop().ok_or("stall log")?;
+    let text = finished(&path)?;
+    drop(watch);
+
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("main thread stack:"))
+        .ok_or("no stack line")?;
+    let reason = "main thread stack: unavailable (sampler failed: exit status: 1: \
+                  sample: not permitted denied denied";
+    assert!(line.starts_with(reason), "{line}");
+    assert!(line.len() <= 512 + 80, "{} bytes", line.len());
+    fs::remove_dir_all(home)?;
+    Ok(())
+}
+
+#[test]
+fn every_kind_names_itself() {
+    for (index, kind) in KINDS.into_iter().enumerate() {
+        assert_eq!(kind as usize, index + 1, "{kind:?} is out of order");
+        let word = ((kind as u64) << KIND_SHIFT) | RUNNING;
+        assert_eq!(Kind::name(word), format!("{kind:?}"));
+    }
+    assert_eq!(KINDS.len(), Kind::WorkerWorkspaceEditPublication as usize);
+    assert_eq!(Kind::name(RUNNING), "unknown");
 }
 
 #[test]

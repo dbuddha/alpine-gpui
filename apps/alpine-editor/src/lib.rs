@@ -968,6 +968,9 @@ fn run_native(app: EditorApp, hook: &crash::CrashHook) -> Result<(), RuntimeErro
         Ok(watch) => app.stall = watch,
         Err(error) => eprintln!("alpine-editor: no stall log: {error}"),
     }
+    if let Some(handle) = app.stall.stop_handle() {
+        hook.attach_stall(handle);
+    }
     app.adopt_discovered_language_server();
     let capture = dogfood_diagnostic::CaptureController::from_environment()
         .map_err(|error| dogfood_diagnostic::capture_surface_error(&error))?;

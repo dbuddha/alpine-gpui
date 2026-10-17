@@ -20,6 +20,7 @@ use std::{
 use crate::{
     logs,
     recovery::{self, FlushHandle, FlushOutcome},
+    stall,
 };
 
 const KIND: &str = "crash";
@@ -69,6 +70,15 @@ impl CrashHook {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(handle);
     }
+
+    /// Lets the hook stop the stall watchdog before anything else.
+    pub(crate) fn attach_stall(&self, handle: stall::StopHandle) {
+        *self
+            .state
+            .stall
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(handle);
+    }
 }
 
 struct CrashReport {
@@ -105,6 +115,7 @@ struct State {
     home: Option<OsString>,
     identity: Option<PathBuf>,
     recovery: Mutex<Option<FlushHandle>>,
+    stall: Mutex<Option<stall::StopHandle>>,
     running: AtomicBool,
     flush_bound: Duration,
     wait_bound: Duration,
@@ -130,6 +141,7 @@ impl State {
             home,
             identity,
             recovery: Mutex::new(None),
+            stall: Mutex::new(None),
             running: AtomicBool::new(false),
             flush_bound,
             wait_bound,
@@ -139,6 +151,10 @@ impl State {
     /// Flushes recovery, then writes the log. A panic that arrives while this
     /// runs only waits for it, so the abort that follows cannot cut it short.
     fn record(&self, report: &CrashReport) -> Option<io::Result<PathBuf>> {
+        // The panicking dispatch stays open while this runs; never a stall.
+        if let Some(stall) = recovery::try_lock(&self.stall).and_then(|stall| stall.clone()) {
+            stall.stop();
+        }
         let Some(_entry) = self.enter() else {
             self.wait_for_owner();
             return None;

@@ -14,6 +14,7 @@ use crate::session::{
     SESSION_NODE_CAPACITY, SESSION_PANE_CAPACITY, SessionFileTree, SessionNode, SessionPane,
     SessionPanes, SessionState, SessionTab,
 };
+use crate::stall;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -355,5 +356,63 @@ fn a_busy_journal_is_logged_and_never_blocks_the_log() -> TestResult {
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(fs::read_to_string(path)?.contains("\nrecovery: not flushed, busy for "));
     assert!(!journal.exists());
+    Ok(())
+}
+
+#[test]
+fn crash_pruning_leaves_stall_logs_alone() -> TestResult {
+    let home = scratch("keeps-stall")?;
+    let logs = logs_in(&home);
+    fs::create_dir_all(&logs)?;
+    for unix in 1_000..1_014 {
+        fs::write(logs.join(format!("crash-{unix}-77.log")), "old")?;
+        fs::write(logs.join(format!("stall-{unix}-77.log")), "stall")?;
+    }
+
+    record(&state(&home), "boom").ok_or("log")?;
+
+    assert_eq!(crash_logs(&home)?.len(), KEPT_LOGS);
+    for unix in 1_000..1_014 {
+        let stall = logs.join(format!("stall-{unix}-77.log"));
+        assert!(stall.is_file(), "{} was removed", stall.display());
+    }
+    fs::remove_dir_all(home)?;
+    Ok(())
+}
+
+#[test]
+fn a_panic_stops_the_stall_watch_before_its_dispatch_looks_stalled() -> TestResult {
+    let home = scratch("panic-stall")?;
+    let threshold = Duration::from_millis(250);
+    let mut watch = stall::Watch::start(stall::Config::for_tests(&home, threshold))?;
+    let hook = super::CrashHook {
+        state: std::sync::Arc::new(state(&home)),
+    };
+    hook.attach_stall(watch.stop_handle().ok_or("no stop handle")?);
+
+    // The panicking dispatch stays open while the hook runs, then past it.
+    watch.begin(stall::Kind::Keyboard);
+    record(&hook.state, "boom").ok_or("crash log")?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !watch.watchdog_exited() {
+        assert!(Instant::now() < deadline, "the watchdog kept running");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(threshold + Duration::from_millis(50));
+    watch.end();
+    drop(watch);
+
+    let stall_logs = fs::read_dir(logs_in(&home))?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| logs::stamp(name, "stall").is_some())
+        })
+        .count();
+    assert_eq!(stall_logs, 0);
+    assert_eq!(crash_logs(&home)?.len(), 1);
+    fs::remove_dir_all(home)?;
     Ok(())
 }
