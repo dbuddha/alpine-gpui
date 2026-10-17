@@ -71,7 +71,8 @@ and destroy elements before revoking the handler.
 - Preserve blended painter order. A pixel hash alone proves nothing; use
   semantic and readback checks.
 - The release profile is `panic = "abort"`: `catch_unwind` protects only debug
-  and test builds.
+  and test builds. The editor's panic hook flushes recovery, then writes
+  `crash-<unix>-<pid>.log` (64 KiB cap, newest 10) before the abort.
 - Never mutate the process environment after threads exist.
 - Never invalidate a display link during a window close: QuartzCore's
   display-change callback can race `invalidate()` (#533). The close pauses
