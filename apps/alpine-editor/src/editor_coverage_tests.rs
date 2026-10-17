@@ -2920,6 +2920,51 @@ fn dirty_recovery_fixture(
 }
 
 #[test]
+fn quit_persists_recovery_and_session_before_stopping_servers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let document_path = root.path().join("document.rs");
+    fs::write(&document_path, "base")?;
+
+    let clean_session = root.path().join("clean").join("session-v1.bin");
+    let mut app = EditorApp::open_file(TestTextSystem, &document_path)?;
+    app.configure_persistence(clean_session.clone())?;
+    let _ = take_exit_steps();
+    drop(app);
+    assert_eq!(
+        take_exit_steps(),
+        [
+            ExitStep::RecoveryPublish,
+            ExitStep::RecoveryShutdown,
+            ExitStep::SessionSave,
+            ExitStep::ServerShutdown,
+        ],
+        "a clean quit persists recovery and session, then stops servers"
+    );
+    session::load(&clean_session)?;
+
+    let dirty_session = root.path().join("dirty").join("session-v1.bin");
+    let mut app = EditorApp::open_file(TestTextSystem, &document_path)?;
+    app.configure_persistence(dirty_session.clone())?;
+    assert!(app.replace_range(0..4, "local").document_changed);
+    let _ = take_exit_steps();
+    drop(app);
+    assert_eq!(
+        take_exit_steps(),
+        [
+            ExitStep::RecoveryPublish,
+            ExitStep::RecoveryShutdown,
+            ExitStep::ServerShutdown,
+        ],
+        "a dirty quit joins the recovery writer before stopping servers"
+    );
+    let recovered = recovery::load(&recovery::path_for_session(&dirty_session))?;
+    assert_eq!(recovered.documents.len(), 1);
+    assert_eq!(&*recovered.documents[0].local, "local");
+    Ok(())
+}
+
+#[test]
 fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = TestWorkspace::new()?;
