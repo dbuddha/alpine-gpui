@@ -8689,9 +8689,17 @@ fn scrolling_does_not_rediscover_language_servers() -> Result<(), Box<dyn Error>
         });
     }
     assert_eq!(
-        rust_diagnostics::discover_binaries_calls(),
+        runtime
+            .delegate()
+            .rust_diagnostics
+            .discovery_dispatches_for_test(),
         1,
         "language-server discovery belongs on first attach, not on every scroll"
+    );
+    assert_eq!(
+        rust_diagnostics::discover_binaries_calls(),
+        0,
+        "language-server discovery belongs off the event thread"
     );
     Ok(())
 }

@@ -13,7 +13,8 @@ invariants and product rules.
 
 ## Language intelligence (M4)
 
-Today: one server per workspace and language, hard cap 5, idle shutdown of
+Today: discovery off the main thread, one server per workspace and language,
+hard cap 5, idle shutdown of
 unattached slots, local-lexer highlighting, and the `known_defects` in
 ../AGENTS.md. Each server leads a process group; shutdown sends `shutdown`
 and `exit`, then TERMs and KILLs the group within about 0.8 s.
@@ -62,9 +63,8 @@ Slices, serial:
    waits instead of fixed 5 s loops.
 2. Event-driven supervisor: no 2 ms polling.
 3. Pool and discovery: evict the least recently used server with no visible
-   tab, a deadline thread, memory-pressure shutdown, discovery off the main
-   thread, sync only on real changes, install hints. Closes 2.1 (cold path)
-   and 2.3.
+   tab, a deadline thread, memory-pressure shutdown, sync only on real
+   changes, install hints. Closes 2.1 (cold path) and 2.3.
 4. Incremental sync and `didSave`; up to 16 open documents per server.
 5. Decoding off the main thread: typed structs, a per-turn budget, newest
    diagnostics only, progress-aware suppression, caps that truncate.

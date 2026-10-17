@@ -821,21 +821,52 @@ pub(crate) fn discover_binaries_calls() -> u64 {
     DISCOVER_BINARIES_CALLS.with(std::cell::Cell::get)
 }
 
+/// The process environment discovery reads, captured on the event thread so
+/// the discovery thread never touches the environment itself.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DiscoveryEnv {
+    pub(crate) pinned: Option<OsString>,
+    pub(crate) path: Option<OsString>,
+    pub(crate) home: Option<OsString>,
+    pub(crate) rustup_home: Option<OsString>,
+}
+
+impl DiscoveryEnv {
+    pub(crate) fn from_process(env_override: Option<&str>) -> Self {
+        Self {
+            pinned: env_override.and_then(env::var_os),
+            path: env::var_os("PATH"),
+            home: env::var_os("HOME"),
+            rustup_home: env::var_os("RUSTUP_HOME"),
+        }
+    }
+
+    fn rustup_home(&self) -> Option<PathBuf> {
+        self.rustup_home.as_ref().map(PathBuf::from).or_else(|| {
+            self.home
+                .as_ref()
+                .map(|home| PathBuf::from(home).join(".rustup"))
+        })
+    }
+}
+
 pub(crate) fn discover_binaries(
     names: &[Box<str>],
-    pinned: Option<OsString>,
     overlay: Option<&Path>,
+    environment: &DiscoveryEnv,
 ) -> Option<PathBuf> {
     #[cfg(test)]
     DISCOVER_BINARIES_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
-    if let Some(pinned) = pinned {
+    if let Some(pinned) = environment.pinned.as_ref() {
         return Some(PathBuf::from(pinned));
     }
-    let rustup_home = rustup_home_from_env();
-    let searched = env::var_os("PATH")
-        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+    let rustup_home = environment.rustup_home();
+    let searched = environment
+        .path
+        .as_ref()
+        .map(|path| env::split_paths(path).collect::<Vec<_>>())
         .unwrap_or_default();
-    let home = env::var_os("HOME").map(PathBuf::from);
+    let home = environment.home.as_ref().map(PathBuf::from);
     let fallbacks = home
         .as_ref()
         .map(|home| home.join(".cargo").join("bin"))
@@ -1092,8 +1123,8 @@ fn responds_to_version(path: &Path) -> bool {
 
 /// How long a candidate has to prove itself before discovery moves on.
 ///
-/// This runs on the main thread during startup, so an executable that never
-/// exits must not be able to stop the editor from opening.
+/// Discovery has its own thread, but an executable that never exits must not
+/// hold that thread, and the servers queued behind it, forever.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Waits for a probe to exit successfully, killing it if it overruns.
@@ -3171,8 +3202,18 @@ impl RustDiagnostics {
         self.session.as_ref().map(|session| session.generation)
     }
 
+    /// The wake the next started session will publish.
+    pub(crate) fn next_session_wake(&self) -> LanguageWake {
+        LanguageWake::new(self.next_generation.saturating_add(1))
+    }
+
     pub(crate) fn has_session(&self) -> bool {
         self.session.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_identity_for_test(&self) -> Option<LanguageIdentity> {
+        self.session.as_ref().map(|session| session.identity)
     }
 
     #[cfg(test)]
