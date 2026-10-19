@@ -3315,13 +3315,14 @@ struct PendingOpenPaths {
 
 impl PendingOpenPaths {
     /// Queues a file URL's path. Other URLs are ignored; overflow is counted.
+    // Only resolvable file paths count, whether admitted or dropped.
     fn admit(&mut self, url: &NSURL) {
-        if !url.isFileURL() {
+        let Some(path) = file_url_path(url) else {
             return;
-        }
+        };
         if self.paths.len() >= OPEN_PATHS_LIMIT {
             self.dropped = self.dropped.saturating_add(1);
-        } else if let Some(path) = file_url_path(url) {
+        } else {
             self.paths.push(path);
         }
     }
@@ -7824,7 +7825,7 @@ mod open_paths_tests {
             Some(PathBuf::from("/tmp/alpine folder"))
         );
         for other in [
-            "https://example.com/tmp/a.rs",
+            "x-remote://example.invalid/tmp/a.rs",
             "mailto:someone@example.com",
             "x-alpine:///tmp/a.rs",
             "file:relative.rs",
@@ -7854,7 +7855,7 @@ mod open_paths_tests {
             pending.admit(&*numbered(index)?);
         }
         // A non-file URL is ignored, not counted as dropped.
-        pending.admit(&*url("https://example.com/a.rs")?);
+        pending.admit(&*url("x-remote://example.invalid/a.rs")?);
         for index in 40..70 {
             pending.admit(&*numbered(index)?);
         }
