@@ -16,6 +16,7 @@ criteria:
 known_defects:
   - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays wait for S10"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
+  - "opening a folder from the menu with unsaved tabs drops them (try_open_workspace_root clears tabs and pending_recovery)"
   - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
   - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"
