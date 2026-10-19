@@ -2,6 +2,7 @@
 
 #[cfg(all(alpine_native_validation, target_os = "macos", target_arch = "aarch64"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use alpine_core::Point;
@@ -110,6 +111,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .lock()
             .map_err(|_| "AppKit callback receiver poisoned")?,
         events
+    );
+
+    // application:openURLs: before a handler, while one is busy, while idle.
+    let open_urls = [
+        "file:///tmp/alpine%20open/one.rs",
+        "https://example.com/two.rs",
+        "file:///tmp/alpine%20open/three",
+    ];
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let opened_received = Arc::clone(&opened);
+    native_validation::replay_open_urls_with_handler(&surface, &open_urls, move |event| {
+        if let Ok(mut received) = opened_received.lock() {
+            received.push(event);
+        }
+        SurfaceResponse::default()
+    })?;
+    let expected: Box<[PathBuf]> = ["/tmp/alpine open/one.rs", "/tmp/alpine open/three"]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    let opened = opened.lock().map_err(|_| "open URL receiver poisoned")?;
+    let [
+        SurfaceEvent::OpenPaths {
+            timestamp: cold,
+            paths: cold_paths,
+            dropped: 0,
+        },
+        SurfaceEvent::Wake { timestamp: wake },
+        SurfaceEvent::OpenPaths {
+            timestamp: held,
+            paths: held_paths,
+            dropped: 0,
+        },
+        SurfaceEvent::OpenPaths {
+            timestamp: idle,
+            paths: idle_paths,
+            dropped: 0,
+        },
+    ] = opened.as_slice()
+    else {
+        return Err(format!("unexpected open URL events: {opened:?}").into());
+    };
+    assert!(cold < wake && wake < held && held < idle);
+    assert_eq!([cold_paths, held_paths, idle_paths], [&expected; 3]);
+    drop(opened);
+
+    let many: Vec<String> = (0..70)
+        .map(|index| format!("file:///tmp/alpine-open/{index}.rs"))
+        .collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let bounded = Arc::new(Mutex::new(Vec::new()));
+    let bounded_received = Arc::clone(&bounded);
+    native_validation::replay_open_urls_with_handler(&surface, &many, move |event| {
+        if let SurfaceEvent::OpenPaths { paths, dropped, .. } = event
+            && let Ok(mut received) = bounded_received.lock()
+        {
+            received.push((paths.len(), dropped));
+        }
+        SurfaceResponse::default()
+    })?;
+    assert_eq!(
+        *bounded.lock().map_err(|_| "bounded receiver poisoned")?,
+        [(64, 6); 3]
     );
 
     let unresolved_close_events = Arc::new(Mutex::new(Vec::new()));
