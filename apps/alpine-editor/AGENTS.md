@@ -1,7 +1,7 @@
 ---
 product: Alpine Editor
 parent: ../../AGENTS.md
-updated: 2026-10-17
+updated: 2026-10-18
 phase: "2, language agnostic: active, closes in M4"
 parity:
   core_editing: {status: partial, closes: M6}
@@ -17,7 +17,6 @@ known_defects:
   - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays wait for S10"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
-  - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
   - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"
 out_of_scope: [AI, collaboration, extensions, remote development, debugger, built-in terminal]
