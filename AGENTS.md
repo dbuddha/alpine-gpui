@@ -24,6 +24,8 @@ budgets:
   idle_cpu_pct_of_one_core: 1
   idle_frame_submissions: 0
   editor_footprint_steady: 30.5 MiB (M1 idle tree p50 27.7 MiB plus 10 percent)
+  launch_to_window_median_ms: 335 (M1 283 plus 50)
+  open_50mb_to_window_median_ms: 475 (M1 426 plus 50)
   language_servers: reported per server, not gated
 milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
@@ -37,17 +39,17 @@ milestones:
   - {id: M6, name: "editing parity, phase 3", status: planned}
   - {id: M7, name: "git and context, phase 4", status: planned}
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
-autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
+autonomy: "Deepak: agents may push branches, open and merge PRs, and delete their own merged branches, except ask_first"
 next:
   - "S: S7 qualification, S8 stall log, then S9 and S10"
-  - "M1 follow-up: confirm rust-analyzer loads the workspace in open-repo"
+  - "M1 follow-up: does rust-analyzer load the open-repo workspace?"
   - "CP-S: owner dogfood day after S10"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
 # Alpine
 
-Alpine GPUI is a Rust application framework for Apple Silicon macOS with a
+Alpine GPUI is a Rust application framework for Apple Silicon macOS, with a
 Direct Metal renderer. Alpine Editor is the daily-driver editor built on it.
 This file is the program; scoped AGENTS.md files hold local rules.
 
@@ -65,20 +67,19 @@ unfavorable results reported.
   frame happens only when an invalidation asks. Idle submits nothing.
 - Everything is bounded: queues, caches, workers, retained bytes, frames. A new
   allocation without a ceiling and an eviction rule is a defect.
-- Scenes are immutable with explicit painter order.
-- Lay out the visible range plus overscan. Cost scales with the viewport.
+- Scenes are immutable, with explicit painter order.
+- Lay out the visible range plus overscan; cost scales with the viewport.
 - Stale results are rejected by revision, never applied because they arrived.
 - Direct Metal in the hot path. No generic GPU abstraction.
-- Optimize in this order: correctness, responsiveness, efficiency, delivery.
+- Optimize for correctness, then responsiveness, efficiency, delivery.
 
 ## Measuring
 
 - Separate stages: event admission, mutation, layout, shaping, scene build,
   upload, encode, commit, GPU completion, display-link target, presentation.
 - Neither GPU completion nor a display-link target is presentation; missing
-  presentation is missing evidence, never a callback or target time.
-  presentedTime is unreliable on the dev Mac (zero even in a plain MTKView
-  app), so keypress-to-screen comes from the bench.
+  presentation is missing evidence. presentedTime is zero on the dev Mac (even
+  in a plain MTKView app), so keypress-to-screen comes from the bench.
 - Memory is phys_footprint, editor and each child separately, never RSS.
 - Installed app, fresh process, disposable HOME, AC power, quiet machine.
 - A comparison that does less work fails. Sample memory at semantic points; a
@@ -95,22 +96,21 @@ unfavorable results reported.
 - T3, dogfood: the in-app perf recorder, local only.
 - Guard latency invariants with deterministic work counters, not wall clocks.
   A bug fix lands with a test that fails before it (script fixes: manual
-  evidence in the PR). Randomized tests print a
-  replayable seed. A flaky test is a defect; re-run only a failure listed in
+  evidence in the PR). Randomized tests print a replayable seed. A flaky test is a defect; re-run only a failure listed in
   `known_defects`, and say so in the PR.
 
 ## How the lead agent works
 
-- Merge routine PRs once gates pass; ask first for `ask_first` items. Keep
+- Merge routine PRs once gates pass, except `ask_first` items. Keep
   `next:`, the loop's checklist, current in every PR.
 - One feature in flight. Explore agents search in parallel; a Plan agent
   drafts milestone designs; one implementer at a time works in its own
   worktree; a fresh-context reviewer checks every PR.
 - Briefs name objective, rationale, exact gate, invariants, budgets, scope,
-  constraints, deliverables and stop condition. Each worktree owns `target/`;
-  sharing caches build-script paths from the wrong checkout.
-- At most four active agents. An owner-enabled heartbeat recovers work
-  without duplicate work or unchanged-state pings. Stop at milestone checkpoints.
+  constraints, deliverables and stop condition. Each worktree owns `target/`
+  (shared, it caches build-script paths from the wrong checkout).
+- At most four active agents. An owner-enabled heartbeat recovers work without
+  duplicates or unchanged-state pings. Stop at milestone checkpoints.
 - Before merging, the lead (never a subagent):
   1. re-runs the gate on the PR head;
   2. reads the full diff, including untracked files;
@@ -123,7 +123,7 @@ unfavorable results reported.
      main CI on the merged SHA, rebuild, smoke-test.
 - Milestone close: ten-trial bench run, frontmatter updated, one ARCHIVE line
   with numbers and PR links.
-- Two failed attempts on the same blocker: stop and ask.
+- Two failed attempts on one blocker: stop and ask.
 
 ## PRs
 
