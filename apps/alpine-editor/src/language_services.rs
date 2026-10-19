@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alpine_text::BufferSnapshot;
+
 #[cfg(test)]
 use crate::language_registry::LanguageRegistryError;
 use crate::{
@@ -146,6 +148,8 @@ pub(crate) struct LanguageServices {
     discovery_overlay: Option<PathBuf>,
     discovery_enabled: bool,
     open_paths: Vec<PathBuf>,
+    // Set when the open tabs change, so the next sync closes what left.
+    open_paths_changed: bool,
     slots: Vec<Slot>,
     active_index: Option<usize>,
     fallback: RustDiagnostics,
@@ -171,6 +175,7 @@ impl Default for LanguageServices {
             discovery_overlay: None,
             discovery_enabled: false,
             open_paths: Vec::new(),
+            open_paths_changed: false,
             slots: Vec::new(),
             active_index: None,
             fallback: RustDiagnostics::default(),
@@ -246,15 +251,46 @@ impl LanguageServices {
     }
 
     pub(crate) fn replace_open_paths<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
-        self.open_paths.clear();
-        if self.open_paths.try_reserve(MAX_OPEN_PATHS).is_err() {
+        let mut count = 0;
+        for path in paths.take(MAX_OPEN_PATHS) {
+            match self.open_paths.get_mut(count) {
+                Some(held) if held == path => {}
+                Some(held) => {
+                    *held = path.to_path_buf();
+                    self.open_paths_changed = true;
+                }
+                None => {
+                    if self.open_paths.try_reserve(1).is_err() {
+                        break;
+                    }
+                    self.open_paths.push(path.to_path_buf());
+                    self.open_paths_changed = true;
+                }
+            }
+            count += 1;
+        }
+        if self.open_paths.len() > count {
+            self.open_paths.truncate(count);
+            self.open_paths_changed = true;
+        }
+    }
+
+    /// Sends a hidden tab's new buffer to whichever server holds it open.
+    pub(crate) fn update_background(&mut self, path: &Path, snapshot: &BufferSnapshot) -> bool {
+        let mut changed = false;
+        for slot in &mut self.slots {
+            changed |= slot.model.update_background(path, snapshot.clone());
+        }
+        changed
+    }
+
+    /// Closes, on every server, the documents whose tabs closed.
+    fn close_documents_outside_open_paths(&mut self) {
+        if !mem::take(&mut self.open_paths_changed) {
             return;
         }
-        for path in paths {
-            if self.open_paths.len() == MAX_OPEN_PATHS {
-                break;
-            }
-            self.open_paths.push(path.to_path_buf());
+        for slot in &mut self.slots {
+            let _ = slot.model.close_documents_outside(&self.open_paths);
         }
     }
 
@@ -298,6 +334,7 @@ impl LanguageServices {
         self.reap_idle(now);
         let needed = self.needed_keys(input.as_ref());
         self.detach_unneeded(&needed, now);
+        self.close_documents_outside_open_paths();
         let Some(input) = input else {
             self.active_index = None;
             return LanguageEffect::default();
@@ -818,6 +855,10 @@ impl LanguageServices {
             )
     }
 }
+
+#[cfg(test)]
+#[path = "language_services_roster_tests.rs"]
+pub(crate) mod roster_tests;
 
 #[cfg(test)]
 mod tests {

@@ -78,7 +78,7 @@ fn run() -> io::Result<()> {
     let mut buffered = Vec::new();
     let mut chunk = [0_u8; 4_096];
     let mut initialized = false;
-    let mut active_document: Option<Box<str>> = None;
+    let mut open_documents: Vec<Box<str>> = Vec::new();
     let mut startup_document_observed = false;
 
     loop {
@@ -144,13 +144,13 @@ fn run() -> io::Result<()> {
                     let uri = json_string(message, "uri").ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
                     })?;
-                    if active_document.is_some() {
+                    if open_documents.iter().any(|open| open.as_ref() == uri) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "document opened before the active document was closed",
+                            "document opened while it was already open",
                         ));
                     }
-                    active_document = Some(uri.into());
+                    open_documents.push(uri.into());
                     if !startup_document_observed {
                         trace.record("did-open-received")?;
                     }
@@ -168,10 +168,10 @@ fn run() -> io::Result<()> {
                     let uri = json_string(message, "uri").ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
                     })?;
-                    if active_document.as_deref() != Some(uri) {
+                    if !open_documents.iter().any(|open| open.as_ref() == uri) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "document change did not belong to the active document",
+                            "document change did not belong to an open document",
                         ));
                     }
                     if message.contains("ALPINE_CRASH") {
@@ -190,13 +190,14 @@ fn run() -> io::Result<()> {
                     let uri = json_string(message, "uri").ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "missing document URI")
                     })?;
-                    if active_document.as_deref() != Some(uri) {
+                    let Some(index) = open_documents.iter().position(|open| open.as_ref() == uri)
+                    else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "document close did not belong to the active document",
+                            "document close did not belong to an open document",
                         ));
-                    }
-                    active_document = None;
+                    };
+                    open_documents.remove(index);
                 }
                 Some("textDocument/completion") if initialized => {
                     if message.contains(r#""character":99"#) {
@@ -213,6 +214,17 @@ fn run() -> io::Result<()> {
                 Some("textDocument/hover") if initialized => {
                     if message.contains(r#""character":99"#) {
                         continue;
+                    }
+                    // Replays a version-1 publication for every open document.
+                    if message.contains(r#""character":77"#) {
+                        for uri in &open_documents {
+                            write_frame(
+                                &mut output,
+                                &format!(
+                                    r#"{{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{{"uri":"{uri}","version":1,"diagnostics":[{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":1}}}},"severity":1,"message":"mock stale"}}]}}}}"#
+                                ),
+                            )?;
+                        }
                     }
                     let id = json_id(message)?;
                     write_frame(
