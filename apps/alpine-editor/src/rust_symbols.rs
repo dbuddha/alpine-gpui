@@ -5,6 +5,7 @@ use std::{error::Error, fmt, mem::size_of, ops::Range};
 use serde_json::{Value, value::RawValue};
 
 use crate::{
+    lsp_json::ServerError,
     lsp_language::parse_range,
     rust_navigation::{NavigationError, SourceLocation},
 };
@@ -62,6 +63,7 @@ impl SymbolRequestKind {
 pub(crate) enum SymbolError {
     WireTooLarge,
     Malformed,
+    Server(ServerError),
     InvalidKind,
     InvalidRange,
     HierarchyTooDeep,
@@ -76,7 +78,10 @@ pub(crate) enum SymbolError {
 
 impl fmt::Display for SymbolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "symbols rejected input: {self:?}")
+        match self {
+            Self::Server(error) => write!(formatter, "{error}"),
+            _ => write!(formatter, "symbols rejected input: {self:?}"),
+        }
     }
 }
 
