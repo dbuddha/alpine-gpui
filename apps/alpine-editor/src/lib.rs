@@ -225,6 +225,7 @@ const GUTTER_WIDTH: f32 = 48.0;
 const GUTTER_NUMBER_INSET: f32 = 8.0;
 const SCROLLBAR_WIDTH: f32 = 8.0;
 const SCROLLBAR_MIN_THUMB: f32 = 24.0;
+const HORIZONTAL_REVEAL_MARGIN: f32 = 16.0;
 
 fn editor_text_origin_x(pane_origin_x: f32) -> f32 {
     pane_origin_x + GUTTER_WIDTH
@@ -232,6 +233,42 @@ fn editor_text_origin_x(pane_origin_x: f32) -> f32 {
 
 fn editor_text_width(pane_width: f32) -> f32 {
     (pane_width - GUTTER_WIDTH - SCROLLBAR_WIDTH).max(1.0)
+}
+
+fn finite_scroll_x(scroll_x: f32) -> f32 {
+    if scroll_x.is_finite() {
+        scroll_x.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+// The pane minus its gutter: text scrolled left must not paint the numbers.
+fn editor_text_bounds(pane: Rect) -> Result<Rect, EditorRenderError> {
+    let width = (pane.size().width() - GUTTER_WIDTH).max(1.0);
+    Ok(Rect::new(
+        Point::new(editor_text_origin_x(pane.origin().x()), pane.origin().y())
+            .ok_or(EditorRenderError::Domain)?,
+        Size::new(width, pane.size().height()).ok_or(EditorRenderError::Domain)?,
+    ))
+}
+
+// One axis per event, so trackpad noise does not drift the view. Shift turns
+// a line-based wheel sideways unless AppKit already swapped the axes.
+fn predominant_scroll_deltas(
+    delta_x: f32,
+    delta_y: f32,
+    precise: bool,
+    modifiers: Modifiers,
+) -> (f32, f32) {
+    if !precise && delta_x == 0.0 && modifiers.contains(Modifiers::SHIFT) {
+        return (delta_y, 0.0);
+    }
+    if delta_x.abs() > delta_y.abs() {
+        (delta_x, 0.0)
+    } else {
+        (0.0, delta_y)
+    }
 }
 
 fn tab_slot_bounds(sidebar: f32, index: usize, scroll_x: f32) -> Result<Rect, EditorRenderError> {
@@ -2162,6 +2199,7 @@ struct EditorApp {
     rejected_stale_input_events: u64,
     rejected_future_input_events: u64,
     scroll_y: f32,
+    scroll_x: f32,
     focused: bool,
     pointer_selecting: bool,
     field_pointer_owner: Option<alpine_platform_macos::AccessibilityNodeId>,
@@ -2501,6 +2539,7 @@ impl EditorApp {
             rejected_stale_input_events: 0,
             rejected_future_input_events: 0,
             scroll_y: 0.0,
+            scroll_x: 0.0,
             focused: true,
             pointer_selecting: false,
             field_pointer_owner: None,
@@ -2815,6 +2854,7 @@ impl EditorApp {
             scroll_y: view
                 .scroll_y
                 .min(usize_as_f32(snapshot.line_count()) * LINE_HEIGHT),
+            scroll_x: finite_scroll_x(view.scroll_x),
         }
     }
 
@@ -3170,7 +3210,7 @@ impl EditorApp {
             .map_err(|_| EditorRenderError::Domain)?;
         let active_pane = pane_layout.active().ok_or(EditorRenderError::Domain)?;
         let editor_origin_x = active_pane.bounds.origin().x();
-        let editor_text_x = editor_text_origin_x(editor_origin_x);
+        let editor_text_x = editor_text_origin_x(editor_origin_x) - self.scroll_x;
         let content_size = active_pane.bounds.size();
         let line_height = PositiveFinite::new(LINE_HEIGHT).ok_or(EditorRenderError::Domain)?;
         let font = self.resolved_font()?;
@@ -3328,8 +3368,13 @@ impl EditorApp {
             .as_ref()
             .map(|composition| composition::Projection::new(snapshot.clone(), composition))
             .transpose()?;
+        let mut active_text_clip = active_clip;
         for (pane_index, pane) in pane_layout.iter().enumerate() {
             let pane_clip = pane_clips[pane_index].ok_or(EditorRenderError::Domain)?;
+            let text_clip = builder.push_clip(Clip::new(editor_text_bounds(pane.bounds)?));
+            if pane.active {
+                active_text_clip = text_clip;
+            }
             let (pane_tab, pane_view) = self
                 .panes
                 .document_for(pane.id, active_tab, active_view)
@@ -3364,7 +3409,7 @@ impl EditorApp {
                 DEFAULT_OVERSCAN_LINES,
             )?;
             let pane_origin_x = pane.bounds.origin().x();
-            let text_origin_x = editor_text_origin_x(pane_origin_x);
+            let text_origin_x = editor_text_origin_x(pane_origin_x) - pane_view.scroll_x;
             let pane_selection = pane_view.selection.range();
             let gutter_bounds = Rect::new(
                 Point::new(pane_origin_x, pane.bounds.origin().y())
@@ -3409,7 +3454,7 @@ impl EditorApp {
                     ) {
                         Self::paint_selection(
                             &mut builder,
-                            pane_clip,
+                            text_clip,
                             &pane_snapshot,
                             line,
                             top,
@@ -3423,7 +3468,7 @@ impl EditorApp {
                 if !pane_selection.is_empty() && pane_projection.is_none() {
                     let selection_result = Self::paint_selection(
                         &mut builder,
-                        pane_clip,
+                        text_clip,
                         &pane_snapshot,
                         line,
                         top,
@@ -3442,7 +3487,7 @@ impl EditorApp {
                         unused_mut,
                         reason = "test fault injection replaces this scene-local clip"
                     )]
-                    let mut diagnostic_clip = pane_clip;
+                    let mut diagnostic_clip = text_clip;
                     #[cfg(test)]
                     if let Some(override_clip) = self.diagnostic_clip_override {
                         diagnostic_clip = override_clip;
@@ -3481,12 +3526,12 @@ impl EditorApp {
                         font,
                         text_origin_x,
                         baseline,
-                        pane_clip,
+                        text_clip,
                         syntax_line,
                         syntax_palette,
                     )?
                 } else {
-                    self.collect_glyphs(&layout, font, text_origin_x, baseline, pane_clip)?
+                    self.collect_glyphs(&layout, font, text_origin_x, baseline, text_clip)?
                 };
                 pending_glyphs.extend(glyphs);
                 let line_number = line.saturating_add(1).to_string();
@@ -3594,8 +3639,9 @@ impl EditorApp {
                             Size::new((right - left).max(1.0), LINE_HEIGHT)
                                 .ok_or(EditorRenderError::Domain)?,
                         );
-                        builder
-                            .push_quad(Quad::new(bounds, selection_color).clipped(active_clip))?;
+                        builder.push_quad(
+                            Quad::new(bounds, selection_color).clipped(active_text_clip),
+                        )?;
                     }
                 }
             }
@@ -3603,7 +3649,7 @@ impl EditorApp {
 
         builder.flush_glyphs(&pending_glyphs);
         for bounds in composition_underlines {
-            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_clip))?;
+            builder.push_quad(Quad::new(bounds, caret_color).clipped(active_text_clip))?;
         }
         if self.focused
             && !self.workspace_edits.is_open()
@@ -3615,7 +3661,7 @@ impl EditorApp {
             && !self.file_tree.is_focused()
             && let Some(caret) = self.caret_bounds(&snapshot, &rendered_lines, editor_text_x)?
         {
-            builder.push_quad(Quad::new(caret, caret_color).clipped(active_clip))?;
+            builder.push_quad(Quad::new(caret, caret_color).clipped(active_text_clip))?;
         }
 
         let language_status = self.rust_diagnostics.status_message();
@@ -4525,26 +4571,17 @@ impl EditorApp {
                 modifiers,
                 ..
             } => self.handle_pointer(*action, *position, *button, *modifiers),
-            SurfaceEvent::Scroll { delta_y, .. } => {
+            SurfaceEvent::Scroll {
+                delta_x,
+                delta_y,
+                precise,
+                modifiers,
+                ..
+            } => {
                 if self.workspace_edits.is_publication_pending() {
                     return EditorTransition::default();
                 }
-                let over_workspace = self.last_pointer_position.is_some_and(|position| {
-                    self.workspace.is_some()
-                        && self.file_tree.is_visible()
-                        && position.x() < self.sidebar_width(self.last_viewport)
-                });
-                let changed = if over_workspace {
-                    let before = self.workspace_scroll_y;
-                    self.workspace_scroll_y = (self.workspace_scroll_y - *delta_y)
-                        .clamp(0.0, self.maximum_workspace_scroll());
-                    self.workspace_scroll_y.to_bits() != before.to_bits()
-                } else {
-                    let before = self.scroll_y;
-                    self.scroll_y = (self.scroll_y - *delta_y).clamp(0.0, self.maximum_scroll());
-                    self.scroll_y.to_bits() != before.to_bits()
-                };
-                changed.then(EventEffect::visual).unwrap_or_default()
+                self.handle_scroll(*delta_x, *delta_y, *precise, *modifiers)
             }
             SurfaceEvent::Focus {
                 input_epoch,
@@ -4570,6 +4607,35 @@ impl EditorApp {
     #[cfg(test)]
     fn handle_event(&mut self, event: &SurfaceEvent) -> EventEffect {
         self.handle_event_with_response(event).effect
+    }
+
+    fn handle_scroll(
+        &mut self,
+        delta_x: f32,
+        delta_y: f32,
+        precise: bool,
+        modifiers: Modifiers,
+    ) -> EventEffect {
+        let over_workspace = self.last_pointer_position.is_some_and(|position| {
+            self.workspace.is_some()
+                && self.file_tree.is_visible()
+                && position.x() < self.sidebar_width(self.last_viewport)
+        });
+        let changed = if over_workspace {
+            let before = self.workspace_scroll_y;
+            self.workspace_scroll_y =
+                (self.workspace_scroll_y - delta_y).clamp(0.0, self.maximum_workspace_scroll());
+            self.workspace_scroll_y.to_bits() != before.to_bits()
+        } else {
+            let (delta_x, delta_y) =
+                predominant_scroll_deltas(delta_x, delta_y, precise, modifiers);
+            let before = (self.scroll_y.to_bits(), self.scroll_x.to_bits());
+            self.scroll_y = (self.scroll_y - delta_y).clamp(0.0, self.maximum_scroll());
+            let maximum_x = self.maximum_scroll_x().max(self.scroll_x);
+            self.scroll_x = (self.scroll_x - delta_x).clamp(0.0, maximum_x);
+            (self.scroll_y.to_bits(), self.scroll_x.to_bits()) != before
+        };
+        changed.then(EventEffect::visual).unwrap_or_default()
     }
 
     fn begin_clipboard_operation(&mut self, operation: ClipboardOperation) -> EditorTransition {
@@ -5952,6 +6018,7 @@ impl EditorApp {
         }
         self.selection = target_view.selection;
         self.scroll_y = target_view.scroll_y.clamp(0.0, self.maximum_scroll());
+        self.scroll_x = finite_scroll_x(target_view.scroll_x);
         self.composition = None;
         self.pointer_selecting = false;
         if let Err(error) = self.sync_active_pane_document() {
@@ -6291,6 +6358,7 @@ impl EditorApp {
             }
             self.clamp_scroll();
         }
+        self.reveal_caret_horizontally();
         EventEffect::visual()
     }
 
@@ -6731,7 +6799,7 @@ impl EditorApp {
         let line_range = display_snapshot.line_byte_range(local).ok()?;
         let text = display_snapshot.slice(line_range.clone()).ok()?;
         let content = text.trim_end_matches(['\r', '\n']);
-        let x = (position.x() - text_origin_x).max(0.0);
+        let x = (position.x() - text_origin_x).max(0.0) + self.scroll_x;
         let target_utf16 = self
             .rendered_lines
             .iter()
@@ -6992,6 +7060,72 @@ impl EditorApp {
         current.clamp(visible_minimum, visible_maximum)
     }
 
+    // Bounded by the widest line the last frame laid out, not the document.
+    fn maximum_scroll_x(&self) -> f32 {
+        let text_width = self
+            .active_pane_bounds()
+            .map_or(1.0, |bounds| editor_text_width(bounds.size().width()));
+        let widest = self
+            .rendered_lines
+            .iter()
+            .map(|rendered| rendered.layout.width())
+            .fold(0.0, f32::max);
+        (widest + CARET_WIDTH + HORIZONTAL_REVEAL_MARGIN - text_width).max(0.0)
+    }
+
+    fn caret_scroll_x_target(current: f32, caret_x: f32, text_width: f32) -> f32 {
+        let minimum = (caret_x + CARET_WIDTH + HORIZONTAL_REVEAL_MARGIN - text_width).max(0.0);
+        let maximum = (caret_x - HORIZONTAL_REVEAL_MARGIN).max(minimum);
+        current.clamp(minimum, maximum)
+    }
+
+    // Shapes at most the caret's line, through the cache the frame reuses.
+    fn primary_caret_x(&mut self, text_width: f32) -> Option<f32> {
+        let font = self.resolved_font().ok()?;
+        let wrap_width = PositiveFinite::new(text_width)?;
+        let snapshot = self.buffer().snapshot();
+        let (layout, column) = if let Some(composition) = &self.composition {
+            let projection = composition::Projection::new(snapshot, composition).ok()?;
+            let index = projection.mark().start
+                + composition.selected_start_utf16 as usize
+                + composition.selected_length_utf16 as usize;
+            let line = projection.line_at_utf16(index).ok()?;
+            let column = u32::try_from(index - line.base_utf16).ok()?;
+            let layout = self
+                .layout_cache
+                .layout_line(
+                    line.snapshot,
+                    line.local,
+                    font,
+                    wrap_width,
+                    &mut self.text_system,
+                )
+                .ok()?;
+            (layout, column)
+        } else {
+            let head = self.selection.head().get();
+            let line = Self::line_for_offset(&snapshot, head).ok()??;
+            let start = snapshot.line_byte_range(line).ok()?.start;
+            let column = local_utf16(&snapshot, start, head).ok()?;
+            let layout = self
+                .layout_cache
+                .layout_line(&snapshot, line, font, wrap_width, &mut self.text_system)
+                .ok()?;
+            (layout, column)
+        };
+        Some(x_for_utf16(&layout, column))
+    }
+
+    fn reveal_caret_horizontally(&mut self) {
+        let Ok(bounds) = self.active_pane_bounds() else {
+            return;
+        };
+        let text_width = editor_text_width(bounds.size().width());
+        if let Some(caret_x) = self.primary_caret_x(text_width) {
+            self.scroll_x = Self::caret_scroll_x_target(self.scroll_x, caret_x, text_width);
+        }
+    }
+
     fn selection_changed(before: Selection, after: Selection) -> bool {
         before != after
     }
@@ -7024,14 +7158,15 @@ impl EditorApp {
         };
         let content_height = bounds.size().height().max(1.0);
         let line_top = usize_as_f32(line) * LINE_HEIGHT;
-        let before = self.scroll_y;
+        let before = (self.scroll_y.to_bits(), self.scroll_x.to_bits());
         self.scroll_y = Self::caret_scroll_target(
             self.scroll_y,
             line_top,
             content_height,
             self.maximum_scroll(),
         );
-        (self.scroll_y.to_bits() != before.to_bits())
+        self.reveal_caret_horizontally();
+        ((self.scroll_y.to_bits(), self.scroll_x.to_bits()) != before)
             .then(EventEffect::visual)
             .unwrap_or_default()
     }
@@ -7259,12 +7394,14 @@ impl EditorApp {
         DocumentViewState {
             selection: self.selection,
             scroll_y: self.scroll_y,
+            scroll_x: self.scroll_x,
         }
     }
 
     fn apply_document_view(&mut self, view: DocumentViewState) {
         self.selection = view.selection;
         self.scroll_y = view.scroll_y;
+        self.scroll_x = finite_scroll_x(view.scroll_x);
         self.composition = None;
         self.pointer_selecting = false;
         self.rendered_lines.clear();
@@ -7592,6 +7729,9 @@ impl EditorApp {
 
     fn clamp_scroll(&mut self) {
         self.scroll_y = self.scroll_y.clamp(0.0, self.maximum_scroll());
+        // Never pull scroll_x in here: the widest laid-out line changes as
+        // the view scrolls vertically, and text must not jump sideways.
+        self.scroll_x = finite_scroll_x(self.scroll_x);
     }
 
     fn advance_runtime_document_identity(&mut self, identity_already_advanced: bool) {
@@ -7993,6 +8133,7 @@ impl EditorApp {
         Ok(DocumentViewState {
             selection: Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end)),
             scroll_y: usize_as_f32(line.saturating_sub(1)) * LINE_HEIGHT,
+            scroll_x: 0.0,
         })
     }
 
@@ -10723,6 +10864,10 @@ mod tests;
 mod settings_reload_tests;
 
 #[cfg(test)]
+#[path = "horizontal_scroll_tests.rs"]
+mod horizontal_scroll_tests;
+
+#[cfg(test)]
 #[path = "rust_diagnostics_scene_tests.rs"]
 mod rust_diagnostics_scene_tests;
 
@@ -10740,10 +10885,12 @@ mod session_integration_tests {
         let alpha_view = DocumentViewState {
             selection: Selection::caret(ByteOffset::new(2)),
             scroll_y: 0.0,
+            scroll_x: 0.0,
         };
         let beta_view = DocumentViewState {
             selection: Selection::caret(ByteOffset::new(1)),
             scroll_y: 0.0,
+            scroll_x: 0.0,
         };
         session::SessionState {
             workspace: Some(root.to_path_buf()),
@@ -10761,6 +10908,7 @@ mod session_integration_tests {
                     view: DocumentViewState {
                         selection: Selection::caret(ByteOffset::new(0)),
                         scroll_y: 0.0,
+                        scroll_x: 0.0,
                     },
                 },
                 session::SessionTab {
@@ -10903,6 +11051,7 @@ mod session_integration_tests {
         let invalid_boundary = DocumentViewState {
             selection: Selection::caret(ByteOffset::new(3)),
             scroll_y: f32::MAX,
+            scroll_x: 0.0,
         };
         let clamped_state = session::SessionState {
             workspace: Some(root.clone()),
@@ -10955,6 +11104,7 @@ mod session_integration_tests {
             DocumentViewState {
                 selection: Selection::new(ByteOffset::new(3), ByteOffset::new(6)),
                 scroll_y: f32::MAX,
+                scroll_x: 0.0,
             },
         );
         assert_eq!(

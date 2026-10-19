@@ -1,7 +1,7 @@
 ---
 product: Alpine Editor
 parent: ../../AGENTS.md
-updated: 2026-10-17
+updated: 2026-10-18
 phase: "2, language agnostic: active, closes in M4"
 parity:
   core_editing: {status: partial, closes: M6}
@@ -18,7 +18,6 @@ known_defects:
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "workspace.applyEdit is advertised but server requests get MethodNotFound"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
-  - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
   - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
   - "any LSP error reply to hover shows Navigation(Malformed) with no retry (navigation_from_response); the pinned journey hit it once in 48 CI runs (37145906382)"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"

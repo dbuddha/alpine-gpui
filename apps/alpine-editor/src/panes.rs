@@ -127,6 +127,7 @@ impl PaneGrid {
             view: Some(DocumentViewState {
                 selection: view.selection,
                 scroll_y: finite_scroll(view.scroll_y),
+                scroll_x: finite_scroll(view.scroll_x),
             }),
             occupied: true,
         };
@@ -697,14 +698,16 @@ fn unit_bounds() -> Result<Rect, PaneError> {
 mod tests {
     use super::*;
 
+    fn view(offset: usize, scroll_y: f32) -> DocumentViewState {
+        DocumentViewState {
+            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(offset)),
+            scroll_y,
+            scroll_x: 0.0,
+        }
+    }
+
     fn grid(scroll_y: f32) -> PaneGrid {
-        PaneGrid::new(
-            DocumentTabId(1),
-            DocumentViewState {
-                selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(0)),
-                scroll_y,
-            },
-        )
+        PaneGrid::new(DocumentTabId(1), view(0, scroll_y))
     }
 
     fn bounds(width: f32, height: f32) -> Result<Rect, PaneError> {
@@ -823,14 +826,8 @@ mod tests {
     fn panes_retain_independent_tab_identity_and_view_state() -> Result<(), Box<dyn Error>> {
         let alpha = DocumentTabId(1);
         let beta = DocumentTabId(2);
-        let alpha_view = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(1)),
-            scroll_y: 12.0,
-        };
-        let beta_view = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(2)),
-            scroll_y: 48.0,
-        };
+        let alpha_view = view(1, 12.0);
+        let beta_view = view(2, 48.0);
         let mut panes = PaneGrid::new(alpha, alpha_view);
         let bounds = bounds(1_200.0, 900.0)?;
 
@@ -842,6 +839,7 @@ mod tests {
                     DocumentViewState {
                         selection: alpha_view.selection,
                         scroll_y: invalid_scroll,
+                        scroll_x: 0.0,
                     }
                 ),
                 Err(PaneError::InvalidGeometry)
@@ -857,10 +855,7 @@ mod tests {
             .ok_or(PaneError::InconsistentState)?
             .id;
         let second = panes.active_id();
-        let shared_alpha = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(3)),
-            scroll_y: 64.0,
-        };
+        let shared_alpha = view(3, 64.0);
         panes.sync_active_document(alpha, shared_alpha)?;
         assert_eq!(panes.active_document(), Ok((alpha, shared_alpha)));
         let (first_tab, first_view) = panes.document_for(first, alpha, shared_alpha)?;
@@ -868,10 +863,7 @@ mod tests {
         assert_eq!(first_view.selection, shared_alpha.selection);
         assert_eq!(first_view.scroll_y.to_bits(), alpha_view.scroll_y.to_bits());
 
-        let supplied = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(4)),
-            scroll_y: 99.0,
-        };
+        let supplied = view(4, 99.0);
         assert_eq!(
             panes.document_for(second, beta, supplied),
             Ok((beta, supplied))
@@ -900,6 +892,7 @@ mod tests {
                 DocumentViewState {
                     selection: shared_alpha.selection,
                     scroll_y: alpha_view.scroll_y,
+                    scroll_x: 0.0,
                 }
             ))
         );
@@ -915,10 +908,7 @@ mod tests {
         assert_eq!(panes.states[empty].view, Some(alpha_view));
 
         let gamma = DocumentTabId(3);
-        let gamma_view = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(5)),
-            scroll_y: 30.0,
-        };
+        let gamma_view = view(5, 30.0);
         let mut nested = PaneGrid::new(alpha, alpha_view);
         nested.split(SplitAxis::Columns, 12.0, bounds)?;
         nested.sync_active_document(beta, beta_view)?;
@@ -1072,14 +1062,8 @@ mod tests {
     fn session_projection_round_trips_exact_pane_and_tab_ownership() -> Result<(), Box<dyn Error>> {
         let alpha = DocumentTabId(1);
         let beta = DocumentTabId(2);
-        let alpha_view = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(1)),
-            scroll_y: 11.0,
-        };
-        let beta_view = DocumentViewState {
-            selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(2)),
-            scroll_y: 22.0,
-        };
+        let alpha_view = view(1, 11.0);
+        let beta_view = view(2, 22.0);
         let mut panes = PaneGrid::new(alpha, alpha_view);
         let bounds = bounds(1_200.0, 900.0)?;
         panes.split(SplitAxis::Rows, 11.0, bounds)?;

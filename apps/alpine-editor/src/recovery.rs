@@ -867,6 +867,7 @@ mod tests {
         let view = |offset| DocumentViewState {
             selection: Selection::caret(ByteOffset::new(offset)),
             scroll_y: 0.0,
+            scroll_x: 0.0,
         };
         let mut panes = [None; SESSION_PANE_CAPACITY];
         panes[0] = Some(SessionPane {
