@@ -5,7 +5,10 @@ use std::{error::Error, fmt, mem::size_of, ops::Range};
 use alpine_text::{BufferSnapshot, ByteOffset};
 use serde_json::{Value, value::RawValue};
 
-use crate::lsp_language::{LspPosition, LspRange, parse_range};
+use crate::{
+    lsp_json::ServerError,
+    lsp_language::{LspPosition, LspRange, parse_range},
+};
 
 const MAX_COMPLETION_WIRE_BYTES: usize = 1_048_576;
 pub(crate) const MAX_COMPLETION_ITEMS: usize = 64;
@@ -19,6 +22,7 @@ pub(crate) const MAX_COMPLETION_RETAINED_BYTES: usize = 262_144;
 pub(crate) enum CompletionError {
     WireTooLarge,
     Malformed,
+    Server(ServerError),
     LabelTooLong,
     EditTooLong,
     UnsupportedAdditionalEdits,
@@ -30,7 +34,10 @@ pub(crate) enum CompletionError {
 
 impl fmt::Display for CompletionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Rust completion rejected input: {self:?}")
+        match self {
+            Self::Server(error) => write!(formatter, "{error}"),
+            _ => write!(formatter, "Rust completion rejected input: {self:?}"),
+        }
     }
 }
 

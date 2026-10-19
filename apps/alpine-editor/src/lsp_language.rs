@@ -445,7 +445,6 @@ pub(crate) fn initialize_params(workspace: &Path) -> Result<Box<RawValue>, Langu
             },
             "workspace": {
                 "symbol": {},
-                "applyEdit": true,
                 "workspaceEdit": {
                     "documentChanges": true,
                     "failureHandling": "transactional"
