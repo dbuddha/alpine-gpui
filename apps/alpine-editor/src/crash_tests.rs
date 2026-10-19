@@ -26,8 +26,17 @@ fn scratch(label: &str) -> Result<PathBuf, std::io::Error> {
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
+    remove_stale(&root)?;
     fs::create_dir_all(&root)?;
     Ok(root)
+}
+
+// A recycled pid can meet an old run's leftover; start from an empty root.
+fn remove_stale(root: &Path) -> Result<(), std::io::Error> {
+    match fs::remove_dir_all(root) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn log_stamp(name: &str) -> Option<(u64, u32)> {
