@@ -112,7 +112,7 @@ use alpine_platform_macos::{
     AccessibilityRequestKind, ClipboardError, ClipboardEvent, ClipboardOperation, ClipboardText,
     ClipboardWrite, EditorSignpost, EditorSignpostStage, EventTimestamp, ImeEvent, InputEpoch,
     InputEpochAdmission, KeyState, MenuAction, Modifiers, PointerAction, PointerButton,
-    RecorderSnapshot, SurfaceError, SurfaceEvent,
+    RecorderSnapshot, ScrollPhase, SurfaceError, SurfaceEvent,
 };
 use alpine_runtime::{
     AppContext, AppDelegate, DocumentRevision, RuntimeError, SubmitError, WindowContext,
@@ -142,7 +142,7 @@ use find::{
     FindWorkerOutput, MAX_REPLACEMENT_TRANSACTION_BYTES,
 };
 use language_services::LanguageServices;
-use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis};
+use panes::{MAX_PANES, PaneError, PaneGrid, SplitAxis, finite_scroll};
 use profiling::{EditorProfiler, MeasuredTextSystem, TextSystemSnapshot};
 use project_search::{
     ProjectSearchAdmission, ProjectSearchError, ProjectSearchRequest, ProjectSearchState,
@@ -235,17 +235,9 @@ fn editor_text_width(pane_width: f32) -> f32 {
     (pane_width - GUTTER_WIDTH - SCROLLBAR_WIDTH).max(1.0)
 }
 
-fn finite_scroll_x(scroll_x: f32) -> f32 {
-    if scroll_x.is_finite() {
-        scroll_x.max(0.0)
-    } else {
-        0.0
-    }
-}
-
-// The pane minus its gutter: text scrolled left must not paint the numbers.
+// Between the gutter and the scrollbar: scrolled text paints neither.
 fn editor_text_bounds(pane: Rect) -> Result<Rect, EditorRenderError> {
-    let width = (pane.size().width() - GUTTER_WIDTH).max(1.0);
+    let width = editor_text_width(pane.size().width());
     Ok(Rect::new(
         Point::new(editor_text_origin_x(pane.origin().x()), pane.origin().y())
             .ok_or(EditorRenderError::Domain)?,
@@ -253,22 +245,18 @@ fn editor_text_bounds(pane: Rect) -> Result<Rect, EditorRenderError> {
     ))
 }
 
-// One axis per event, so trackpad noise does not drift the view. Shift turns
-// a line-based wheel sideways unless AppKit already swapped the axes.
-fn predominant_scroll_deltas(
-    delta_x: f32,
-    delta_y: f32,
-    precise: bool,
-    modifiers: Modifiers,
-) -> (f32, f32) {
-    if !precise && delta_x == 0.0 && modifiers.contains(Modifiers::SHIFT) {
-        return (delta_y, 0.0);
-    }
-    if delta_x.abs() > delta_y.abs() {
-        (delta_x, 0.0)
-    } else {
-        (0.0, delta_y)
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollAxis {
+    Horizontal,
+    Vertical,
+}
+
+// `pending` waits for the next frame's viewport; `revealed` lets one event
+// skip a second reveal of a selection it already revealed.
+#[derive(Clone, Copy, Debug, Default)]
+struct CaretReveal {
+    pending: bool,
+    revealed: Option<Selection>,
 }
 
 fn tab_slot_bounds(sidebar: f32, index: usize, scroll_x: f32) -> Result<Rect, EditorRenderError> {
@@ -2200,6 +2188,8 @@ struct EditorApp {
     rejected_future_input_events: u64,
     scroll_y: f32,
     scroll_x: f32,
+    scroll_axis: Option<ScrollAxis>,
+    caret_reveal: CaretReveal,
     focused: bool,
     pointer_selecting: bool,
     field_pointer_owner: Option<alpine_platform_macos::AccessibilityNodeId>,
@@ -2540,6 +2530,8 @@ impl EditorApp {
             rejected_future_input_events: 0,
             scroll_y: 0.0,
             scroll_x: 0.0,
+            scroll_axis: None,
+            caret_reveal: CaretReveal::default(),
             focused: true,
             pointer_selecting: false,
             field_pointer_owner: None,
@@ -2756,6 +2748,7 @@ impl EditorApp {
             .map_err(|_| SessionRestoreError::Panes)?;
         let view = app.clamp_document_view(view);
         app.apply_document_view(view);
+        app.caret_reveal.pending = true;
         app.active_workspace_entry = app.tabs.active_workspace_entry();
         app.record_recovered_status(recovered_count, unavailable_workspace.as_deref())?;
         Ok(app)
@@ -2854,7 +2847,7 @@ impl EditorApp {
             scroll_y: view
                 .scroll_y
                 .min(usize_as_f32(snapshot.line_count()) * LINE_HEIGHT),
-            scroll_x: finite_scroll_x(view.scroll_x),
+            scroll_x: finite_scroll(view.scroll_x),
         }
     }
 
@@ -3185,11 +3178,15 @@ impl EditorApp {
         viewport: Size,
     ) -> Result<Scene, EditorRenderError> {
         self.profile_scene_revision = revision;
+        self.caret_reveal.pending |= self.last_viewport != viewport;
         self.last_viewport = viewport;
         self.clamp_scroll();
         self.layout_cache.begin_frame()?;
         self.label_cache.begin_frame()?;
         self.syntax_cache.begin_frame();
+        if std::mem::take(&mut self.caret_reveal.pending) {
+            self.reveal_visible_caret();
+        }
 
         let origin = Point::new(0.0, 0.0).ok_or(EditorRenderError::Domain)?;
         let sidebar_width = self.sidebar_width(viewport);
@@ -4574,6 +4571,7 @@ impl EditorApp {
             SurfaceEvent::Scroll {
                 delta_x,
                 delta_y,
+                phase,
                 precise,
                 modifiers,
                 ..
@@ -4581,7 +4579,8 @@ impl EditorApp {
                 if self.workspace_edits.is_publication_pending() {
                     return EditorTransition::default();
                 }
-                self.handle_scroll(*delta_x, *delta_y, *precise, *modifiers)
+                let deltas = (*delta_x, *delta_y);
+                self.handle_scroll(deltas, *phase, *precise, *modifiers)
             }
             SurfaceEvent::Focus {
                 input_epoch,
@@ -4611,8 +4610,8 @@ impl EditorApp {
 
     fn handle_scroll(
         &mut self,
-        delta_x: f32,
-        delta_y: f32,
+        (delta_x, delta_y): (f32, f32),
+        phase: ScrollPhase,
         precise: bool,
         modifiers: Modifiers,
     ) -> EventEffect {
@@ -4628,7 +4627,7 @@ impl EditorApp {
             self.workspace_scroll_y.to_bits() != before.to_bits()
         } else {
             let (delta_x, delta_y) =
-                predominant_scroll_deltas(delta_x, delta_y, precise, modifiers);
+                self.predominant_scroll_deltas(delta_x, delta_y, phase, precise, modifiers);
             let before = (self.scroll_y.to_bits(), self.scroll_x.to_bits());
             self.scroll_y = (self.scroll_y - delta_y).clamp(0.0, self.maximum_scroll());
             let maximum_x = self.maximum_scroll_x().max(self.scroll_x);
@@ -4636,6 +4635,56 @@ impl EditorApp {
             (self.scroll_y.to_bits(), self.scroll_x.to_bits()) != before
         };
         changed.then(EventEffect::visual).unwrap_or_default()
+    }
+
+    // Like AppKit, lock to one axis only when both can scroll: a gesture keeps
+    // the axis of its first motion, a wheel picks per event. Shift turns a
+    // line-based wheel sideways unless AppKit already swapped the axes.
+    fn predominant_scroll_deltas(
+        &mut self,
+        delta_x: f32,
+        delta_y: f32,
+        phase: ScrollPhase,
+        precise: bool,
+        modifiers: Modifiers,
+    ) -> (f32, f32) {
+        let (delta_x, delta_y) =
+            if !precise && delta_x == 0.0 && modifiers.contains(Modifiers::SHIFT) {
+                (delta_y, 0.0)
+            } else {
+                (delta_x, delta_y)
+            };
+        let dominant = if delta_x.abs() > delta_y.abs() {
+            ScrollAxis::Horizontal
+        } else {
+            ScrollAxis::Vertical
+        };
+        let axis = match phase {
+            ScrollPhase::None => {
+                self.scroll_axis = None;
+                dominant
+            }
+            ScrollPhase::Began | ScrollPhase::Changed => {
+                if phase == ScrollPhase::Began {
+                    self.scroll_axis = None;
+                }
+                if self.scroll_axis.is_none() && (delta_x != 0.0 || delta_y != 0.0) {
+                    self.scroll_axis = Some(dominant);
+                }
+                self.scroll_axis.unwrap_or(dominant)
+            }
+            ScrollPhase::Ended | ScrollPhase::Cancelled => {
+                self.scroll_axis.take().unwrap_or(dominant)
+            }
+        };
+        let horizontal = self.maximum_scroll_x().max(self.scroll_x) > 0.0;
+        if !horizontal || self.maximum_scroll() <= 0.0 {
+            return (delta_x, delta_y);
+        }
+        match axis {
+            ScrollAxis::Horizontal => (delta_x, 0.0),
+            ScrollAxis::Vertical => (0.0, delta_y),
+        }
     }
 
     fn begin_clipboard_operation(&mut self, operation: ClipboardOperation) -> EditorTransition {
@@ -5962,6 +6011,7 @@ impl EditorApp {
                 self.scroll_y = scroll_y.clamp(0.0, self.maximum_scroll());
                 self.composition = None;
                 self.pointer_selecting = false;
+                self.caret_reveal.pending = true;
                 EventEffect::visual()
             }
             Err(error) => self.record_pane_error(&error),
@@ -6018,7 +6068,7 @@ impl EditorApp {
         }
         self.selection = target_view.selection;
         self.scroll_y = target_view.scroll_y.clamp(0.0, self.maximum_scroll());
-        self.scroll_x = finite_scroll_x(target_view.scroll_x);
+        self.scroll_x = finite_scroll(target_view.scroll_x);
         self.composition = None;
         self.pointer_selecting = false;
         if let Err(error) = self.sync_active_pane_document() {
@@ -6057,6 +6107,7 @@ impl EditorApp {
                 migrations,
                 announce,
             } => {
+                self.caret_reveal.pending |= effect.typography;
                 let mut visual_changed = effect.typography
                     || effect.theme
                     || (effect.keymap && self.command_palette.is_open());
@@ -6358,7 +6409,7 @@ impl EditorApp {
             }
             self.clamp_scroll();
         }
-        self.reveal_caret_horizontally();
+        self.reveal_caret_horizontally(Some(range.start));
         EventEffect::visual()
     }
 
@@ -7079,50 +7130,89 @@ impl EditorApp {
         current.clamp(minimum, maximum)
     }
 
-    // Shapes at most the caret's line, through the cache the frame reuses.
-    fn primary_caret_x(&mut self, text_width: f32) -> Option<f32> {
+    // Lays out at most one line, through the cache the frame reuses.
+    fn line_x_for_offset(&mut self, offset: usize, text_width: f32) -> Option<f32> {
         let font = self.resolved_font().ok()?;
         let wrap_width = PositiveFinite::new(text_width)?;
         let snapshot = self.buffer().snapshot();
-        let (layout, column) = if let Some(composition) = &self.composition {
-            let projection = composition::Projection::new(snapshot, composition).ok()?;
-            let index = projection.mark().start
-                + composition.selected_start_utf16 as usize
-                + composition.selected_length_utf16 as usize;
-            let line = projection.line_at_utf16(index).ok()?;
-            let column = u32::try_from(index - line.base_utf16).ok()?;
-            let layout = self
-                .layout_cache
-                .layout_line(
-                    line.snapshot,
-                    line.local,
-                    font,
-                    wrap_width,
-                    &mut self.text_system,
-                )
-                .ok()?;
-            (layout, column)
-        } else {
-            let head = self.selection.head().get();
-            let line = Self::line_for_offset(&snapshot, head).ok()??;
-            let start = snapshot.line_byte_range(line).ok()?.start;
-            let column = local_utf16(&snapshot, start, head).ok()?;
-            let layout = self
-                .layout_cache
-                .layout_line(&snapshot, line, font, wrap_width, &mut self.text_system)
-                .ok()?;
-            (layout, column)
-        };
+        let line = Self::line_for_offset(&snapshot, offset).ok()??;
+        let start = snapshot.line_byte_range(line).ok()?.start;
+        let column = local_utf16(&snapshot, start, offset).ok()?;
+        let layout = self
+            .layout_cache
+            .layout_line(&snapshot, line, font, wrap_width, &mut self.text_system)
+            .ok()?;
         Some(x_for_utf16(&layout, column))
     }
 
-    fn reveal_caret_horizontally(&mut self) {
+    fn primary_caret_x(&mut self, text_width: f32) -> Option<f32> {
+        let Some(composition) = &self.composition else {
+            return self.line_x_for_offset(self.selection.head().get(), text_width);
+        };
+        let font = self.resolved_font().ok()?;
+        let wrap_width = PositiveFinite::new(text_width)?;
+        let projection =
+            composition::Projection::new(self.buffer().snapshot(), composition).ok()?;
+        let index = projection.mark().start
+            + composition.selected_start_utf16 as usize
+            + composition.selected_length_utf16 as usize;
+        let line = projection.line_at_utf16(index).ok()?;
+        let column = u32::try_from(index - line.base_utf16).ok()?;
+        let layout = self
+            .layout_cache
+            .layout_line(
+                line.snapshot,
+                line.local,
+                font,
+                wrap_width,
+                &mut self.text_system,
+            )
+            .ok()?;
+        Some(x_for_utf16(&layout, column))
+    }
+
+    // `first` is revealed last, so it wins when it and the caret do not fit.
+    fn reveal_caret_horizontally(&mut self, first: Option<usize>) {
         let Ok(bounds) = self.active_pane_bounds() else {
             return;
         };
         let text_width = editor_text_width(bounds.size().width());
         if let Some(caret_x) = self.primary_caret_x(text_width) {
             self.scroll_x = Self::caret_scroll_x_target(self.scroll_x, caret_x, text_width);
+        }
+        if let Some(x) = first.and_then(|offset| self.line_x_for_offset(offset, text_width)) {
+            self.scroll_x = Self::caret_scroll_x_target(self.scroll_x, x, text_width);
+        }
+    }
+
+    // After a restore, resize, split or font change, keep the caret's column
+    // in view when its line is on screen.
+    fn reveal_visible_caret(&mut self) {
+        let (Ok(bounds), Some(line)) = (self.active_pane_bounds(), self.primary_caret_line())
+        else {
+            return;
+        };
+        let top = usize_as_f32(line) * LINE_HEIGHT;
+        if top + LINE_HEIGHT > self.scroll_y && top < self.scroll_y + bounds.size().height() {
+            self.reveal_caret_horizontally(None);
+        }
+    }
+
+    fn primary_caret_line(&self) -> Option<usize> {
+        let snapshot = self.buffer().snapshot();
+        if let Some(composition) = &self.composition {
+            let projection = composition::Projection::new(snapshot, composition).ok()?;
+            let index = projection.mark().start
+                + composition.selected_start_utf16 as usize
+                + composition.selected_length_utf16 as usize;
+            projection
+                .line_at_utf16(index)
+                .ok()
+                .map(|line| line.display)
+        } else {
+            Self::line_for_offset(&snapshot, self.selection.head().get())
+                .ok()
+                .flatten()
         }
     }
 
@@ -7131,28 +7221,11 @@ impl EditorApp {
     }
 
     fn reveal_primary_caret(&mut self) -> EventEffect {
+        self.caret_reveal.revealed = Some(self.selection);
         let Ok(bounds) = self.active_pane_bounds() else {
             return EventEffect::default();
         };
-        let snapshot = self.buffer().snapshot();
-        let line = if let Some(composition) = &self.composition {
-            composition::Projection::new(snapshot.clone(), composition)
-                .ok()
-                .and_then(|projection| {
-                    let index = projection.mark().start
-                        + composition.selected_start_utf16 as usize
-                        + composition.selected_length_utf16 as usize;
-                    projection
-                        .line_at_utf16(index)
-                        .ok()
-                        .map(|line| line.display)
-                })
-        } else {
-            Self::line_for_offset(&snapshot, self.selection.head().get())
-                .ok()
-                .flatten()
-        };
-        let Some(line) = line else {
+        let Some(line) = self.primary_caret_line() else {
             self.input_failures = self.input_failures.saturating_add(1);
             return EventEffect::default();
         };
@@ -7165,7 +7238,7 @@ impl EditorApp {
             content_height,
             self.maximum_scroll(),
         );
-        self.reveal_caret_horizontally();
+        self.reveal_caret_horizontally(None);
         ((self.scroll_y.to_bits(), self.scroll_x.to_bits()) != before)
             .then(EventEffect::visual)
             .unwrap_or_default()
@@ -7401,7 +7474,8 @@ impl EditorApp {
     fn apply_document_view(&mut self, view: DocumentViewState) {
         self.selection = view.selection;
         self.scroll_y = view.scroll_y;
-        self.scroll_x = finite_scroll_x(view.scroll_x);
+        self.scroll_x = finite_scroll(view.scroll_x);
+        self.caret_reveal.revealed = None;
         self.composition = None;
         self.pointer_selecting = false;
         self.rendered_lines.clear();
@@ -7731,7 +7805,7 @@ impl EditorApp {
         self.scroll_y = self.scroll_y.clamp(0.0, self.maximum_scroll());
         // Never pull scroll_x in here: the widest laid-out line changes as
         // the view scrolls vertically, and text must not jump sideways.
-        self.scroll_x = finite_scroll_x(self.scroll_x);
+        self.scroll_x = finite_scroll(self.scroll_x);
     }
 
     fn advance_runtime_document_identity(&mut self, identity_already_advanced: bool) {
@@ -8337,9 +8411,11 @@ impl EditorApp {
             self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
         }
         let selection_changed = Self::selection_changed(selection_before, self.selection);
-        if selection_changed {
+        let revealed = self.caret_reveal.revealed.take() == Some(self.selection);
+        if selection_changed && !revealed {
             effect = effect.merge(self.reveal_primary_caret());
         }
+        self.caret_reveal.revealed = None;
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);
         effect.visual_changed |= language_visual_changed;

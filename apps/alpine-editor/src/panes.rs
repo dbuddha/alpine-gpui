@@ -200,7 +200,8 @@ impl PaneGrid {
         tab: DocumentTabId,
         view: DocumentViewState,
     ) -> Result<(), PaneError> {
-        if !view.scroll_y.is_finite() || view.scroll_y < 0.0 {
+        let invalid = |scroll: f32| !scroll.is_finite() || scroll < 0.0;
+        if invalid(view.scroll_y) || invalid(view.scroll_x) {
             return Err(PaneError::InvalidGeometry);
         }
         let state = self
@@ -680,7 +681,7 @@ fn contains(bounds: Rect, point: Point) -> bool {
         && point.y() < origin.y() + size.height()
 }
 
-fn finite_scroll(scroll_y: f32) -> f32 {
+pub(crate) fn finite_scroll(scroll_y: f32) -> f32 {
     if scroll_y.is_finite() {
         scroll_y.max(0.0)
     } else {
@@ -833,17 +834,19 @@ mod tests {
 
         for invalid_scroll in [f32::NAN, -1.0] {
             let mut invalid = PaneGrid::new(alpha, alpha_view);
-            assert_eq!(
-                invalid.sync_active_document(
-                    alpha,
-                    DocumentViewState {
-                        selection: alpha_view.selection,
-                        scroll_y: invalid_scroll,
-                        scroll_x: 0.0,
-                    }
-                ),
-                Err(PaneError::InvalidGeometry)
-            );
+            for view in [
+                DocumentViewState {
+                    scroll_y: invalid_scroll,
+                    ..alpha_view
+                },
+                DocumentViewState {
+                    scroll_x: invalid_scroll,
+                    ..alpha_view
+                },
+            ] {
+                let result = invalid.sync_active_document(alpha, view);
+                assert_eq!(result, Err(PaneError::InvalidGeometry));
+            }
             assert_eq!(invalid.active_document(), Ok((alpha, alpha_view)));
         }
 

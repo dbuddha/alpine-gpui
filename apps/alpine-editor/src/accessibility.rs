@@ -1280,9 +1280,10 @@ fn clipped_geometry(
     let pane = app
         .active_pane_bounds()
         .map_err(|_| geometry_unavailable())?;
-    let left = x.max(super::editor_text_origin_x(pane.origin().x()));
+    let text = super::editor_text_bounds(pane).map_err(|_| geometry_unavailable())?;
+    let left = x.max(text.origin().x());
     let top = y.max(pane.origin().y());
-    let right = (x + width).min(pane.origin().x() + pane.size().width());
+    let right = (x + width).min(text.origin().x() + text.size().width());
     let bottom = (y + height).min(pane.origin().y() + pane.size().height());
     if right < left || bottom <= top {
         return Err(geometry_unavailable());
@@ -1300,8 +1301,9 @@ fn text_index_at_point(
     let pane = app
         .active_pane_bounds()
         .map_err(|_| geometry_unavailable())?;
-    if point.x() < super::editor_text_origin_x(pane.origin().x())
-        || point.x() >= pane.origin().x() + pane.size().width()
+    let text = super::editor_text_bounds(pane).map_err(|_| geometry_unavailable())?;
+    if point.x() < text.origin().x()
+        || point.x() >= text.origin().x() + text.size().width()
         || point.y() < pane.origin().y()
         || point.y() >= pane.origin().y() + pane.size().height()
     {
@@ -2250,6 +2252,7 @@ fn push_diagnostics(
     let pane = app
         .active_pane_bounds()
         .map_err(|_| AccessibilityError::InvalidTree)?;
+    let text = super::editor_text_bounds(pane).map_err(|_| AccessibilityError::InvalidTree)?;
     let mut remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS;
     let mut rendered_index = 0_usize;
     loop {
@@ -2272,6 +2275,12 @@ fn push_diagnostics(
                     marker,
                 )
                 .map_err(|_| AccessibilityError::InvalidTree)?;
+                let id = diagnostic_node_id(rendered.line, ordinal)?;
+                ordinal = ordinal.saturating_add(1);
+                // Like text frames, a marker outside the drawn text area has none.
+                let Some(rect) = rect.intersection(text) else {
+                    return Ok(());
+                };
                 let severity = marker.severity.map_or("diagnostic".to_owned(), |value| {
                     format!("diagnostic severity {value}")
                 });
@@ -2281,7 +2290,7 @@ fn push_diagnostics(
                 let height = rect.size().height();
                 let marker_bounds = bounds(x, y, width, height)?;
                 let marker_result = node(
-                    diagnostic_node_id(rendered.line, ordinal)?,
+                    id,
                     Some(EDITOR_NODE),
                     AccessibilityRole::ListItem,
                     Arc::from(format!(
@@ -2296,7 +2305,6 @@ fn push_diagnostics(
                 );
                 let marker_node = marker_result?;
                 nodes.push(marker_node);
-                ordinal = ordinal.saturating_add(1);
                 Ok::<(), AccessibilityError>(())
             },
         );
