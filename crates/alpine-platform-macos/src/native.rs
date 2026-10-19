@@ -1185,6 +1185,7 @@ struct PresentationDriver {
     configuration: SurfaceConfiguration,
     pending: Option<PendingFrame>,
     active: Option<ActiveFrame>,
+    pending_link: PendingLinkWatchdog,
     frame_slots: FrameSlotRing,
     owner_generation: FrameOwnerGeneration,
     backend: MetalBackend,
@@ -1247,6 +1248,7 @@ impl PresentationDriver {
             configuration,
             pending: None,
             active: None,
+            pending_link: PendingLinkWatchdog::default(),
             frame_slots: FrameSlotRing::new(),
             owner_generation,
             backend,
@@ -1336,6 +1338,7 @@ impl PresentationDriver {
         if self.state.needs_resume() && owns_callback_work {
             self.state.apply(PresentationAction::Resume)?;
         }
+        self.pending_link.observe_link(self.state.display_link());
         match (prior_link, self.state.display_link()) {
             (DisplayLinkState::Paused, DisplayLinkState::Running) => {
                 Ok(DisplayLinkDirective::Resume)
@@ -1349,6 +1352,22 @@ impl PresentationDriver {
 
     const fn display_link_state(&self) -> DisplayLinkState {
         self.state.display_link()
+    }
+
+    const fn pending_waits_for_link(&self) -> bool {
+        pending_waits_for_link(
+            self.active.is_some(),
+            self.pending.is_some(),
+            self.state.display_link(),
+        )
+    }
+
+    const fn needs_frame_progress(&self) -> bool {
+        frame_progress_needed(
+            self.active.is_some(),
+            self.pending.is_some(),
+            self.state.display_link(),
+        )
     }
 
     fn update(
@@ -1406,6 +1425,7 @@ impl PresentationDriver {
         if self.lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
             return Ok(DisplayLinkDirective::Invalidate);
         }
+        self.pending_link.link_called_back();
         if let Some(directive) = self.reconcile_active_presentation(counters, true)? {
             return Ok(directive);
         }
@@ -1568,14 +1588,15 @@ impl PresentationDriver {
         Ok(None)
     }
 
-    // Frame-progress timer step: polls completion every tick, but counts a
-    // presentation poll and may fall back only when no display-link update
-    // arrived since the previous tick. It never acquires a drawable.
+    // Frame-progress timer step: polls completion every tick. Only a quiet
+    // tick may fall back, restart a silent link for pending work or cancel
+    // that work. It never acquires a drawable.
     fn progress_without_display_link(
         &mut self,
         counters: &FrameCounters,
         link_silent: bool,
-    ) -> DisplayLinkDirective {
+        quiet_for: Duration,
+    ) -> FrameProgressStep {
         let prior_link = self.state.display_link();
         let progressed = if link_silent {
             self.reconcile_active_presentation(counters, false)
@@ -1590,14 +1611,56 @@ impl PresentationDriver {
             Ok(())
         });
         if let Err(error) = resumed {
-            return self.fail_after_error(error, AttemptTiming::default(), counters);
+            return FrameProgressStep::Link(self.fail_after_error(
+                error,
+                AttemptTiming::default(),
+                counters,
+            ));
         }
-        match (prior_link, self.state.display_link()) {
+        // A link this tick resumes starts a new quiet interval.
+        let waiting =
+            matches!(prior_link, DisplayLinkState::Running) && self.pending_waits_for_link();
+        match self.pending_link.tick(waiting, quiet_for) {
+            PendingLinkStep::Wait => {}
+            PendingLinkStep::Restart => return FrameProgressStep::RestartLink,
+            PendingLinkStep::Cancel => {
+                return FrameProgressStep::Link(
+                    self.cancel_silent_pending(counters)
+                        .unwrap_or_else(|error| {
+                            self.fail_after_error(error, AttemptTiming::default(), counters)
+                        }),
+                );
+            }
+        }
+        FrameProgressStep::Link(match (prior_link, self.state.display_link()) {
             (_, DisplayLinkState::Invalid) => DisplayLinkDirective::Invalidate,
             (DisplayLinkState::Paused, DisplayLinkState::Running) => DisplayLinkDirective::Resume,
             (DisplayLinkState::Running, DisplayLinkState::Paused) => DisplayLinkDirective::Pause,
             _ => DisplayLinkDirective::None,
-        }
+        })
+    }
+
+    // The restart budget is spent: drop the frame first so even a failed
+    // cancel stops the timer. The Cancelled terminal is the record; no error
+    // latches, so one stuck link cannot fail the app's exit.
+    fn cancel_silent_pending(
+        &mut self,
+        counters: &FrameCounters,
+    ) -> Result<DisplayLinkDirective, SurfaceError> {
+        let frame = self
+            .pending
+            .take()
+            .ok_or(SurfaceError::invariant(SurfaceOperation::Presentation))?;
+        let prepared = self.state.apply(PresentationAction::Prepare)?;
+        let PresentationEvent::Prepared(token) = prepared.event() else {
+            return Err(SurfaceError::invariant(SurfaceOperation::Presentation));
+        };
+        let transition = self.state.apply(PresentationAction::CancelActive(token))?;
+        let timing = AttemptTiming {
+            event: frame.event_timing,
+            ..AttemptTiming::default()
+        };
+        self.record_terminal(transition, timing, 0, None, counters)
     }
 
     fn submit_pending(
@@ -3292,6 +3355,7 @@ struct DisplayLinkDelegateIvars {
     validation_probe: Option<InitializationProbe>,
     display_link_updates: Cell<u64>,
     last_display_link_update: Cell<Option<Instant>>,
+    last_display_link_resume: Cell<Option<Instant>>,
     frame_progress_seen_updates: Cell<u64>,
     frame_progress_timer: Cell<Option<FrameProgressTimer>>,
     display_link_retired: Cell<bool>,
@@ -3300,17 +3364,102 @@ struct DisplayLinkDelegateIvars {
     #[cfg(alpine_native_validation)]
     display_link_silence: Cell<bool>,
     #[cfg(alpine_native_validation)]
+    pending_silence_until_tick: Cell<u64>,
+    #[cfg(alpine_native_validation)]
     frame_progress: FrameProgressCounters,
 }
 
 // A live 30 Hz link updates every 33.3 ms. A delayed tick pulls the next one
 // early, so silence needs no update since the last tick and none for a full
-// interval. A silent frame still ends within three ticks.
+// interval. A silent in-flight frame still ends within three ticks.
 const FRAME_PROGRESS_INTERVAL: Duration = Duration::from_millis(40);
 const FRAME_PROGRESS_TOLERANCE: Duration = Duration::from_millis(4);
 
 fn link_silent_for_tick(no_update_since_tick: bool, since_update: Option<Duration>) -> bool {
     no_update_since_tick && since_update.is_none_or(|since| since >= FRAME_PROGRESS_INTERVAL)
+}
+
+// A hosted link can lag a resume by hundreds of milliseconds and then call
+// back; only a full second of silence counts as stuck.
+const PENDING_LINK_QUIET: Duration = Duration::from_secs(1);
+const MAX_PENDING_LINK_RESTARTS: u8 = 3;
+
+// Silence since the last update, resume or restart; zero while updates flow.
+fn pending_quiet_for(
+    no_update_since_tick: bool,
+    last_update: Option<Instant>,
+    last_resume: Option<Instant>,
+    now: Instant,
+) -> Duration {
+    if !no_update_since_tick {
+        return Duration::ZERO;
+    }
+    last_update
+        .max(last_resume)
+        .map_or(Duration::MAX, |at| now.saturating_duration_since(at))
+}
+
+const fn pending_waits_for_link(active: bool, pending: bool, link: DisplayLinkState) -> bool {
+    !active && pending && matches!(link, DisplayLinkState::Running)
+}
+
+// Idle, hidden and zero-size work arm no timer; the portable state keeps
+// the link paused for them.
+const fn frame_progress_needed(active: bool, pending: bool, link: DisplayLinkState) -> bool {
+    active || pending_waits_for_link(active, pending, link)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingLinkStep {
+    Wait,
+    // Pause and resume the running link to ask for a fresh callback.
+    Restart,
+    // Drop the pending frame with zero submissions and report an error.
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameProgressStep {
+    Link(DisplayLinkDirective),
+    RestartLink,
+}
+
+// Restart budget for one running period of the display link. A callback or
+// a pause (hide, occlusion, zero size, clean) restores it; requests do not.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PendingLinkWatchdog {
+    restarts: u8,
+}
+
+impl PendingLinkWatchdog {
+    fn link_called_back(&mut self) {
+        self.restarts = 0;
+    }
+
+    fn observe_link(&mut self, link: DisplayLinkState) {
+        if !matches!(link, DisplayLinkState::Running) {
+            self.restarts = 0;
+        }
+    }
+
+    // `quiet_for` runs from the last update, resume or restart, and is zero
+    // when an update arrived since the previous tick.
+    fn tick(&mut self, waiting: bool, quiet_for: Duration) -> PendingLinkStep {
+        if !waiting {
+            self.restarts = 0;
+            return PendingLinkStep::Wait;
+        }
+        if quiet_for < PENDING_LINK_QUIET {
+            return PendingLinkStep::Wait;
+        }
+        if self.restarts < MAX_PENDING_LINK_RESTARTS {
+            self.restarts += 1;
+            PendingLinkStep::Restart
+        } else {
+            self.restarts = 0;
+            PendingLinkStep::Cancel
+        }
+    }
 }
 
 // Owns the scheduled frame-progress timer; releasing it invalidates the timer.
@@ -3330,6 +3479,9 @@ struct FrameProgressCounters {
     ticks: Cell<u64>,
     terminals: Cell<u64>,
     close_drains: Cell<u64>,
+    link_restarts: Cell<u64>,
+    awaiting_callback_since: Cell<Option<Instant>>,
+    max_first_callback_lag: Cell<Duration>,
 }
 
 #[cfg(alpine_native_validation)]
@@ -3553,7 +3705,6 @@ define_class!(
                         .store(link.isPaused(), Ordering::Release);
                     self.confirm_link_pause(directive, display_link_state, link.isPaused());
                 }
-                self.reconcile_frame_progress_timer();
                 #[cfg(alpine_native_validation)]
                 if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
                     && !self.ivars().window_close_started.load(Ordering::Acquire)
@@ -4213,10 +4364,41 @@ impl DisplayLinkDelegate {
         }
         match directive {
             DisplayLinkDirective::None => {}
-            DisplayLinkDirective::Resume => display_link.setPaused(false),
+            DisplayLinkDirective::Resume => {
+                display_link.setPaused(false);
+                self.stamp_display_link_resume();
+            }
             DisplayLinkDirective::Pause => display_link.setPaused(true),
             DisplayLinkDirective::Invalidate => self.retire_display_link(),
         }
+        self.reconcile_frame_progress_timer();
+    }
+
+    // A pause edge asks a running but silent link for a fresh callback. Only
+    // the progress timer restarts, for visible, sized pending work, and only
+    // while live; no drawable is requested outside the callback.
+    fn restart_display_link(&self) {
+        let Some(display_link) = &self.ivars().display_link else {
+            return;
+        };
+        if self.ivars().display_link_retired.get() {
+            return;
+        }
+        display_link.setPaused(true);
+        display_link.setPaused(false);
+        self.stamp_display_link_resume();
+        #[cfg(alpine_native_validation)]
+        increment_cell(&self.ivars().frame_progress.link_restarts);
+    }
+
+    fn stamp_display_link_resume(&self) {
+        let now = Instant::now();
+        self.ivars().last_display_link_resume.set(Some(now));
+        #[cfg(alpine_native_validation)]
+        self.ivars()
+            .frame_progress
+            .awaiting_callback_since
+            .set(Some(now));
     }
 
     // Ends callbacks without invalidate(). invalidate() races QuartzCore's
@@ -4278,21 +4460,27 @@ impl DisplayLinkDelegate {
     fn record_display_link_update(&self) {
         let updates = &self.ivars().display_link_updates;
         updates.set(updates.get().wrapping_add(1));
-        self.ivars()
-            .last_display_link_update
-            .set(Some(Instant::now()));
+        let now = Instant::now();
+        self.ivars().last_display_link_update.set(Some(now));
+        // Evidence for sizing the restart threshold on real runners.
+        #[cfg(alpine_native_validation)]
+        if let Some(since) = self.ivars().frame_progress.awaiting_callback_since.take() {
+            let lag = now.saturating_duration_since(since);
+            let longest = &self.ivars().frame_progress.max_first_callback_lag;
+            longest.set(longest.get().max(lag));
+        }
     }
 
     fn reconcile_frame_progress_timer(&self) {
-        let Some(frame_in_flight) = self.ivars().driver.as_ref().and_then(|driver| {
+        let Some(needs_progress) = self.ivars().driver.as_ref().and_then(|driver| {
             driver
                 .try_borrow()
                 .ok()
-                .map(|driver| driver.active.is_some())
+                .map(|driver| driver.needs_frame_progress())
         }) else {
             return;
         };
-        if frame_in_flight {
+        if needs_progress {
             self.ensure_frame_progress_timer();
         } else {
             self.cancel_frame_progress_timer();
@@ -4354,12 +4542,16 @@ impl DisplayLinkDelegate {
         let updates = self.ivars().display_link_updates.get();
         let no_update_since_tick =
             self.ivars().frame_progress_seen_updates.replace(updates) == updates;
-        let since_update = self
-            .ivars()
-            .last_display_link_update
-            .get()
-            .map(|at| at.elapsed());
+        let now = Instant::now();
+        let last_update = self.ivars().last_display_link_update.get();
+        let since_update = last_update.map(|at| now.saturating_duration_since(at));
         let link_silent = link_silent_for_tick(no_update_since_tick, since_update);
+        let quiet_for = pending_quiet_for(
+            no_update_since_tick,
+            last_update,
+            self.ivars().last_display_link_resume.get(),
+            now,
+        );
         let Some(driver) = &self.ivars().driver else {
             self.cancel_frame_progress_timer();
             return;
@@ -4386,32 +4578,40 @@ impl DisplayLinkDelegate {
             return;
         };
         #[cfg(alpine_native_validation)]
-        let was_active = borrowed.active.is_some();
-        let directive = borrowed.progress_without_display_link(&self.ivars().counters, link_silent);
+        let prior_terminal = borrowed.last_terminal.map(FrameTerminalEvidence::attempt);
+        let step =
+            borrowed.progress_without_display_link(&self.ivars().counters, link_silent, quiet_for);
         let display_link_state = borrowed.display_link_state();
-        let still_active = borrowed.active.is_some();
+        #[cfg(alpine_native_validation)]
+        let terminal = borrowed.last_terminal.map(FrameTerminalEvidence::attempt);
         drop(borrowed);
         #[cfg(alpine_native_validation)]
-        if was_active && !still_active {
+        if terminal != prior_terminal {
             increment_cell(&self.ivars().frame_progress.terminals);
         }
-        self.apply_link_directive(directive);
-        if let Some(display_link) = &self.ivars().display_link {
-            self.confirm_link_pause(directive, display_link_state, display_link.isPaused());
+        match step {
+            FrameProgressStep::Link(directive) => {
+                self.apply_link_directive(directive);
+                if let Some(display_link) = &self.ivars().display_link {
+                    self.confirm_link_pause(directive, display_link_state, display_link.isPaused());
+                }
+            }
+            FrameProgressStep::RestartLink => self.restart_display_link(),
         }
-        if !still_active {
-            self.cancel_frame_progress_timer();
-        }
+        self.reconcile_frame_progress_timer();
     }
 
     #[cfg(alpine_native_validation)]
     fn display_link_update_silenced(&self) -> bool {
-        let silenced = self.ivars().display_link_silence.get()
-            && self.ivars().driver.as_ref().is_some_and(|driver| {
-                driver
-                    .try_borrow()
-                    .is_ok_and(|driver| driver.active.is_some())
-            });
+        let ivars = self.ivars();
+        let pending_silence =
+            ivars.frame_progress.ticks.get() < ivars.pending_silence_until_tick.get();
+        let silenced = ivars.driver.as_ref().is_some_and(|driver| {
+            driver.try_borrow().is_ok_and(|driver| {
+                (ivars.display_link_silence.get() && driver.active.is_some())
+                    || (pending_silence && driver.pending_waits_for_link())
+            })
+        });
         if silenced {
             increment_cell(&self.ivars().frame_progress.silenced_updates);
         }
@@ -5098,6 +5298,7 @@ impl NativeSurface {
                 validation_probe: builder.validation_probe.clone(),
                 display_link_updates: Cell::new(0),
                 last_display_link_update: Cell::new(None),
+                last_display_link_resume: Cell::new(None),
                 frame_progress_seen_updates: Cell::new(0),
                 frame_progress_timer: Cell::new(None),
                 display_link_retired: Cell::new(false),
@@ -5105,6 +5306,8 @@ impl NativeSurface {
                 native_close_finished: Cell::new(false),
                 #[cfg(alpine_native_validation)]
                 display_link_silence: Cell::new(false),
+                #[cfg(alpine_native_validation)]
+                pending_silence_until_tick: Cell::new(0),
                 #[cfg(alpine_native_validation)]
                 frame_progress: FrameProgressCounters::default(),
             },
@@ -6038,6 +6241,15 @@ impl NativeSurface {
     }
 
     #[cfg(alpine_native_validation)]
+    pub(crate) fn inject_pending_display_link_silence(&self, ticks: Option<u64>) {
+        let ivars = self.delegate.ivars();
+        let until = ticks.map_or(u64::MAX, |ticks| {
+            ivars.frame_progress.ticks.get().saturating_add(ticks)
+        });
+        ivars.pending_silence_until_tick.set(until);
+    }
+
+    #[cfg(alpine_native_validation)]
     pub(crate) fn frame_progress_evidence(
         &self,
     ) -> crate::native_validation::FrameProgressEvidence {
@@ -6052,6 +6264,8 @@ impl NativeSurface {
             counters.ticks.get(),
             counters.terminals.get(),
             counters.close_drains.get(),
+            counters.link_restarts.get(),
+            counters.max_first_callback_lag.get(),
             armed,
         )
     }
@@ -7214,6 +7428,154 @@ mod tests {
     }
 
     #[test]
+    fn the_progress_timer_runs_only_for_pending_or_in_flight_work() {
+        use DisplayLinkState::{Invalid, Paused, Running};
+        // Idle, and pending work on a paused (hidden or zero-size) or closed
+        // link, arm nothing.
+        assert!(!frame_progress_needed(false, false, Paused));
+        assert!(!frame_progress_needed(false, true, Paused));
+        assert!(!frame_progress_needed(false, true, Invalid));
+        // A pending frame waiting for its first callback is covered.
+        assert!(pending_waits_for_link(false, true, Running));
+        assert!(frame_progress_needed(false, true, Running));
+        // In flight: the frame owns progress, not the pending watchdog.
+        assert!(!pending_waits_for_link(true, true, Running));
+        assert!(frame_progress_needed(true, false, Paused));
+        assert!(frame_progress_needed(true, true, Running));
+    }
+
+    #[test]
+    fn a_silent_pending_frame_gets_three_restarts_then_a_cancel() {
+        let mut watchdog = PendingLinkWatchdog::default();
+        let steps: [_; 5] = std::array::from_fn(|_| watchdog.tick(true, PENDING_LINK_QUIET));
+        // The fifth tick belongs to new work: a cancel spends the budget.
+        assert_eq!(
+            steps,
+            [
+                PendingLinkStep::Restart,
+                PendingLinkStep::Restart,
+                PendingLinkStep::Restart,
+                PendingLinkStep::Cancel,
+                PendingLinkStep::Restart,
+            ]
+        );
+        assert_eq!(MAX_PENDING_LINK_RESTARTS, 3);
+    }
+
+    #[test]
+    fn pending_quiet_runs_from_the_newest_update_or_resume() {
+        let now = Instant::now();
+        let second = Duration::from_secs(1);
+        let update = now.checked_sub(second * 3);
+        let resume = now.checked_sub(second);
+        assert_eq!(
+            pending_quiet_for(false, update, resume, now),
+            Duration::ZERO
+        );
+        assert_eq!(pending_quiet_for(true, None, None, now), Duration::MAX);
+        assert_eq!(pending_quiet_for(true, update, resume, now), second);
+        assert_eq!(pending_quiet_for(true, resume, update, now), second);
+        assert_eq!(pending_quiet_for(true, update, None, now), second * 3);
+    }
+
+    #[test]
+    fn pending_link_restarts_wait_for_a_full_quiet_interval() {
+        let mut watchdog = PendingLinkWatchdog::default();
+        let two_thirty_hertz_turns = Duration::from_micros(66_667);
+        // A hosted runner's first callback after a resume can lag this long.
+        let hosted_resume_lag = Duration::from_millis(400);
+        for quiet in [
+            Duration::ZERO,
+            two_thirty_hertz_turns,
+            hosted_resume_lag,
+            PENDING_LINK_QUIET.saturating_sub(Duration::from_millis(1)),
+        ] {
+            assert_eq!(watchdog.tick(true, quiet), PendingLinkStep::Wait);
+        }
+        // Updates that keep arriving never restart or cancel.
+        for _ in 0..100 {
+            assert_eq!(
+                watchdog.tick(true, FRAME_PROGRESS_INTERVAL),
+                PendingLinkStep::Wait
+            );
+        }
+        assert_eq!(
+            watchdog.tick(true, PENDING_LINK_QUIET),
+            PendingLinkStep::Restart
+        );
+        assert_eq!(watchdog.tick(true, Duration::MAX), PendingLinkStep::Restart);
+    }
+
+    #[test]
+    fn a_callback_after_a_restart_restores_the_full_budget() {
+        let mut watchdog = PendingLinkWatchdog::default();
+        for _ in 0..2 {
+            assert_eq!(
+                watchdog.tick(true, PENDING_LINK_QUIET),
+                PendingLinkStep::Restart
+            );
+        }
+        watchdog.link_called_back();
+        for _ in 0..MAX_PENDING_LINK_RESTARTS {
+            assert_eq!(
+                watchdog.tick(true, PENDING_LINK_QUIET),
+                PendingLinkStep::Restart
+            );
+        }
+        assert_eq!(
+            watchdog.tick(true, PENDING_LINK_QUIET),
+            PendingLinkStep::Cancel
+        );
+    }
+
+    #[test]
+    fn hide_and_zero_size_restore_the_budget_but_new_requests_do_not() {
+        let mut watchdog = PendingLinkWatchdog::default();
+        let spend = |watchdog: &mut PendingLinkWatchdog| {
+            for _ in 0..MAX_PENDING_LINK_RESTARTS {
+                assert_eq!(
+                    watchdog.tick(true, PENDING_LINK_QUIET),
+                    PendingLinkStep::Restart
+                );
+            }
+        };
+        spend(&mut watchdog);
+        // A newer request or a visible resize keeps the link running.
+        watchdog.observe_link(DisplayLinkState::Running);
+        assert_eq!(
+            watchdog.tick(true, PENDING_LINK_QUIET),
+            PendingLinkStep::Cancel
+        );
+        spend(&mut watchdog);
+        // Hiding, occlusion or a zero-size resize pauses the link.
+        watchdog.observe_link(DisplayLinkState::Paused);
+        spend(&mut watchdog);
+        assert_eq!(
+            watchdog.tick(true, PENDING_LINK_QUIET),
+            PendingLinkStep::Cancel
+        );
+    }
+
+    #[test]
+    fn work_that_is_not_waiting_never_restarts_or_cancels() {
+        let mut watchdog = PendingLinkWatchdog::default();
+        assert_eq!(
+            watchdog.tick(true, PENDING_LINK_QUIET),
+            PendingLinkStep::Restart
+        );
+        // Idle, hidden, or a frame in flight: a callback already happened.
+        for _ in 0..100 {
+            assert_eq!(watchdog.tick(false, Duration::MAX), PendingLinkStep::Wait);
+        }
+        for _ in 0..MAX_PENDING_LINK_RESTARTS {
+            assert_eq!(
+                watchdog.tick(true, PENDING_LINK_QUIET),
+                PendingLinkStep::Restart
+            );
+        }
+    }
+
+    #[test]
     fn missing_presentation_wait_is_post_command_bounded_and_latest_first() {
         assert!(should_wait_for_presentation_observation(
             false,
@@ -7552,6 +7914,164 @@ mod superseded_frame_tests {
         let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?;
         let lifecycle = Arc::new(AtomicU8::new(SURFACE_LIVE));
         PresentationDriver::new(backend, configuration, lifecycle)
+    }
+
+    #[cfg(alpine_native_validation)]
+    fn silent_tick(driver: &mut PresentationDriver, counters: &FrameCounters) -> FrameProgressStep {
+        driver.progress_without_display_link(counters, true, PENDING_LINK_QUIET)
+    }
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn pending_frame_silence_has_a_bounded_terminal_without_a_drawable()
+    -> Result<(), Box<dyn Error>> {
+        let mut driver = idle_driver()?;
+        let counters = FrameCounters::default();
+        let configuration = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, true)?;
+        driver.apply_configuration(configuration)?;
+        let (revision, directive) = driver.request_frame(blank_scene(1)?, clear()?)?;
+        assert_eq!(directive, DisplayLinkDirective::Resume);
+        assert!(driver.needs_frame_progress());
+
+        let steps: [_; 4] = std::array::from_fn(|_| silent_tick(&mut driver, &counters));
+
+        let terminal = driver
+            .last_terminal
+            .ok_or("silent pending frame never reached a bounded terminal")?;
+        assert_eq!(
+            steps,
+            [
+                FrameProgressStep::RestartLink,
+                FrameProgressStep::RestartLink,
+                FrameProgressStep::RestartLink,
+                FrameProgressStep::Link(DisplayLinkDirective::Pause),
+            ]
+        );
+        assert_eq!(terminal.frame_revision(), revision);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(terminal.submission_count(), 0);
+        assert_eq!(terminal.present_call_count(), 0);
+        assert_eq!(counters.submissions.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.cancelled.load(Ordering::Relaxed), 1);
+        assert!(driver.pending.is_none() && driver.active.is_none());
+        assert!(!driver.state.is_dirty());
+        assert_eq!(
+            driver.state.resource(),
+            alpine_platform::PresentationResource::Free
+        );
+        assert_eq!(driver.display_link_state(), DisplayLinkState::Paused);
+        assert!(!driver.needs_frame_progress());
+        assert_eq!(driver.take_error(), None);
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn newer_requests_and_visible_resizes_keep_the_pending_restart_budget()
+    -> Result<(), Box<dyn Error>> {
+        let mut driver = idle_driver()?;
+        let counters = FrameCounters::default();
+        driver.apply_configuration(SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, true)?)?;
+        for sequence in 1..=4 {
+            let timing = EventFrameTiming {
+                timestamp: EventTimestamp::new(sequence),
+                ..startup_timing()
+            };
+            let (revision, _) =
+                driver.request_frame_with_event(blank_scene(sequence)?, clear()?, Some(timing))?;
+            assert_eq!(revision.get(), sequence);
+            if sequence == 2 {
+                let resized = SurfaceConfiguration::from_native(80.0, 64.0, 1.0, 0, true)?;
+                assert_eq!(
+                    driver.apply_configuration(resized)?,
+                    DisplayLinkDirective::None
+                );
+            }
+            silent_tick(&mut driver, &counters);
+        }
+        let terminal = driver.last_terminal.ok_or("pending terminal")?;
+        assert_eq!(terminal.frame_revision().get(), 4);
+        assert_eq!(terminal.requested_revision().get(), 4);
+        assert_eq!(terminal.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(
+            terminal.latency().ok_or("event timing")?.event_timestamp(),
+            EventTimestamp::new(4)
+        );
+        assert_eq!(terminal.target_timestamp_bits(), 0);
+        assert_eq!(terminal.observed_presentation_time_bits(), 0);
+        assert_eq!(terminal.submission_count(), 0);
+        assert_eq!(counters.failed.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.cancelled.load(Ordering::Relaxed), 1);
+        assert_eq!(driver.backend.accounting().current_retained_bytes(), 0);
+        assert!(!driver.needs_frame_progress());
+
+        // The next request resumes the link with a full budget.
+        assert!(driver.take_error().is_none());
+        driver.request_frame(blank_scene(5)?, clear()?)?;
+        assert!(driver.needs_frame_progress());
+        assert_eq!(
+            silent_tick(&mut driver, &counters),
+            FrameProgressStep::RestartLink
+        );
+        assert!(driver.take_error().is_none());
+        Ok(())
+    }
+
+    #[cfg(alpine_native_validation)]
+    #[test]
+    fn pending_frame_progress_stops_while_ineligible_and_on_close() -> Result<(), Box<dyn Error>> {
+        let mut driver = idle_driver()?;
+        let counters = FrameCounters::default();
+        let visible = SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, true)?;
+        assert!(!driver.needs_frame_progress());
+        driver.request_frame(blank_scene(1)?, clear()?)?;
+        // Hidden pending work keeps the link paused and arms no timer.
+        assert!(!driver.needs_frame_progress());
+        for ineligible in [
+            SurfaceConfiguration::from_native(64.0, 64.0, 1.0, 0, false)?,
+            SurfaceConfiguration::from_native(0.0, 0.0, 1.0, 0, true)?,
+        ] {
+            assert_eq!(
+                driver.apply_configuration(visible)?,
+                DisplayLinkDirective::Resume
+            );
+            for _ in 0..MAX_PENDING_LINK_RESTARTS {
+                assert_eq!(
+                    silent_tick(&mut driver, &counters),
+                    FrameProgressStep::RestartLink
+                );
+            }
+            assert_eq!(
+                driver.apply_configuration(ineligible)?,
+                DisplayLinkDirective::Pause
+            );
+            assert_eq!(driver.pending_link, PendingLinkWatchdog::default());
+            assert!(!driver.needs_frame_progress());
+            for _ in 0..8 {
+                assert_eq!(
+                    silent_tick(&mut driver, &counters),
+                    FrameProgressStep::Link(DisplayLinkDirective::None)
+                );
+            }
+            assert!(driver.pending.is_some());
+            assert!(driver.last_terminal.is_none());
+            assert!(driver.take_error().is_none());
+        }
+        driver.apply_configuration(visible)?;
+        assert!(driver.needs_frame_progress());
+        // Ticks that saw an update never restart or cancel.
+        for _ in 0..8 {
+            assert_eq!(
+                driver.progress_without_display_link(&counters, false, Duration::ZERO),
+                FrameProgressStep::Link(DisplayLinkDirective::None)
+            );
+        }
+        assert!(driver.begin_shutdown(&counters));
+        assert!(!driver.needs_frame_progress());
+        assert_eq!(counters.submissions.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.pending_cancellations.load(Ordering::Relaxed), 1);
+        assert!(driver.pending.is_none() && driver.active.is_none());
+        Ok(())
     }
 
     #[test]

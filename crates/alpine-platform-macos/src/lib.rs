@@ -1621,6 +1621,15 @@ pub mod native_validation {
         surface.implementation.inject_display_link_silence(silenced);
     }
 
+    /// Drops display-link updates while a pending frame waits on a running
+    /// link. `Some(ticks)` ends the silence after that many frame-progress
+    /// ticks, whatever the restarts did; `None` silences until `Some(0)`.
+    pub fn inject_pending_display_link_silence(surface: &NativeSurface, ticks: Option<u64>) {
+        surface
+            .implementation
+            .inject_pending_display_link_silence(ticks);
+    }
+
     /// Validation-only counters for the frame-progress timer.
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct FrameProgressEvidence {
@@ -1629,16 +1638,24 @@ pub mod native_validation {
         timer_ticks: u64,
         timer_terminals: u64,
         timer_close_drains: u64,
+        link_restarts: u64,
+        max_first_callback_lag: Duration,
         timer_armed: bool,
     }
 
     impl FrameProgressEvidence {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "validation evidence is one flat record of counters"
+        )]
         pub(crate) const fn new(
             silenced_updates: u64,
             timer_schedules: u64,
             timer_ticks: u64,
             timer_terminals: u64,
             timer_close_drains: u64,
+            link_restarts: u64,
+            max_first_callback_lag: Duration,
             timer_armed: bool,
         ) -> Self {
             Self {
@@ -1647,6 +1664,8 @@ pub mod native_validation {
                 timer_ticks,
                 timer_terminals,
                 timer_close_drains,
+                link_restarts,
+                max_first_callback_lag,
                 timer_armed,
             }
         }
@@ -1657,7 +1676,7 @@ pub mod native_validation {
             self.silenced_updates
         }
 
-        /// Returns frame-progress timers scheduled for in-flight frames.
+        /// Returns frame-progress timers scheduled for pending or active work.
         #[must_use]
         pub const fn timer_schedules(self) -> u64 {
             self.timer_schedules
@@ -1679,6 +1698,19 @@ pub mod native_validation {
         #[must_use]
         pub const fn timer_close_drains(self) -> u64 {
             self.timer_close_drains
+        }
+
+        /// Returns pause-and-resume restarts of a silent link for pending work.
+        #[must_use]
+        pub const fn link_restarts(self) -> u64 {
+            self.link_restarts
+        }
+
+        /// Returns the longest wait from a resume or restart to the next
+        /// display-link callback.
+        #[must_use]
+        pub const fn max_first_callback_lag(self) -> Duration {
+            self.max_first_callback_lag
         }
 
         /// Returns whether a frame-progress timer is scheduled now.

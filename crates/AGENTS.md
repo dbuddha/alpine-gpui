@@ -3,7 +3,7 @@ scope: framework crates under crates/
 parent: ../AGENTS.md
 updated: 2026-10-17
 known_defects:
-  - "hosted CI: a resumed display link may never call back, so a pending frame never starts (0 submissions); the M0e.1 progress timer covers only frames in flight (runs 37150303820, 37223087925; editor native_process)"
+  - "hosted CI: a resumed display link may never call back, so a pending frame never starts (0 submissions; runs 37150303820, 37223087925; editor native_process). Now bounded: three link restarts, then a zero-submission cancel with an error; unproven whether a restart revives the link"
   - "unverified: applicationShouldTerminate always replies TerminateCancel and quits through window close, so a system logout or restart is likely cancelled"
 ---
 
@@ -36,9 +36,14 @@ budgets; this file owns how the framework keeps them.
   main-thread diagnostic state started by the first surface, holding no app
   state. Its rings are reserved once, never reallocated, with no timer.
 - In-flight frames and closes finish without display-link updates: a 40 ms
-  frame-progress timer, alive only while a frame is in flight, polls
-  completion, falls back once the link is silent and drains a close.
+  frame-progress timer polls completion, falls back once the link is silent
+  and drains a close. It runs only while a frame is in flight or visible,
+  sized work waits on a running link; idle and hidden work arm nothing.
   Drawables are released at GPU completion.
+- A pending frame whose link stays silent for 1 s gets up to three
+  pause-and-resume restarts, then is cancelled with zero submissions and no
+  latched error. A callback or a pause restores the budget; new
+  requests and visible resizes do not.
 - Each surface owns its revisions, epochs, display link and slots. One blocked
   or occluded surface must not stall another (panes, windows, later the
   terminal).
