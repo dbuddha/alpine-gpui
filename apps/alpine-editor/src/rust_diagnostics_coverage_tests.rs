@@ -335,6 +335,7 @@ fn document_switch_cancels_all_pending_work_and_reports_transport_failure()
         process_epoch: session.process_epoch,
         lsp_version: session.lsp_version,
         query_revision: 1,
+        retried: false,
     });
     session.pending_workspace_edit = Some(PendingWorkspaceEdit {
         request_id: 14,
@@ -343,6 +344,7 @@ fn document_switch_cancels_all_pending_work_and_reports_transport_failure()
         identity: session.identity,
         process_epoch: session.process_epoch,
         lsp_version: session.lsp_version,
+        retried: false,
     });
     assert_eq!(completion.request_id, 11);
     assert_eq!(navigation.request_id, 12);
@@ -563,6 +565,8 @@ fn install_pending_completion(
         identity: session.identity,
         process_epoch: session.process_epoch,
         lsp_version: session.lsp_version,
+        position: LspPosition::new(0, 0)?,
+        retried: false,
     };
     session.pending_completion = Some(pending);
     Ok(pending)
@@ -581,6 +585,8 @@ fn install_pending_navigation(
         identity: session.identity,
         process_epoch: session.process_epoch,
         lsp_version: session.lsp_version,
+        position: LspPosition::new(0, 0)?,
+        retried: false,
     };
     session.pending_navigation = Some(pending);
     Ok(pending)
@@ -606,6 +612,7 @@ fn install_pending_symbols(
         process_epoch: session.process_epoch,
         lsp_version: session.lsp_version,
         query_revision,
+        retried: false,
     };
     session.pending_symbols = Some(pending);
     Ok(pending)
@@ -749,14 +756,16 @@ fn navigation_empty_error_observer_and_window_paths_are_discriminating()
             NavigationRequestKind::Hover,
             ResponseValue::error_for_test()
         ),
-        NavigationCandidate::Hover(Err(NavigationError::Malformed))
+        NavigationCandidate::Hover(Err(NavigationError::Server(error)))
+            if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
     assert!(matches!(
         navigation_from_response(
             NavigationRequestKind::Definition,
             ResponseValue::error_for_test()
         ),
-        NavigationCandidate::Locations(Err(NavigationError::Malformed))
+        NavigationCandidate::Locations(Err(NavigationError::Server(error)))
+            if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
 
     let (_, _, _, identity) = tests::fixture();
@@ -1081,7 +1090,7 @@ fn completion_result_admission_rejects_every_stale_or_invalid_shape() -> Result<
 
     assert!(matches!(
         completion_batch_from_response(ResponseValue::error_for_test()),
-        Err(CompletionError::Malformed)
+        Err(CompletionError::Server(error)) if error == crate::lsp_json::ServerError::for_test(-32_000, false)
     ));
 
     let empty = completion_result("null")?;
@@ -1265,6 +1274,8 @@ fn poll_ignores_non_completion_response_methods_even_with_matching_stamp()
             identity: session.identity,
             process_epoch: session.process_epoch,
             lsp_version: session.lsp_version,
+            position: LspPosition::new(0, 0)?,
+            retried: false,
         }
     };
     model.session.as_mut().ok_or("session")?.pending_completion = Some(pending);
@@ -1451,7 +1462,9 @@ fn absent_symbol_guards_and_error_statuses_are_explicit() -> Result<(), Box<dyn 
             error_value,
             "file:///tmp/main.rs"
         ),
-        Err(SymbolError::Malformed)
+        Err(SymbolError::Server(crate::lsp_json::ServerError::for_test(
+            -32_000, false
+        )))
     );
     let mut empty = RustDiagnostics::default();
     assert!(!empty.snapshot().symbol_pending());
@@ -1464,7 +1477,7 @@ fn absent_symbol_guards_and_error_statuses_are_explicit() -> Result<(), Box<dyn 
         empty.open_symbols(SymbolRequestKind::Document),
         LanguageEffect::default()
     );
-    assert_eq!(empty.issue_symbol_request(), LanguageEffect::default());
+    assert_eq!(empty.issue_symbol_request(false), LanguageEffect::default());
     assert!(!empty.cancel_symbols());
     assert_eq!(
         empty.commit_symbol_text(empty_identity, "x"),
@@ -1511,7 +1524,7 @@ fn symbol_guards_composition_and_error_statuses_are_explicit() -> Result<(), Box
     );
     model.session.as_mut().ok_or("session")?.state = SessionState::Open;
     model.session.as_mut().ok_or("session")?.symbols = None;
-    assert_eq!(model.issue_symbol_request(), LanguageEffect::default());
+    assert_eq!(model.issue_symbol_request(false), LanguageEffect::default());
 
     let result = completion_result(
         r#"[{"name":"main","kind":12,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}]"#,
@@ -1549,7 +1562,7 @@ fn symbol_guards_composition_and_error_statuses_are_explicit() -> Result<(), Box
     assert!(model.snapshot().symbol_cancellations <= 1);
     model.install_symbols_for_test(input.identity, SymbolRequestKind::Document, &result)?;
     let pending = install_pending_symbols(&mut model, 901, SymbolRequestKind::Document)?;
-    let _ = model.issue_symbol_request();
+    let _ = model.issue_symbol_request(false);
     assert!(model.snapshot().symbol_cancellations <= 2);
     assert_ne!(pending.request_id, 0);
 

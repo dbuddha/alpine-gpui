@@ -16,11 +16,9 @@ criteria:
 known_defects:
   - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays wait for S10"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
-  - "workspace.applyEdit is advertised but server requests get MethodNotFound"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
   - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
   - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
-  - "any LSP error reply to hover shows Navigation(Malformed) with no retry (navigation_from_response); the pinned journey hit it once in 48 CI runs (37145906382)"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"
 out_of_scope: [AI, collaboration, extensions, remote development, debugger, built-in terminal]
 ---
@@ -96,7 +94,8 @@ cannot see the Metal layer. The capturing terminal needs Screen Recording
 permission. Clean up only the processes a capture owns; never close unrelated
 apps. Window > Save Performance Log writes `perf-<unix s>-frames.tsv` and
 `-samples.tsv` to `~/Library/Logs/Alpine Editor/` for T3 dogfood; a panic
-leaves `crash-<unix>-<pid>.log` there.
+leaves `crash-<unix>-<pid>.log` there, and a main-thread dispatch over 1 s
+leaves `stall-<unix>-<pid>.log`.
 
 ## Correctness that must never regress
 
