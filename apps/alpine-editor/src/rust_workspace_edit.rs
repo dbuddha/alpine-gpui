@@ -12,6 +12,7 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value, value::RawValue};
 
 use crate::{
+    lsp_json::ServerError,
     lsp_language::{LspRange, parse_range},
     rust_completion::byte_range,
     rust_navigation::{NavigationError, resolve_local_file_uri, revalidate_local_path},
@@ -59,6 +60,7 @@ impl WorkspaceEditWire {
 pub(crate) enum WorkspaceEditError {
     WireTooLarge,
     Malformed,
+    Server(ServerError),
     UnsupportedShape,
     UnsupportedAnnotation,
     UnsupportedResourceOperation,
@@ -81,7 +83,10 @@ pub(crate) enum WorkspaceEditError {
 
 impl fmt::Display for WorkspaceEditError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Rust workspace edit rejected input: {self:?}")
+        match self {
+            Self::Server(error) => write!(formatter, "{error}"),
+            _ => write!(formatter, "Rust workspace edit rejected input: {self:?}"),
+        }
     }
 }
 
