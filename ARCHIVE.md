@@ -5,6 +5,22 @@ AGENTS.md files are. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
 
+## 2026-10-18: M1 closed (pending CP1)
+
+- **Session:** 2026-10-17, 19:22 to 21:57 UTC, with the owner hands-off. The installed Alpine was at 275f345 (clean), the bench at 279d6b9 (main plus #656), Zed at 1.24.2, on AC power. Zed isolation reported no change. Every run used `--trials 12 --warmup 2 --wait-idle 1` and no gate ever waited.
+- **Validity:** idle, open-50mb, open-repo and scroll for Alpine, Zed and AppKit were each 12 of 12 valid. Highlight was 72 of 72 over six language groups. Total: 558 baseline rows.
+- **Alpine against Zed and AppKit** (means with 95% intervals):
+  - idle CPU per 60 s: 19.5 ±4.5 ms, against 659 and 7.9;
+  - idle memory p50: 27.7 MiB, against 79.5 and 21.9;
+  - launch to window: 304 ms, against 1,767 and 224;
+  - 50 MiB file, memory p95: 125 MiB, against 277 and 172;
+  - scroll frame interval p50: 17.5 ms, against 8.9 and 8.9 (87% late, against 12% and 8%);
+  - highlight first frame: 1.8 to 2.2 ms, against a 100 ms budget.
+- **Budget set:** `editor_footprint_steady` is 30.5 MiB (idle tree p50 plus 10 percent).
+- **Not comparable yet:** in open-repo, Alpine's rust-analyzer stayed near 124 MiB with about 0.14 s of indexing CPU, against Zed's 1.1 to 1.6 GB and about 17 s. That suggests Alpine's server never loaded the workspace in the disposable home. It is unverified, so the memory-with-servers row needs a check first.
+- **Physical native suites** could not run unattended: test windows open behind the frontmost app (`initial-native-visible=false`), as at M0e.
+- **Typing and caret** stay out of the baseline until on-screen text is verified (#659).
+
 ## 2026-10-17: lead takeover and stabilization plan
 
 Deepak Buddha asked the lead to take over from Codex and bring Alpine Editor to
