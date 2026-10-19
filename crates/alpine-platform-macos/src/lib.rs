@@ -500,6 +500,15 @@ pub enum SurfaceEvent {
         /// The command the user chose.
         action: MenuAction,
     },
+    /// Files or folders macOS asked to open, from Finder or the Dock.
+    OpenPaths {
+        /// Monotonic event sequence.
+        timestamp: EventTimestamp,
+        /// At most 64 absolute paths, in the order macOS gave them.
+        paths: Box<[std::path::PathBuf]>,
+        /// Paths past that bound, dropped rather than delivered.
+        dropped: usize,
+    },
 }
 
 impl SurfaceEvent {
@@ -516,6 +525,7 @@ impl SurfaceEvent {
             | Self::Clipboard { timestamp, .. }
             | Self::Ime { timestamp, .. }
             | Self::Menu { timestamp, .. }
+            | Self::OpenPaths { timestamp, .. }
             | Self::Wake { timestamp }
             | Self::CloseRequested { timestamp } => *timestamp,
         }
@@ -2294,6 +2304,27 @@ pub mod native_validation {
         surface
             .implementation
             .replay_application_quit_with_handler(handler)
+    }
+
+    /// Sends `application:openURLs:` to the application delegate: before a
+    /// handler exists, while a dispatch holds it, while it idles, and while a
+    /// modal panel is open around a Wake.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error if the handler cannot be installed or held,
+    /// or if the dispatch that releases it fails.
+    pub fn replay_open_urls_with_handler<F>(
+        surface: &NativeSurface,
+        urls: &[&str],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        surface
+            .implementation
+            .replay_open_urls_with_handler(urls, handler)
     }
 
     /// Exercises exact non-repeating Command-Q through the native input boundary.

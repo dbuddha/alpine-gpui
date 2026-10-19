@@ -60,6 +60,7 @@ mod lsp_language;
     )
 )]
 mod lsp_process;
+mod open_paths;
 mod overlay_field;
 mod panes;
 mod profiling;
@@ -377,11 +378,13 @@ const APPLICATION_INVARIANT: SurfaceError = SurfaceError::InvariantViolation {
     operation: alpine_platform_macos::SurfaceOperation::Application,
 };
 
+/// The largest `surface_event_kind`, which is one-based. Adding a variant
+/// there without growing this drops it from the validation receipt.
+#[cfg(any(test, alpine_native_validation))]
+const SURFACE_EVENT_KINDS: usize = 12;
 #[cfg(alpine_native_validation)]
-/// One slot per `surface_event_kind`, which is one-based. Adding a variant
-/// there without growing this array silently drops it from the receipt.
-static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; 11] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 11];
+static NATIVE_VALIDATION_EVENT_COUNTS: [std::sync::atomic::AtomicU64; SURFACE_EVENT_KINDS] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; SURFACE_EVENT_KINDS];
 #[cfg(alpine_native_validation)]
 static NATIVE_VALIDATION_FRAME_BUILDS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -677,8 +680,8 @@ fn reset_native_validation_dispatch_counts() {
 }
 
 #[cfg(alpine_native_validation)]
-fn native_validation_dispatch_counts() -> ([u64; 11], u64) {
-    let mut events = [0; 11];
+fn native_validation_dispatch_counts() -> ([u64; SURFACE_EVENT_KINDS], u64) {
+    let mut events = [0; SURFACE_EVENT_KINDS];
     for (value, count) in events.iter_mut().zip(&NATIVE_VALIDATION_EVENT_COUNTS) {
         *value = count.load(std::sync::atomic::Ordering::Acquire);
     }
@@ -885,7 +888,9 @@ pub fn run() -> Result<(), RuntimeError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let hook = crash::CrashHook::install(std::env::var_os("HOME"));
-        run_native(native_restored_app()?, &hook)
+        let mut app = native_restored_app()?;
+        app.restored_launch = open_paths::RestoredLaunch::Pending;
+        run_native(app, &hook)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -2224,6 +2229,7 @@ struct EditorApp {
     last_recovery_error: Option<recovery::RecoveryError>,
     pending_recovery: Vec<Option<recovery::RecoveredDocument>>,
     restore_availability: RestoreAvailability,
+    restored_launch: open_paths::RestoredLaunch,
     #[cfg(test)]
     force_quick_open_submission_failure: Option<()>,
     #[cfg(test)]
@@ -2568,6 +2574,7 @@ impl EditorApp {
             last_recovery_error: None,
             pending_recovery: Vec::new(),
             restore_availability: RestoreAvailability::Strict,
+            restored_launch: open_paths::RestoredLaunch::Settled,
             #[cfg(test)]
             force_quick_open_submission_failure: None,
             #[cfg(test)]
@@ -4478,6 +4485,7 @@ impl EditorApp {
 
     fn handle_event_with_response(&mut self, event: &SurfaceEvent) -> EditorTransition {
         self.clear_armed_close_on_interaction(event);
+        self.settle_launch_on_input(event);
         let dismissed_recovery = self.dismiss_recovery_on_interaction(event);
         if matches!(
             event,
@@ -4569,6 +4577,7 @@ impl EditorApp {
             }
             SurfaceEvent::CloseRequested { .. } => return self.handle_close_request(),
             SurfaceEvent::Menu { action, .. } => self.handle_menu_action(action),
+            SurfaceEvent::OpenPaths { paths, dropped, .. } => self.open_paths(paths, *dropped),
             SurfaceEvent::Accessibility { .. }
             | SurfaceEvent::Keyboard { .. }
             | SurfaceEvent::Resize { .. }
@@ -4848,6 +4857,7 @@ impl EditorApp {
                 action: PointerAction::Down,
                 ..
             } | SurfaceEvent::Menu { .. }
+                | SurfaceEvent::OpenPaths { .. }
                 | SurfaceEvent::Ime { .. }
                 | SurfaceEvent::Scroll { .. }
         );
@@ -7499,24 +7509,29 @@ impl EditorApp {
         }
     }
 
+    fn open_workspace_root(&mut self, path: &Path) -> EventEffect {
+        match self.try_open_workspace_root(path) {
+            Ok(effect) => effect,
+            Err(error) => self.record_workspace_error(&error),
+        }
+    }
+
     /// Replaces the workspace with the chosen folder and reloads the tree.
     ///
     /// The tab set is rebuilt rather than kept. Carrying tabs across a
     /// workspace switch leaves the editor showing a file from the old project
     /// while the tree and the language server point at the new root.
-    fn open_workspace_root(&mut self, path: &Path) -> EventEffect {
-        let workspace = match Workspace::open_root(path) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                return self.record_workspace_error(&WorkspaceSelectionError::Workspace(error));
-            }
-        };
-        let Some(next_revision) = self.runtime_workspace_revision.checked_add(1) else {
-            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
-        };
-        let Ok((tabs, panes)) = Self::initial_tabs_and_panes(None) else {
-            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
-        };
+    fn try_open_workspace_root(
+        &mut self,
+        path: &Path,
+    ) -> Result<EventEffect, WorkspaceSelectionError> {
+        let workspace = Workspace::open_root(path).map_err(WorkspaceSelectionError::Workspace)?;
+        let next_revision = self
+            .runtime_workspace_revision
+            .checked_add(1)
+            .ok_or(WorkspaceSelectionError::RevisionExhausted)?;
+        let (tabs, panes) = Self::initial_tabs_and_panes(None)
+            .map_err(|_| WorkspaceSelectionError::RevisionExhausted)?;
         self.tabs = tabs;
         self.panes = panes;
         self.document = EditorDocument::scratch("");
@@ -7529,10 +7544,9 @@ impl EditorApp {
         record_project_settings_result(self, result);
         self.active_workspace_entry = None;
         self.file_tree = FileTreeState::default();
-        if self.prime_workspace_launch().is_err() {
-            return self.record_workspace_error(&WorkspaceSelectionError::RevisionExhausted);
-        }
-        EventEffect::document_replacement()
+        self.prime_workspace_launch()
+            .map_err(|_| WorkspaceSelectionError::RevisionExhausted)?;
+        Ok(EventEffect::document_replacement())
     }
 
     // Matches resolved paths too, since a link may name a file already open.
@@ -8555,6 +8569,7 @@ const fn surface_event_kind(event: &SurfaceEvent) -> u64 {
         SurfaceEvent::Wake { .. } => 9,
         SurfaceEvent::CloseRequested { .. } => 10,
         SurfaceEvent::Menu { .. } => 11,
+        SurfaceEvent::OpenPaths { .. } => 12,
     }
 }
 
@@ -9834,6 +9849,7 @@ pub mod native_validation {
                 // the keyboard and pointer, never the menu bar.
                 SurfaceEvent::Accessibility { .. }
                 | SurfaceEvent::Menu { .. }
+                | SurfaceEvent::OpenPaths { .. }
                 | SurfaceEvent::Resize { .. }
                 | SurfaceEvent::Clipboard { .. }
                 | SurfaceEvent::Wake { .. }
@@ -10745,6 +10761,10 @@ mod crash_process_tests;
 #[cfg(test)]
 #[path = "keymap_parity_tests.rs"]
 mod keymap_parity_tests;
+
+#[cfg(test)]
+#[path = "open_paths_tests.rs"]
+mod open_paths_tests;
 
 #[cfg(test)]
 #[path = "project_search_tests.rs"]

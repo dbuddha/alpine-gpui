@@ -1,6 +1,6 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
-updated: 2026-10-17
+updated: 2026-10-18
 precedence: AGENTS.md files, code comments, README.md
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
@@ -41,7 +41,7 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open and merge PRs, and delete their own merged branches, except ask_first"
 next:
-  - "S: S7 qualification, S8 stall log, then S9 and S10"
+  - "S: S7 qualification, owner checks for S11 and S12, flake fixes"
   - "M1 follow-up: does rust-analyzer load the open-repo workspace?"
   - "CP-S: owner dogfood day after S10"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]

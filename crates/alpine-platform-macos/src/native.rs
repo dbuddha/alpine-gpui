@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use std::{ffi::c_void, ptr::NonNull};
+use std::{ffi::c_void, path::PathBuf, ptr::NonNull};
 
 use alpine_core::Point;
 
@@ -36,7 +36,7 @@ use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
 use objc2_foundation::NSDate;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSObject, NSObjectProtocol,
-    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+    NSPoint, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
     NSUTF8StringEncoding,
 };
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLPixelFormat};
@@ -57,6 +57,7 @@ use alpine_scene::Scene;
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
 
+use crate::menu::MenuSignal;
 use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
 use crate::recorder::{self, TaskUsage};
 use crate::{
@@ -3281,6 +3282,7 @@ struct DisplayLinkDelegateIvars {
     layer: Option<Retained<CAMetalLayer>>,
     display_link: Option<Retained<CAMetalDisplayLink>>,
     event_handler: RefCell<Option<SurfaceEventHandler>>,
+    open_paths: RefCell<PendingOpenPaths>,
     event_sequence: Cell<u64>,
     #[cfg(alpine_native_validation)]
     validation_pasteboard: RefCell<Option<ValidationPasteboard>>,
@@ -3301,6 +3303,65 @@ struct DisplayLinkDelegateIvars {
     display_link_silence: Cell<bool>,
     #[cfg(alpine_native_validation)]
     frame_progress: FrameProgressCounters,
+}
+
+const OPEN_PATHS_LIMIT: usize = 64;
+
+/// Paths macOS asked to open, held until an installed, idle handler takes them.
+#[derive(Debug, Default, PartialEq)]
+struct PendingOpenPaths {
+    paths: Vec<PathBuf>,
+    dropped: usize,
+    // Open modal panels; a panel's command must apply to the tab it chose.
+    holds: u32,
+}
+
+impl PendingOpenPaths {
+    /// Queues a file URL's path. Other URLs are ignored; overflow is counted.
+    // Only resolvable file paths count, whether admitted or dropped.
+    fn admit(&mut self, url: &NSURL) {
+        let Some(path) = file_url_path(url) else {
+            return;
+        };
+        if self.paths.len() >= OPEN_PATHS_LIMIT {
+            self.dropped = self.dropped.saturating_add(1);
+        } else {
+            self.paths.push(path);
+        }
+    }
+
+    fn hold(&mut self) {
+        self.holds = self.holds.saturating_add(1);
+    }
+
+    fn release(&mut self) {
+        self.holds = self.holds.saturating_sub(1);
+    }
+
+    /// Takes the batch only with no panel open and an installed, idle handler.
+    fn take_ready<H>(&mut self, handler: &RefCell<Option<H>>) -> Option<Self> {
+        let ready = self.holds == 0
+            && !self.paths.is_empty()
+            && handler.try_borrow().is_ok_and(|handler| handler.is_some());
+        ready.then(|| std::mem::take(self))
+    }
+
+    fn into_event(self, timestamp: EventTimestamp) -> SurfaceEvent {
+        SurfaceEvent::OpenPaths {
+            timestamp,
+            paths: self.paths.into_boxed_slice(),
+            dropped: self.dropped,
+        }
+    }
+}
+
+/// Converts a file URL, including a file reference URL, to an absolute path.
+fn file_url_path(url: &NSURL) -> Option<PathBuf> {
+    if !url.isFileURL() {
+        return None;
+    }
+    let path = PathBuf::from(url.filePathURL()?.path()?.to_string());
+    path.is_absolute().then_some(path)
 }
 
 // A live 30 Hz link updates every 33.3 ms. A delayed tick pulls the next one
@@ -3580,11 +3641,9 @@ define_class!(
         }
     }
 
-    // SAFETY: The selector and Rust signature exactly match the generated
-    // NSApplicationDelegate protocol. Alpine owns one process application and
-    // installs this main-thread-only delegate only for the native surface
-    // lifetime. Termination is always cancelled at AppKit so the admitted
-    // window-close path can drain and return through Rust ownership.
+    // SAFETY: Each selector's Rust signature matches NSApplicationDelegate.
+    // The main-thread-only delegate is installed for the surface lifetime, and
+    // callback arguments are borrowed for the call; only owned paths escape.
     unsafe impl NSApplicationDelegate for DisplayLinkDelegate {
         #[allow(
             non_snake_case,
@@ -3611,6 +3670,32 @@ define_class!(
                 Err(error) => self.record_dispatch_error(error),
             }
             NSApplicationTerminateReply::TerminateCancel
+        }
+
+        #[allow(
+            non_snake_case,
+            reason = "the generated protocol requires this Rust method name"
+        )]
+        #[unsafe(method(application:openURLs:))]
+        fn application_openURLs(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
+            if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
+                return;
+            }
+            let queued = self
+                .ivars()
+                .open_paths
+                .try_borrow_mut()
+                .is_ok_and(|mut pending| {
+                    urls.iter().for_each(|url| pending.admit(&url));
+                    !pending.paths.is_empty()
+                });
+            if queued
+                && let Some(window) = &self.ivars().window
+                && window.isMiniaturized()
+            {
+                window.deminiaturize(None);
+            }
+            self.deliver_pending_open_paths();
         }
     }
 
@@ -3808,6 +3893,7 @@ impl DisplayLinkDelegate {
         if let Err(error) = self.try_dispatch_native_input_event(event, receipt) {
             self.record_dispatch_error(error);
         }
+        self.deliver_pending_open_paths();
     }
 
     fn try_dispatch_native_input_event(
@@ -3905,7 +3991,40 @@ impl DisplayLinkDelegate {
         &self,
         event: SurfaceEvent,
     ) -> Result<CloseDisposition, SurfaceError> {
-        self.dispatch_surface_event_at(event, EventReceipt::now())
+        let result = self.dispatch_surface_event_at(event, EventReceipt::now());
+        self.deliver_pending_open_paths();
+        result
+    }
+
+    /// Holds delivery while a modal panel is open; closing delivers.
+    fn hold_open_paths(&self, hold: bool) {
+        if let Ok(mut pending) = self.ivars().open_paths.try_borrow_mut() {
+            if hold {
+                pending.hold();
+            } else {
+                pending.release();
+            }
+        }
+        self.deliver_pending_open_paths();
+    }
+
+    /// Hands queued paths to an installed, idle handler. Paths queued while a
+    /// dispatch held it arrive when that dispatch returns, so nothing polls.
+    fn deliver_pending_open_paths(&self) {
+        if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE
+            || self.ivars().window_close_started.load(Ordering::Acquire)
+        {
+            return;
+        }
+        let batch = self
+            .ivars()
+            .open_paths
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut pending| pending.take_ready(&self.ivars().event_handler));
+        if let Some(batch) = batch {
+            self.dispatch_callback_event(batch.into_event(self.next_event_timestamp()));
+        }
     }
 
     fn dispatch_surface_event_at(
@@ -5087,6 +5206,7 @@ impl NativeSurface {
                 layer: builder.layer.clone(),
                 display_link: builder.display_link.clone(),
                 event_handler: RefCell::new(None),
+                open_paths: RefCell::new(PendingOpenPaths::default()),
                 event_sequence: Cell::new(0),
                 #[cfg(alpine_native_validation)]
                 validation_pasteboard: RefCell::new(None),
@@ -5232,16 +5352,22 @@ impl NativeSurface {
         let menu_installed = MainThreadMarker::new().is_some_and(|main_thread| {
             crate::menu::install_handler(
                 main_thread,
-                Box::new(move |action| {
+                Box::new(move |signal| match signal {
                     // A menu command the editor never sees must not be
                     // silent, so a rejected dispatch reaches the surface error
                     // path exactly as a failed input event does.
-                    if let Err(error) = menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
-                        timestamp: menu_delegate.next_event_timestamp(),
-                        action,
-                    }) {
-                        menu_delegate.record_dispatch_error(error);
+                    MenuSignal::Action(action) => {
+                        if let Err(error) =
+                            menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
+                                timestamp: menu_delegate.next_event_timestamp(),
+                                action,
+                            })
+                        {
+                            menu_delegate.record_dispatch_error(error);
+                        }
                     }
+                    MenuSignal::PanelOpened => menu_delegate.hold_open_paths(true),
+                    MenuSignal::PanelClosed => menu_delegate.hold_open_paths(false),
                 }),
             )
         });
@@ -5250,6 +5376,8 @@ impl NativeSurface {
             self.delegate.clear_event_handler();
             return Err(SurfaceError::invariant(SurfaceOperation::RunLoop));
         }
+        // Paths opened at launch may have arrived before the handler existed.
+        self.delegate.deliver_pending_open_paths();
         let (input_epoch, focused) = self.view.input_focus_state();
         if input_epoch != InputEpoch::INITIAL || !focused {
             let _close = self.delegate.dispatch_surface_event(SurfaceEvent::Focus {
@@ -5749,6 +5877,56 @@ impl NativeSurface {
             return Err(SurfaceError::invariant(SurfaceOperation::Application));
         }
         Ok(self.window_close_started.load(Ordering::Acquire))
+    }
+
+    #[cfg(alpine_native_validation)]
+    pub(crate) fn replay_open_urls_with_handler<F>(
+        &self,
+        urls: &[&str],
+        handler: F,
+    ) -> Result<(), SurfaceError>
+    where
+        F: FnMut(SurfaceEvent) -> SurfaceResponse + 'static,
+    {
+        let urls: Vec<Retained<NSURL>> = urls
+            .iter()
+            .filter_map(|url| NSURL::URLWithString(&NSString::from_str(url)))
+            .collect();
+        let urls = NSArray::from_retained_slice(&urls);
+        let open = || {
+            // SAFETY: This is the exact NSApplicationDelegate selector
+            // implemented above. The delegate, application and array are
+            // retained and main-thread-only for the synchronous message.
+            let () = unsafe {
+                msg_send![&*self.delegate, application: &*self.application, openURLs: &*urls]
+            };
+        };
+        // Cold launch: AppKit may open URLs before any handler exists.
+        open();
+        self.delegate.install_event_handler(handler)?;
+        self.delegate.deliver_pending_open_paths();
+        {
+            let _dispatching = self
+                .delegate
+                .ivars()
+                .event_handler
+                .try_borrow_mut()
+                .map_err(|_| SurfaceError::validation(SurfaceOperation::Validation))?;
+            open();
+        }
+        let wake = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
+            timestamp: self.delegate.next_event_timestamp(),
+        });
+        open();
+        // An open modal panel holds delivery past other dispatches.
+        self.delegate.hold_open_paths(true);
+        open();
+        let panel_wake = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
+            timestamp: self.delegate.next_event_timestamp(),
+        });
+        self.delegate.hold_open_paths(false);
+        self.delegate.clear_event_handler();
+        wake.and(panel_wake).map(|_| ())
     }
 
     #[cfg(alpine_native_validation)]
@@ -7656,6 +7834,158 @@ mod superseded_frame_tests {
         assert_eq!(identity(&rows[0]), ["5", "2", "superseded"]);
         let pending = driver.pending.as_ref().ok_or("no pending frame")?;
         assert!(pending.event_timing.is_none());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod open_paths_tests {
+    use std::error::Error;
+
+    use super::*;
+
+    fn url(text: &str) -> Result<Retained<NSURL>, Box<dyn Error>> {
+        Ok(NSURL::URLWithString(&NSString::from_str(text)).ok_or(text.to_owned())?)
+    }
+
+    fn numbered(index: usize) -> Result<Retained<NSURL>, Box<dyn Error>> {
+        url(&format!("file:///tmp/alpine-open/{index}.rs"))
+    }
+
+    fn numbered_path(index: usize) -> PathBuf {
+        PathBuf::from(format!("/tmp/alpine-open/{index}.rs"))
+    }
+
+    #[test]
+    fn file_urls_become_absolute_paths_and_other_urls_are_ignored() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            file_url_path(&*url("file:///tmp/alpine%20open/caf%C3%A9.rs")?),
+            Some(PathBuf::from("/tmp/alpine open/café.rs"))
+        );
+        let folder = NSURL::fileURLWithPath(&NSString::from_str("/tmp/alpine folder"));
+        assert_eq!(
+            file_url_path(&folder),
+            Some(PathBuf::from("/tmp/alpine folder"))
+        );
+        for other in [
+            "x-remote://example.invalid/tmp/a.rs",
+            "mailto:someone@example.com",
+            "x-alpine:///tmp/a.rs",
+            "file:relative.rs",
+        ] {
+            assert_eq!(file_url_path(&*url(other)?), None, "{other}");
+        }
+
+        // Finder may hand over a file reference URL; it resolves to the path.
+        let file = std::env::temp_dir().join(format!("alpine-open-ref-{}", std::process::id()));
+        std::fs::write(&file, "reference\n")?;
+        let path_url = NSURL::fileURLWithPath(&NSString::from_str(
+            file.to_str().ok_or("temporary path is not UTF-8")?,
+        ));
+        let reference = path_url.fileReferenceURL().ok_or("no file reference URL")?;
+        let resolved = file_url_path(&reference).ok_or("reference did not resolve")?;
+        let same = std::fs::canonicalize(&resolved)? == std::fs::canonicalize(&file)?;
+        std::fs::remove_file(&file)?;
+        assert!(same, "{} is not {}", resolved.display(), file.display());
+        Ok(())
+    }
+
+    #[test]
+    fn a_batch_keeps_the_first_64_paths_in_order_and_counts_the_rest() -> Result<(), Box<dyn Error>>
+    {
+        let mut pending = PendingOpenPaths::default();
+        for index in 0..40 {
+            pending.admit(&*numbered(index)?);
+        }
+        // A non-file URL is ignored, not counted as dropped.
+        pending.admit(&*url("x-remote://example.invalid/a.rs")?);
+        for index in 40..70 {
+            pending.admit(&*numbered(index)?);
+        }
+        let handler: RefCell<Option<SurfaceEventHandler>> =
+            RefCell::new(Some(Box::new(|_| SurfaceResponse::default())));
+        let event = pending
+            .take_ready(&handler)
+            .map(|batch| batch.into_event(EventTimestamp::new(3)));
+        let expected: Box<[PathBuf]> = (0..OPEN_PATHS_LIMIT).map(numbered_path).collect();
+        assert_eq!(OPEN_PATHS_LIMIT, 64);
+        assert_eq!(
+            event,
+            Some(SurfaceEvent::OpenPaths {
+                timestamp: EventTimestamp::new(3),
+                paths: expected,
+                dropped: 6,
+            })
+        );
+        assert_eq!(pending, PendingOpenPaths::default());
+        Ok(())
+    }
+
+    #[test]
+    fn paths_wait_for_an_idle_handler_then_arrive_once_in_order() -> Result<(), Box<dyn Error>> {
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let handler: RefCell<Option<SurfaceEventHandler>> = RefCell::new(None);
+        let mut pending = PendingOpenPaths::default();
+        let deliver = |pending: &mut PendingOpenPaths, timestamp: u64| {
+            let Some(batch) = pending.take_ready(&handler) else {
+                return false;
+            };
+            if let Some(handler) = handler.borrow_mut().as_mut() {
+                handler(batch.into_event(EventTimestamp::new(timestamp)));
+            }
+            true
+        };
+
+        // Cold launch: AppKit delivers before the surface installs a handler.
+        pending.admit(&*numbered(0)?);
+        pending.admit(&*numbered(1)?);
+        assert!(!deliver(&mut pending, 1));
+
+        let sink = Rc::clone(&received);
+        *handler.borrow_mut() = Some(Box::new(move |event| {
+            sink.borrow_mut().push(event);
+            SurfaceResponse::default()
+        }));
+        // A dispatch in progress holds the handler; delivery waits for it.
+        {
+            let _dispatching = handler.borrow_mut();
+            pending.admit(&*numbered(2)?);
+            assert!(pending.take_ready(&handler).is_none());
+        }
+        assert!(deliver(&mut pending, 2));
+        assert!(!deliver(&mut pending, 3));
+
+        let expected: Box<[PathBuf]> = (0..3).map(numbered_path).collect();
+        assert_eq!(
+            received.borrow().as_slice(),
+            [SurfaceEvent::OpenPaths {
+                timestamp: EventTimestamp::new(2),
+                paths: expected,
+                dropped: 0,
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_modal_panel_holds_paths_until_it_closes() -> Result<(), Box<dyn Error>> {
+        let handler: RefCell<Option<SurfaceEventHandler>> =
+            RefCell::new(Some(Box::new(|_| SurfaceResponse::default())));
+        let mut pending = PendingOpenPaths::default();
+        pending.hold();
+        pending.admit(&*numbered(0)?);
+        assert!(pending.take_ready(&handler).is_none(), "panel open");
+        pending.hold();
+        pending.release();
+        assert!(pending.take_ready(&handler).is_none(), "outer panel open");
+        pending.release();
+        let batch = pending.take_ready(&handler).ok_or("panel closed")?;
+        assert_eq!(batch.paths, [numbered_path(0)]);
+
+        // An unmatched release cannot underflow into a permanent hold.
+        pending.release();
+        pending.admit(&*numbered(1)?);
+        assert!(pending.take_ready(&handler).is_some());
         Ok(())
     }
 }

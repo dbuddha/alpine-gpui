@@ -186,6 +186,69 @@ cat > "$contents/Info.plist" <<EOF
     <string>en</string>
     <key>CFBundleDisplayName</key>
     <string>Alpine Editor</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Text and source code</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+                <string>public.source-code</string>
+                <string>public.text</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>rs</string>
+                <string>toml</string>
+                <string>lock</string>
+                <string>py</string>
+                <string>ts</string>
+                <string>tsx</string>
+                <string>js</string>
+                <string>jsx</string>
+                <string>mjs</string>
+                <string>cjs</string>
+                <string>json</string>
+                <string>md</string>
+                <string>c</string>
+                <string>h</string>
+                <string>cc</string>
+                <string>cpp</string>
+                <string>hpp</string>
+                <string>java</string>
+                <string>go</string>
+                <string>sh</string>
+                <string>yaml</string>
+                <string>yml</string>
+                <string>txt</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>Source code</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Folder</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.folder</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleExecutable</key>
     <string>alpine-editor</string>
     <key>CFBundleIconFile</key>
