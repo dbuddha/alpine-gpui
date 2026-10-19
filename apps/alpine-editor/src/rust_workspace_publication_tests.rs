@@ -17,9 +17,12 @@ use super::{
     EditorApp, EditorCommand, EditorWorkerOutput, KEY_DELETE_BACKWARD, KEY_ESCAPE, KEY_RETURN,
     LocalStatus, WorkspaceEditApplicationError, WorkspaceEditKind, WorkspaceEditPublicationError,
     WorkspaceEditPublicationOutput, WorkspaceEditPublicationRequest, accessibility,
-    journal_path_for_session, recover_explicit_workspace_edit, recover_workspace_edit_for_session,
+    journal_path_for_session,
+    language_services::roster_tests,
+    recover_explicit_workspace_edit, recover_workspace_edit_for_session,
     rust_diagnostics::{
-        RustDocumentInput, WorkspaceEditIdentity, WorkspaceEditPreparationOutput,
+        LanguageWakeLatch, RustDocumentInput, WorkspaceEditIdentity,
+        WorkspaceEditPreparationOutput,
         tests::{diagnostics, fixture, mock_executable},
     },
     rust_navigation::local_file_uri,
@@ -473,6 +476,100 @@ fn publication_admits_committed_bytes_into_an_inactive_loaded_tab()
     assert!(!inactive.is_dirty());
     drop(app);
     fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// Hands the server the app's open tabs and shown document, as each event does.
+fn sync_language(app: &mut EditorApp, latch: &LanguageWakeLatch) {
+    let paths: Vec<std::path::PathBuf> = (0..app.tabs.len())
+        .filter_map(|index| app.tabs.path_at(index).map(std::path::Path::to_path_buf))
+        .collect();
+    app.rust_diagnostics
+        .replace_open_paths(paths.iter().map(std::path::PathBuf::as_path));
+    let input = app.active_rust_document();
+    let _ = app.rust_diagnostics.sync(input, roster_tests::waker(latch));
+}
+
+fn sync_language_until_published(
+    app: &mut EditorApp,
+    latch: &LanguageWakeLatch,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let before = app.rust_diagnostics.snapshot().diagnostic_publications;
+    sync_language(app, latch);
+    roster_tests::drive_until(
+        &mut app.rust_diagnostics,
+        latch,
+        "publication",
+        |services| services.snapshot().diagnostic_publications > before,
+    )
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn publication_into_an_open_background_tab_sends_its_text_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let recording = roster_tests::Recording::new();
+    let root = recording.root.clone();
+    let first_path = root.join("main.rs");
+    let first_original = fs::read_to_string(&first_path)?;
+    let second_path = root.join("second.rs");
+    fs::write(&second_path, "fn second( {\n")?;
+    let mut app = EditorApp::open_file(TestTextSystem, &first_path)?;
+    app.rust_diagnostics = recording.services()?;
+    let latch = LanguageWakeLatch::default();
+    sync_language_until_published(&mut app, &latch)?;
+    app.open_workspace_path(&second_path, None)?;
+    sync_language_until_published(&mut app, &latch)?;
+
+    let language_identity = app.language_identity();
+    let session_path = root.join("session-v2.json");
+    app.session_path = Some(session_path.clone());
+    let language = app.rust_diagnostics.snapshot();
+    let identity = WorkspaceEditIdentity::for_test(
+        language_identity,
+        language.process_epoch,
+        language.lsp_version,
+        75,
+        WorkspaceEditKind::Rename,
+    );
+    let prepared = prepared_insert(&first_path, &root, "inactive_")?;
+    app.workspace_edits
+        .install_preview_for_test(identity, prepared)?;
+    assert!(app.queue_workspace_edit_publication().visual_changed);
+    let (queued_identity, prepared) = app
+        .workspace_edits
+        .take_queued_publication()
+        .ok_or("publication was not queued")?;
+    let output = WorkspaceEditPublicationRequest::new(
+        queued_identity,
+        journal_path_for_session(&session_path)?,
+        prepared,
+    )
+    .execute();
+    let _ = app.apply_workspace_edit_publication_output(output);
+    // Showing the edited tab again sends nothing more for it.
+    app.open_workspace_path(&first_path, None)?;
+    sync_language(&mut app, &latch);
+    roster_tests::barrier(&mut app.rust_diagnostics, &latch)?;
+    assert!(!app.rust_diagnostics.shutdown().active);
+
+    let wire = recording.wire();
+    let expected = format!("inactive_{first_original}");
+    let changes = wire.of("textDocument/didChange", &first_path);
+    assert_eq!(
+        changes.len(),
+        1,
+        "the background tab's edit reached the server {} times",
+        changes.len()
+    );
+    assert_eq!(
+        wire.last_text(&first_path).as_deref(),
+        Some(expected.as_str())
+    );
+    assert_eq!(wire.of("textDocument/didOpen", &first_path).len(), 1);
+    assert!(wire.of("textDocument/didClose", &first_path).is_empty());
+    let opened = wire.of("textDocument/didOpen", &first_path);
+    assert!(roster_tests::version(changes[0].1) > roster_tests::version(opened[0].1));
     Ok(())
 }
 

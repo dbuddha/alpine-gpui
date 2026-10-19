@@ -1,7 +1,7 @@
 ---
 scope: editor source under apps/alpine-editor/src/
 parent: ../AGENTS.md
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # Editor subsystems: language intelligence and git
@@ -14,16 +14,18 @@ invariants and product rules.
 ## Language intelligence (M4)
 
 Today: off-main-thread discovery, one server per workspace and language (cap
-5), idle shutdown of unattached slots, local-lexer highlighting, plus
-../AGENTS.md `known_defects`. A stop sends `shutdown` and `exit`, then TERMs
-and KILLs the server's process group within about 0.8 s. Eviction and idle
-stops never wait on the main thread; quit waits 1.5 s at most. rust-analyzer
-takes 1 to 4 GB on a real crate; a first query waits on its indexing.
+5), each holding up to 16 open documents at their unsaved text, least recently
+shown closed first, idle shutdown of unattached slots, local-lexer
+highlighting, plus ../AGENTS.md `known_defects`. A stop sends `shutdown` and
+`exit`, then TERMs and KILLs the server's process group within about 0.8 s.
+Eviction and idle stops never wait on the main thread; quit waits 1.5 s at
+most. rust-analyzer takes 1 to 4 GB on a real crate; a first query waits on
+its indexing.
 
 Rules:
 - Lifetime: start a server on the first visible file of its language; folder
   open starts nothing. Shut idle servers down after the TTL, and at once on
-  macOS memory pressure. Eviction and shutdown never run on the main thread.
+  macOS memory pressure.
 - OS hooks (memory pressure, FSEvents, process priority) live in
   alpine-platform-macos behind an alpine-platform trait; alpine-editor has no
   unsafe code. Each new binding, crate feature or unsafe file is `ask_first`.
@@ -64,7 +66,7 @@ Slices, serial:
 3. Pool and discovery: evict the least recently used server with no visible
    tab, a deadline thread, memory-pressure shutdown, sync only on real
    changes, install hints. Closes 2.1 (cold path) and 2.3.
-4. Incremental sync and `didSave`; up to 16 open documents per server.
+4. Incremental sync and `didSave`.
 5. Decoding off the main thread: typed structs, a per-turn budget, newest
    diagnostics only, progress-aware suppression, caps that truncate.
 6. Quiet completion with local filtering and auto-import edits.

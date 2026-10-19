@@ -360,11 +360,13 @@ fn portable_mock_reuses_one_process_across_workspace_document_switches()
             )
             .visual_changed
     );
+    // Versions never repeat within a session, so the second document opens
+    // above the first's.
     let second = wait_for_product_diagnostics(
         &mut model,
         &latch,
         first.diagnostic_publications.saturating_add(1),
-        1,
+        2,
         false,
         true,
     )?;
@@ -387,14 +389,16 @@ fn portable_mock_reuses_one_process_across_workspace_document_switches()
             )
             .visual_changed
     );
-    let returned = wait_for_product_diagnostics(
-        &mut model,
-        &latch,
-        second.diagnostic_publications.saturating_add(1),
-        1,
-        false,
-        true,
-    )?;
+    // The first document is still open: its cached diagnostics return at
+    // once, with no new open and so no new publication.
+    let returned = model.snapshot();
+    assert_eq!(
+        returned.diagnostic_publications,
+        second.diagnostic_publications
+    );
+    assert_eq!(returned.diagnostic_version, Some(1));
+    assert!(returned.diagnostic_items > 0);
+    assert_eq!(returned.lsp_version, 1);
     assert_eq!(returned.process_starts, 1);
     assert_eq!(returned.process_epoch, first.process_epoch);
     assert_eq!(returned.document_switches, 2);

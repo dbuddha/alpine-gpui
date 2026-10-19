@@ -7817,6 +7817,10 @@ impl EditorApp {
                     .inactive_document_mut_for_path(file.path())
                     .ok_or(WorkspaceEditApplicationError::StaleLoadedDocument)?;
                 document.admit_persisted_edit(file)?;
+                let snapshot = document.buffer().snapshot();
+                let _ = self
+                    .rust_diagnostics
+                    .update_background(file.path(), &snapshot);
             }
         }
         if let Some(report) = active_report {
