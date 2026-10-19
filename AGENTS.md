@@ -23,12 +23,12 @@ budgets:
   event_to_submit_p95_ms: 4
   idle_cpu_pct_of_one_core: 1
   idle_frame_submissions: 0
-  editor_footprint_steady: first M1 baseline plus 10 percent
+  editor_footprint_steady: 30.5 MiB (M1 idle tree p50 27.7 MiB plus 10 percent)
   language_servers: reported per server, not gated
 milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
   - {id: M0e, name: "fix hosted native flakes", status: done}
-  - {id: M1, name: "measurement: perf recorder and bench", status: active}
+  - {id: M1, name: "measurement: perf recorder and bench", status: done}
   - {id: S, name: "stability: no lost text or hangs", status: planned}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
@@ -39,9 +39,9 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open PRs, merge, and delete their own merged PR branches, except ask_first"
 next:
-  - "Cleanup: land #656 after its live check"
-  - "M1 close: ten-trial baseline, budgets, CP1"
   - "S: S7 qualification, S8 stall log, then S9 and S10"
+  - "M1 follow-up: confirm rust-analyzer loads the workspace in open-repo"
+  - "CP-S: owner dogfood day after S10"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
