@@ -7,6 +7,7 @@ mod apps;
 mod baseline;
 mod cli;
 mod fixtures;
+mod gate;
 mod helpers;
 mod isolation;
 mod paths;
