@@ -23,7 +23,9 @@ use crate::{
     lsp_language::{
         DiagnosticBatch, LanguageProtocolError, LspDocument, LspPosition, initialize_params,
     },
-    lsp_process::{ConfigError, ProcessIdentity, ProcessSpec, ProcessWake, StopReason},
+    lsp_process::{
+        ConfigError, ProcessIdentity, ProcessSpec, ProcessStop, ProcessWake, StopReason,
+    },
     rust_completion::{CompletionBatch, CompletionError, CompletionItem},
     rust_navigation::{HoverContent, NavigationError, SourceLocation, SourceLocations},
     rust_symbols::{
@@ -2425,6 +2427,20 @@ impl RustDiagnostics {
             .is_some_and(|session| session.pending_workspace_edit.is_some())
     }
 
+    /// Stops the session without waiting and clears its state at once. The
+    /// caller finishes or detaches the returned stop.
+    pub(crate) fn begin_stop(&mut self) -> Option<ProcessStop> {
+        let stop = self
+            .session
+            .take()
+            .map(|mut session| session.client.begin_stop());
+        self.target = None;
+        self.status = None;
+        self.workspace_edit_preparation = None;
+        stop
+    }
+
+    #[cfg(test)]
     pub(crate) fn shutdown(&mut self) -> RustDiagnosticsSnapshot {
         if let Some(session) = self.session.as_mut() {
             let _ = session.client.shutdown();

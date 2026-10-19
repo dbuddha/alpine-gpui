@@ -2,6 +2,7 @@
 //! commit, tree state, machine, macOS build, display mode, power state and
 //! the versions of Alpine, Zed and the reference app.
 
+use crate::apps::App;
 use crate::helpers::Display;
 use crate::procs;
 use std::fs;
@@ -28,6 +29,20 @@ impl Stamp {
     pub fn require(&self, key: &str) -> Result<&str, String> {
         self.get(key)
             .ok_or_else(|| format!("run stamp has no {key}"))
+    }
+
+    /// The entries that name the installed copy of `app`.
+    pub fn installed(&self, app: App) -> Vec<(String, String)> {
+        let prefix = match app {
+            App::Zed => "zed_",
+            App::Alpine => "alpine_",
+            App::AppKit => "appkit_",
+        };
+        self.entries
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .cloned()
+            .collect()
     }
 }
 
@@ -269,33 +284,284 @@ pub fn collect(inputs: &StampInputs<'_>) -> Stamp {
     let batt = command_or_unknown("/usr/bin/pmset", &["-g", "batt"]);
     let settings = command_or_unknown("/usr/bin/pmset", &["-g"]);
     stamp.push("power", power_state(&batt, &settings));
-    stamp.push("zed_version", zed_version(inputs.zed_app));
-    match alpine_identity(inputs.alpine_bundle) {
-        Ok(identity) => {
-            stamp.push(
-                "alpine_version",
-                format!(
-                    "{}+{}",
-                    identity.workspace_version,
-                    identity.revision.chars().take(12).collect::<String>()
-                ),
-            );
-            stamp.push("alpine_revision", identity.revision);
-            stamp.push("alpine_tree", identity.tree);
-            stamp.push("alpine_executable_sha256", identity.executable_sha256);
+    for app in [App::Zed, App::Alpine, App::AppKit] {
+        let installed = app_entries(
+            app,
+            inputs.alpine_bundle,
+            inputs.zed_app,
+            inputs.helpers_dir,
+        );
+        for (key, value) in installed {
+            stamp.push(&key, value);
         }
-        Err(error) => stamp.push("alpine_version", format!("unavailable ({error})")),
     }
-    stamp.push("appkit_version", appkit_version(inputs.helpers_dir));
     stamp
+}
+
+/// The entries that name the installed copy of `app`, as the stamp keeps
+/// them: what a replaced bundle or a rebuilt helper would change.
+pub fn app_entries(
+    app: App,
+    alpine_bundle: &Path,
+    zed_app: &Path,
+    helpers_dir: &Path,
+) -> Vec<(String, String)> {
+    let entry = |key: &str, value: String| (key.to_owned(), value);
+    match app {
+        App::Zed => vec![entry("zed_version", zed_version(zed_app))],
+        App::Alpine => match alpine_identity(alpine_bundle) {
+            Ok(identity) => {
+                let revision: String = identity.revision.chars().take(12).collect();
+                vec![
+                    entry(
+                        "alpine_version",
+                        format!("{}+{revision}", identity.workspace_version),
+                    ),
+                    entry("alpine_revision", identity.revision),
+                    entry("alpine_tree", identity.tree),
+                    entry("alpine_executable_sha256", identity.executable_sha256),
+                ]
+            }
+            Err(error) => vec![entry("alpine_version", format!("unavailable ({error})"))],
+        },
+        App::AppKit => vec![entry("appkit_version", appkit_version(helpers_dir))],
+    }
+}
+
+/// What differs between an app's stamped entries and its entries now, or
+/// none if they match.
+pub fn changed(was: &[(String, String)], now: &[(String, String)]) -> Option<String> {
+    let find = |list: &[(String, String)], key: &str| {
+        list.iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+    };
+    let mut parts = Vec::new();
+    for (key, old) in was {
+        match find(now, key) {
+            Some(new) if &new == old => {}
+            Some(new) => parts.push(format!("{key} was {old}, now {new}")),
+            None => parts.push(format!("{key} was {old}, now missing")),
+        }
+    }
+    for (key, new) in now {
+        if find(was, key).is_none() {
+            parts.push(format!("{key} is new: {new}"));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Stamp, display_mode, is_ac_full_power, parse_alpine_identity, power_state, tree_state, utc,
+        Stamp, StampInputs, app_entries, changed, collect, display_mode, is_ac_full_power,
+        parse_alpine_identity, power_state, tree_state, utc,
     };
+    use crate::apps::App;
     use crate::helpers::Display;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn entries(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    /// The three installs a run can measure, laid out in a scratch directory.
+    struct Installs {
+        alpine: PathBuf,
+        zed: PathBuf,
+        helpers: PathBuf,
+    }
+
+    impl Installs {
+        fn new(name: &str) -> Result<Self, String> {
+            let dir = crate::test_dir(name)?;
+            let installs = Self {
+                alpine: dir.join("Alpine Editor.app"),
+                zed: dir.join("Zed.app"),
+                helpers: dir.join("helpers"),
+            };
+            for path in [
+                installs.alpine.join("Contents/Resources"),
+                installs.zed.join("Contents"),
+                installs.helpers.clone(),
+            ] {
+                fs::create_dir_all(&path)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
+            installs.zed_is("1.22.0", "20260930")?;
+            installs.alpine_is("4660")?;
+            installs.helpers_are("aaaaaaaaaaaa")?;
+            Ok(installs)
+        }
+
+        fn put(path: &Path, text: &str) -> Result<(), String> {
+            fs::write(path, text).map_err(|error| format!("{}: {error}", path.display()))
+        }
+
+        fn zed_is(&self, short: &str, build: &str) -> Result<(), String> {
+            Self::put(
+                &self.zed.join("Contents/Info.plist"),
+                &format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                     <plist version=\"1.0\"><dict>\
+                     <key>CFBundleShortVersionString</key><string>{short}</string>\
+                     <key>CFBundleVersion</key><string>{build}</string>\
+                     </dict></plist>\n"
+                ),
+            )
+        }
+
+        fn alpine_is(&self, executable_sha256: &str) -> Result<(), String> {
+            Self::put(
+                &self
+                    .alpine
+                    .join("Contents/Resources/alpine-build-identity.toml"),
+                &format!(
+                    "revision = \"26597c013b6dbaf50a0fb6ee8aa650aadb579acf\"\n\
+                     tree = \"clean\"\nworkspace_version = \"0.0.0\"\n\
+                     executable_sha256 = \"{executable_sha256}\"\n"
+                ),
+            )
+        }
+
+        fn helpers_are(&self, hash: &str) -> Result<(), String> {
+            Self::put(
+                &self.helpers.join("stamp.tsv"),
+                &format!(
+                    "swiftc\tApple Swift version 6.1 (swiftlang)\n\
+                     source\treference-appkit/ReferenceEditor.swift\t{hash}0000\n"
+                ),
+            )
+        }
+
+        fn entries(&self, app: App) -> Vec<(String, String)> {
+            app_entries(app, &self.alpine, &self.zed, &self.helpers)
+        }
+    }
+
+    #[test]
+    fn a_changed_install_is_named_and_an_unchanged_one_is_not() {
+        let zed = entries(&[("zed_version", "1.22.0 (1)")]);
+        assert_eq!(changed(&zed, &zed), None);
+        let update = entries(&[("zed_version", "1.23.0 (2)")]);
+        let message = changed(&zed, &update).unwrap_or_default();
+        assert!(
+            message.contains("zed_version was 1.22.0 (1), now 1.23.0 (2)"),
+            "{message}"
+        );
+        // Entries that vanish or appear count; their order does not.
+        let alpine = entries(&[("alpine_version", "0.0.0+abc"), ("alpine_revision", "abc")]);
+        let reordered = entries(&[("alpine_revision", "abc"), ("alpine_version", "0.0.0+abc")]);
+        assert_eq!(changed(&alpine, &reordered), None);
+        let unreadable = entries(&[("alpine_version", "unavailable (read x)")]);
+        let gone = changed(&alpine, &unreadable).unwrap_or_default();
+        assert!(
+            gone.contains("alpine_revision was abc, now missing"),
+            "{gone}"
+        );
+        let back = changed(&unreadable, &alpine).unwrap_or_default();
+        assert!(back.contains("alpine_revision is new: abc"), "{back}");
+    }
+
+    #[test]
+    fn each_app_is_identified_by_its_own_install_and_nothing_else() -> Result<(), String> {
+        let installs = Installs::new("install-identity")?;
+        assert_eq!(
+            installs.entries(App::Zed),
+            entries(&[("zed_version", "1.22.0 (20260930)")])
+        );
+        assert_eq!(
+            installs.entries(App::Alpine),
+            entries(&[
+                ("alpine_version", "0.0.0+26597c013b6d"),
+                (
+                    "alpine_revision",
+                    "26597c013b6dbaf50a0fb6ee8aa650aadb579acf"
+                ),
+                ("alpine_tree", "clean"),
+                ("alpine_executable_sha256", "4660"),
+            ])
+        );
+        assert_eq!(
+            installs.entries(App::AppKit),
+            entries(&[("appkit_version", "src-aaaaaaaaaaaa swift-6.1")])
+        );
+        // Replacing one install changes that app's identity and no other.
+        let before = [App::Zed, App::Alpine, App::AppKit].map(|app| installs.entries(app));
+        installs.zed_is("1.23.0", "20261001")?;
+        let after = [App::Zed, App::Alpine, App::AppKit].map(|app| installs.entries(app));
+        assert_ne!(before[0], after[0]);
+        assert_eq!((&before[1], &before[2]), (&after[1], &after[2]));
+        installs.alpine_is("9999")?;
+        let rebuilt = [App::Zed, App::Alpine, App::AppKit].map(|app| installs.entries(app));
+        assert_ne!(after[1], rebuilt[1]);
+        assert_eq!((&after[0], &after[2]), (&rebuilt[0], &rebuilt[2]));
+        installs.helpers_are("bbbbbbbbbbbb")?;
+        let last = [App::Zed, App::Alpine, App::AppKit].map(|app| installs.entries(app));
+        assert_ne!(rebuilt[2], last[2]);
+        assert_eq!((&rebuilt[0], &rebuilt[1]), (&last[0], &last[1]));
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_install_reads_as_unavailable_not_as_a_match() -> Result<(), String> {
+        let installs = Installs::new("install-missing")?;
+        let nowhere = installs.zed.join("nowhere");
+        let zed = app_entries(App::Zed, &nowhere, &nowhere, &nowhere);
+        assert!(zed[0].1.starts_with("unavailable ("), "{zed:?}");
+        let alpine = app_entries(App::Alpine, &nowhere, &nowhere, &nowhere);
+        assert_eq!(alpine.len(), 1);
+        assert!(alpine[0].1.starts_with("unavailable ("), "{alpine:?}");
+        assert_eq!(
+            app_entries(App::AppKit, &nowhere, &nowhere, &nowhere),
+            entries(&[("appkit_version", "unbuilt")])
+        );
+        // The installed app against a missing one is a change.
+        let present = installs.entries(App::Zed);
+        assert!(changed(&present, &zed).is_some());
+        Ok(())
+    }
+
+    /// The stamp is built from the same entries the gate compares later.
+    #[test]
+    fn the_stamp_keeps_each_apps_entries_in_order_for_the_gate_to_compare() -> Result<(), String> {
+        let installs = Installs::new("install-stamped")?;
+        let stamp = collect(&StampInputs {
+            repo_root: &installs.helpers,
+            alpine_bundle: &installs.alpine,
+            zed_app: &installs.zed,
+            helpers_dir: &installs.helpers,
+            displays: &[],
+        });
+        for app in [App::Zed, App::Alpine, App::AppKit] {
+            assert_eq!(stamp.installed(app), installs.entries(app), "{app:?}");
+        }
+        let keys: Vec<&str> = stamp
+            .entries
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .filter(|key| {
+                key.contains("zed_") || key.contains("alpine_") || key.contains("appkit_")
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "zed_version",
+                "alpine_version",
+                "alpine_revision",
+                "alpine_tree",
+                "alpine_executable_sha256",
+                "appkit_version",
+            ]
+        );
+        Ok(())
+    }
 
     #[test]
     fn porcelain_output_decides_tree_state() {

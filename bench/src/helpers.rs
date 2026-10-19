@@ -128,6 +128,50 @@ pub fn parse_now(text: &str) -> Result<(u64, Timebase), String> {
     ))
 }
 
+/// What `bench-window idle` reports about the owner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Presence {
+    /// Seconds since the last hardware keyboard, mouse or tablet event.
+    pub idle_seconds: f64,
+    /// The input type whose timer gave that reading.
+    pub input: String,
+    /// Whether the session's screen is locked.
+    pub locked: bool,
+}
+
+/// `idle\t<seconds>\t<input type>` and `locked\t<0 or 1>` from `bench-window
+/// idle`. A helper that names no input type reads the any-input clock, which
+/// screen capture resets, so it is refused.
+pub fn parse_presence(text: &str) -> Result<Presence, String> {
+    let record = |kind: &str| -> Result<(Vec<String>, &str), String> {
+        let line = text
+            .lines()
+            .find(|line| line.split('\t').next() == Some(kind))
+            .ok_or_else(|| format!("no {kind} line in {text:?}"))?;
+        Ok((tsv::split(line)?, line))
+    };
+    let (idle, line) = record("idle")?;
+    let idle_seconds: f64 = number(&idle, 1, line)?;
+    if !(idle_seconds.is_finite() && idle_seconds >= 0.0) {
+        return Err(format!("bad idle time in helper line {line:?}"));
+    }
+    let input = match idle.get(2) {
+        Some(name) if !name.is_empty() => name.clone(),
+        _ => return Err(format!("no input type in helper line {line:?}")),
+    };
+    let (locked, line) = record("locked")?;
+    let locked = match field(&locked, 1, line)? {
+        "0" => false,
+        "1" => true,
+        other => return Err(format!("bad lock flag {other:?} in helper line {line:?}")),
+    };
+    Ok(Presence {
+        idle_seconds,
+        input,
+        locked,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Appeared {
     pub mach: u64,
@@ -405,6 +449,14 @@ impl Helpers {
 
     pub fn displays(&self) -> Result<Vec<Display>, String> {
         parse_displays(&self.window(&["display"])?)
+    }
+
+    /// The owner's idle time and the screen lock. A helper built before
+    /// these existed fails here, so the error says how to fix it.
+    pub fn presence(&self) -> Result<Presence, String> {
+        self.window(&["idle"])
+            .and_then(|text| parse_presence(&text))
+            .map_err(|error| format!("{error}; rebuild the helpers with bench/helpers/build.sh"))
     }
 
     /// Preflight only: these calls never show a permission prompt.
@@ -842,7 +894,7 @@ mod tests {
     use super::{
         InputOutcome, InputRun, SamplerData, SamplerLine, SetKind, Timebase, failure_message,
         parse_appeared, parse_displays, parse_frame, parse_input_events, parse_permissions,
-        parse_sampler_line, parse_window_list,
+        parse_presence, parse_sampler_line, parse_window_list,
     };
     use std::path::Path;
     use std::thread;
@@ -890,6 +942,49 @@ mod tests {
         assert!(!permissions.accessibility && permissions.post_events);
         assert!(!permissions.screen_recording);
         assert!(parse_permissions("permission\tcamera\t1\n").is_err());
+        Ok(())
+    }
+
+    /// The first two texts are `bench-window idle` as the dev Mac printed it
+    /// with the owner at work; the others have their shape, locked or away.
+    #[test]
+    fn presence_parses_and_bad_readings_are_refused() -> Result<(), String> {
+        let present = parse_presence("idle\t59.987\tkeyUp\nlocked\t0\n")?;
+        assert!((present.idle_seconds - 59.987).abs() < 1e-9);
+        assert_eq!(present.input, "keyUp");
+        assert!(!present.locked);
+        let moved = parse_presence("idle\t0.137\tmouseMoved\nlocked\t0\n")?;
+        assert!((moved.idle_seconds - 0.137).abs() < 1e-9);
+        assert_eq!(moved.input, "mouseMoved");
+        let locked = parse_presence("idle\t6596.312\tkeyDown\nlocked\t1\n")?;
+        assert!((locked.idle_seconds - 6596.312).abs() < 1e-9);
+        assert_eq!(locked.input, "keyDown");
+        assert!(locked.locked);
+        let away = parse_presence("idle\t2603.323\tscrollWheel\nlocked\t0\n")?;
+        assert!((away.idle_seconds - 2603.323).abs() < 1e-9);
+        assert!(!away.locked);
+        assert!(parse_presence("idle\t0.000\tkeyUp\nlocked\t0\n")?.idle_seconds < f64::EPSILON);
+        for bad in [
+            "",
+            "front\t1\tx\n",
+            "idle\nlocked\t0\n",
+            "idle\tsoon\tkeyDown\nlocked\t0\n",
+            "idle\t-1.000\tkeyDown\nlocked\t0\n",
+            "idle\tNaN\tkeyDown\nlocked\t0\n",
+            "idle\tinf\tkeyDown\nlocked\t0\n",
+            "idle\t\tkeyDown\nlocked\t0\n",
+            "locked\t1\n",
+            // A helper from before the lock reading printed only idle.
+            "idle\t2603.323\tkeyDown\n",
+            "idle\t2603.323\tkeyDown\nlocked\n",
+            "idle\t2603.323\tkeyDown\nlocked\t2\n",
+            "idle\t2603.323\tkeyDown\nlocked\tyes\n",
+            // A helper that names no input type reads the any-input clock.
+            "idle\t2603.323\nlocked\t0\n",
+            "idle\t2603.323\t\nlocked\t0\n",
+        ] {
+            assert!(parse_presence(bad).is_err(), "{bad:?}");
+        }
         Ok(())
     }
 
