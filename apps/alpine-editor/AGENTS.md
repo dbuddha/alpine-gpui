@@ -11,17 +11,14 @@ parity:
 criteria:
   "2.1": "CI proves warm frames lex nothing and a cold first frame lexes only the laid-out range (SyntaxCache counters); the 100 ms budget, cold and warm, becomes a bench row in M1.4"
   "2.2": "Rust passes; C++ shows clangd diagnostics only; Python, Java, TypeScript and JavaScript need a server"
-  "2.3": "two warm passes; sixth eviction tested only with one slot already detached"
+  "2.3": "two warm passes; sixth eviction tested with one slot detached and with five attached"
   "2.4": "passes on main"
 known_defects:
-  - "eviction and idle shutdown block the main thread, up to about 0.8 s per server that ignores exit (evict_one, reap_idle)"
-  - "a sixth language with five attached slots kills an open tab's server"
+  - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays wait for S10"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
-  - "workspace.applyEdit is advertised but server requests get MethodNotFound"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
   - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
   - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
-  - "any LSP error reply to hover shows Navigation(Malformed) with no retry (navigation_from_response); the pinned journey hit it once in 48 CI runs (37145906382)"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"
 out_of_scope: [AI, collaboration, extensions, remote development, debugger, built-in terminal]
 ---

@@ -13,13 +13,12 @@ invariants and product rules.
 
 ## Language intelligence (M4)
 
-Today: discovery off the main thread, one server per workspace and language,
-hard cap 5, idle shutdown of
-unattached slots, local-lexer highlighting, and the `known_defects` in
-../AGENTS.md. Each server leads a process group; shutdown sends `shutdown`
-and `exit`, then TERMs and KILLs the group within about 0.8 s.
-rust-analyzer alone is 1 to 4 GB on a real crate. A big project's first
-query still waits on the server's own indexing.
+Today: off-main-thread discovery, one server per workspace and language (cap
+5), idle shutdown of unattached slots, local-lexer highlighting, plus
+../AGENTS.md `known_defects`. A stop sends `shutdown` and `exit`, then TERMs
+and KILLs the server's process group within about 0.8 s. Eviction and idle
+stops never wait on the main thread; quit waits 1.5 s at most. rust-analyzer
+takes 1 to 4 GB on a real crate; a first query waits on its indexing.
 
 Rules:
 - Lifetime: start a server on the first visible file of its language; folder
