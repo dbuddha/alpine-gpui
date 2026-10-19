@@ -41,9 +41,9 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open and merge PRs, and delete their own merged branches, except ask_first"
 next:
-  - "S: S7 qualification, S8 stall log, then S9 and S10"
+  - "S: S7 qualification, S12 owner check, S11 Open With, flake fixes"
   - "M1 follow-up: does rust-analyzer load the open-repo workspace?"
-  - "CP-S: owner dogfood day after S10"
+  - "CP-S: owner dogfood day"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]
 ---
 
