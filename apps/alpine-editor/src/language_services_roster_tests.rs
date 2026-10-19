@@ -67,6 +67,12 @@ impl Recording {
         })
     }
 
+    /// Drops the record, so the next process starts a fresh one.
+    pub(crate) fn forget_wire(&self) -> TestResult {
+        fs::remove_file(&self.record)?;
+        Ok(())
+    }
+
     /// Every frame the current server process has read, in order.
     pub(crate) fn wire(&self) -> Wire {
         let bytes = fs::read(&self.record).unwrap_or_default();
@@ -180,6 +186,10 @@ impl Tab {
         transaction.replace(0..self.buffer.snapshot().len_bytes(), text)?;
         self.buffer.apply(transaction)?;
         Ok(())
+    }
+
+    pub(crate) fn snapshot(&self) -> alpine_text::BufferSnapshot {
+        self.buffer.snapshot()
     }
 
     pub(crate) fn input(&self, root: &Path) -> RustDocumentInput {
@@ -496,5 +506,196 @@ fn a_stale_publication_for_an_open_document_is_dropped() -> TestResult {
     assert_eq!(returned.diagnostic_version, edited.diagnostic_version);
     assert!(returned.diagnostic_version > Some(1));
     assert!(!services.shutdown().active);
+    Ok(())
+}
+
+fn full_roster(root: &Path) -> Result<Vec<Tab>, Box<dyn Error>> {
+    (0..16_u64)
+        .map(|index| Tab::new(root, &format!("d{index}.rs"), "fn broken( {\n", index + 1))
+        .collect()
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn a_restart_with_a_full_roster_reopens_every_document() -> TestResult {
+    let recording = Recording::new();
+    let root = recording.root.clone();
+    let mut services = recording.services()?;
+    let latch = LanguageWakeLatch::default();
+    let mut tabs = full_roster(&root)?;
+    let paths: Vec<&Path> = tabs.iter().map(|tab| tab.path.as_path()).collect();
+    open_tabs(&mut services, &paths);
+    for tab in &tabs {
+        show_and_publish(&mut services, &latch, &root, tab)?;
+    }
+    let shown = tabs.len() - 1;
+    recording.forget_wire()?;
+    tabs[shown].edit("fn crash() { ALPINE_CRASH }\n")?;
+    show(&mut services, &latch, &root, &tabs[shown]);
+    drive_until(&mut services, &latch, "restart", |services| {
+        services.snapshot().restarts == 1
+    })?;
+    drive_until(&mut services, &latch, "full reopen", |_| {
+        recording.wire().count("textDocument/didOpen") == 16
+    })?;
+    tabs[shown].edit("fn fine() {}\n")?;
+    show_and_publish(&mut services, &latch, &root, &tabs[shown])?;
+    barrier(&mut services, &latch)?;
+    let alive = services.snapshot();
+    assert!(!services.shutdown().active);
+
+    assert!(alive.active);
+    assert_eq!(alive.restarts, 1);
+    let wire = recording.wire();
+    assert_eq!(wire.count("initialize"), 1);
+    for tab in &tabs {
+        assert_eq!(wire.of("textDocument/didOpen", &tab.path).len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn closing_every_tab_at_once_keeps_the_session() -> TestResult {
+    let recording = Recording::new();
+    let root = recording.root.clone();
+    let mut services = recording.services()?;
+    let latch = LanguageWakeLatch::default();
+    let tabs = full_roster(&root)?;
+    let notes = root.join("notes.txt");
+    fs::write(&notes, "plain text\n")?;
+    let paths: Vec<&Path> = tabs.iter().map(|tab| tab.path.as_path()).collect();
+    open_tabs(&mut services, &paths);
+    for tab in &tabs {
+        show_and_publish(&mut services, &latch, &root, tab)?;
+    }
+    // Every Rust tab closes in one event, as opening a folder does.
+    open_tabs(&mut services, &[&notes]);
+    let _ = services.sync(None, waker(&latch));
+    drive_until(&mut services, &latch, "every close", |_| {
+        recording.wire().count("textDocument/didClose") == 16
+    })?;
+    open_tabs(&mut services, &[&notes, &tabs[0].path]);
+    show_and_publish(&mut services, &latch, &root, &tabs[0])?;
+    barrier(&mut services, &latch)?;
+    let alive = services.snapshot();
+    assert!(!services.shutdown().active);
+
+    assert_eq!(alive.restarts, 0);
+    let wire = recording.wire();
+    for tab in &tabs {
+        assert_eq!(wire.of("textDocument/didClose", &tab.path).len(), 1);
+    }
+    assert_eq!(wire.of("textDocument/didOpen", &tabs[0].path).len(), 2);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn an_oversized_open_document_is_dropped_without_failing_a_restart() -> TestResult {
+    let recording = Recording::new();
+    let root = recording.root.clone();
+    let mut services = recording.services()?;
+    let latch = LanguageWakeLatch::default();
+    let mut a = Tab::new(&root, "a.rs", "fn a( {\n", 1)?;
+    let mut b = Tab::new(&root, "b.rs", "fn b( {\n", 2)?;
+    open_tabs(&mut services, &[&a.path, &b.path]);
+    show_and_publish(&mut services, &latch, &root, &a)?;
+    show_and_publish(&mut services, &latch, &root, &b)?;
+    let published = services.snapshot().diagnostic_publications;
+    b.edit("fn b() { ALPINE_CRASH }\n")?;
+    show(&mut services, &latch, &root, &b);
+    drive_until(&mut services, &latch, "restart", |services| {
+        services.snapshot().restarts == 1
+    })?;
+    // While the server restarts, a workspace edit grows hidden a past the
+    // largest document a server may be sent.
+    a.edit(&"x".repeat(8_388_609))?;
+    let _ = services.update_background(&a.path, &a.snapshot());
+    drive_until(&mut services, &latch, "reopened", |services| {
+        services.snapshot().diagnostic_publications > published
+    })?;
+    b.edit("fn b() {}\n")?;
+    show_and_publish(&mut services, &latch, &root, &b)?;
+    barrier(&mut services, &latch)?;
+    let alive = services.snapshot();
+    // Showing the dropped document says why the server lacks it.
+    show(&mut services, &latch, &root, &a);
+    let status = services.status_message();
+    assert!(!services.shutdown().active);
+
+    assert_eq!(
+        alive.restarts, 1,
+        "the oversized document failed the restart"
+    );
+    assert!(
+        status.is_some_and(|status| status.contains("DocumentTooLarge")),
+        "the dropped document left no status"
+    );
+    let wire = recording.wire();
+    assert!(wire.of("textDocument/didOpen", &a.path).is_empty());
+    assert_eq!(wire.of("textDocument/didOpen", &b.path).len(), 1);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn a_hidden_buffer_changed_without_notice_is_sent_once_when_shown() -> TestResult {
+    let recording = Recording::new();
+    let root = recording.root.clone();
+    let mut services = recording.services()?;
+    let latch = LanguageWakeLatch::default();
+    let mut a = Tab::new(&root, "a.rs", "fn a( {\n", 1)?;
+    let b = Tab::new(&root, "b.rs", "fn b( {\n", 2)?;
+    open_tabs(&mut services, &[&a.path, &b.path]);
+    show_and_publish(&mut services, &latch, &root, &a)?;
+    show_and_publish(&mut services, &latch, &root, &b)?;
+    a.edit("fn a_changed_while_hidden( {\n")?;
+    show_and_publish(&mut services, &latch, &root, &a)?;
+    show(&mut services, &latch, &root, &a);
+    barrier(&mut services, &latch)?;
+    assert!(!services.shutdown().active);
+
+    let wire = recording.wire();
+    let opened = wire.of("textDocument/didOpen", &a.path);
+    let changed = wire.of("textDocument/didChange", &a.path);
+    assert_eq!(opened.len(), 1);
+    assert_eq!(changed.len(), 1);
+    assert!(version(changed[0].1) > version(opened[0].1));
+    assert_eq!(
+        wire.last_text(&a.path).as_deref(),
+        Some("fn a_changed_while_hidden( {\n")
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot emulate child-process creation")]
+fn an_edit_to_the_last_shown_document_behind_plain_text_is_sent_once() -> TestResult {
+    let recording = Recording::new();
+    let root = recording.root.clone();
+    let mut services = recording.services()?;
+    let latch = LanguageWakeLatch::default();
+    let mut a = Tab::new(&root, "a.rs", "fn a( {\n", 1)?;
+    let notes = root.join("notes.txt");
+    fs::write(&notes, "plain text\n")?;
+    open_tabs(&mut services, &[&a.path, &notes]);
+    show_and_publish(&mut services, &latch, &root, &a)?;
+    // Plain text is shown; the server's shown document is still a.
+    let _ = services.sync(None, waker(&latch));
+    a.edit("fn a_from_a_workspace_edit( {\n")?;
+    let _ = services.update_background(&a.path, &a.snapshot());
+    let _ = services.update_background(&a.path, &a.snapshot());
+    show(&mut services, &latch, &root, &a);
+    barrier(&mut services, &latch)?;
+    assert!(!services.shutdown().active);
+
+    let wire = recording.wire();
+    assert_eq!(wire.of("textDocument/didOpen", &a.path).len(), 1);
+    assert_eq!(wire.of("textDocument/didChange", &a.path).len(), 1);
+    assert_eq!(
+        wire.last_text(&a.path).as_deref(),
+        Some("fn a_from_a_workspace_edit( {\n")
+    );
     Ok(())
 }

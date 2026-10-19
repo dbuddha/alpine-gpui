@@ -14,18 +14,17 @@ invariants and product rules.
 ## Language intelligence (M4)
 
 Today: off-main-thread discovery, one server per workspace and language (cap
-5), each holding up to 16 open documents at their unsaved text, least recently
-shown closed first, idle shutdown of unattached slots, local-lexer
-highlighting, plus ../AGENTS.md `known_defects`. A stop sends `shutdown` and
-`exit`, then TERMs and KILLs the server's process group within about 0.8 s.
-Eviction and idle stops never wait on the main thread; quit waits 1.5 s at
-most. rust-analyzer takes 1 to 4 GB on a real crate; a first query waits on
-its indexing.
+5), each keeping its 16 most recently shown documents open at their unsaved
+text, idle shutdown of unattached slots, local-lexer highlighting, plus
+../AGENTS.md `known_defects`. A stop sends `shutdown` and `exit`, then TERMs
+and KILLs the server's process group within about 0.8 s. Eviction and idle
+stops never wait on the main thread; quit waits 1.5 s at most. rust-analyzer
+takes 1 to 4 GB on a real crate; first queries wait on indexing.
 
 Rules:
 - Lifetime: start a server on the first visible file of its language; folder
   open starts nothing. Shut idle servers down after the TTL, and at once on
-  macOS memory pressure.
+  macOS memory pressure. Eviction and shutdown never run on the main thread.
 - OS hooks (memory pressure, FSEvents, process priority) live in
   alpine-platform-macos behind an alpine-platform trait; alpine-editor has no
   unsafe code. Each new binding, crate feature or unsafe file is `ask_first`.
@@ -46,8 +45,7 @@ Rules:
   bounded amount per turn by document revision, keep only the newest
   diagnostics per file, drop stale versions. Cancellation is advisory; local
   revocation by request ID is authoritative.
-- Positions: advertise `["utf-8", "utf-16"]` and use the encoding the server
-  picks.
+- Positions: advertise `["utf-8", "utf-16"]` and use the server's pick.
 - Server settings: keep only those the bench shows to help. Memory candidates:
   rust-analyzer without cache priming, clangd with capped index threads, jdtls
   with a JVM heap cap, typescript-language-server's `maxTsServerMemory`
@@ -55,8 +53,7 @@ Rules:
   check target directory avoids cargo lock waits.
 - Energy: run servers at background priority only if the bench shows no
   response cost.
-- No downloads: discover servers and show the install command when one is
-  missing.
+- No downloads: discover servers; show the install command when missing.
 
 Slices, serial:
 1. Wire format: the `Cow<str>` JSON fix, string ids, answers to server

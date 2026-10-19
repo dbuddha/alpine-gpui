@@ -1,6 +1,6 @@
 ---
 program: Alpine GPUI framework, Alpine Editor app, a terminal app later
-updated: 2026-10-17
+updated: 2026-10-18
 precedence: AGENTS.md files, code comments, README.md
 archive: ARCHIVE.md (history only, never an operating rule)
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
