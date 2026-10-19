@@ -94,7 +94,8 @@ cannot see the Metal layer. The capturing terminal needs Screen Recording
 permission. Clean up only the processes a capture owns; never close unrelated
 apps. Window > Save Performance Log writes `perf-<unix s>-frames.tsv` and
 `-samples.tsv` to `~/Library/Logs/Alpine Editor/` for T3 dogfood; a panic
-leaves `crash-<unix>-<pid>.log` there.
+leaves `crash-<unix>-<pid>.log` there, and a main-thread dispatch over 1 s
+leaves `stall-<unix>-<pid>.log`.
 
 ## Correctness that must never regress
 
