@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-// bench-window: window list, activation, display mode and permission state.
+// bench-window: window list, activation, displays, owner presence, permissions.
 // Needs no permission: PID, owner name, layer and bounds are readable
 // without Screen Recording, and nothing here requests access.
 
@@ -142,11 +142,133 @@ func displays() throws {
     }
 }
 
+typealias IdleReading = (name: String, seconds: Double)
+
+// Real input only, one hardware timer per type. The any-input clock (~0) and
+// IOKit's HIDIdleTime also count activity that a process declares, which
+// screen capture does every 5 s. Delete a line to stop reading that type.
+let ownerInputTypes: [(name: String, type: CGEventType)] = [
+    ("keyDown", .keyDown),
+    ("keyUp", .keyUp),
+    ("flagsChanged", .flagsChanged),
+    ("leftMouseDown", .leftMouseDown),
+    ("leftMouseUp", .leftMouseUp),
+    ("rightMouseDown", .rightMouseDown),
+    ("rightMouseUp", .rightMouseUp),
+    ("otherMouseDown", .otherMouseDown),
+    ("otherMouseUp", .otherMouseUp),
+    ("mouseMoved", .mouseMoved),
+    ("leftMouseDragged", .leftMouseDragged),
+    ("rightMouseDragged", .rightMouseDragged),
+    ("otherMouseDragged", .otherMouseDragged),
+    ("scrollWheel", .scrollWheel),
+    ("tabletPointer", .tabletPointer),
+    ("tabletProximity", .tabletProximity),
+]
+
+// The least idle time and the type it came from; of equal readings the first
+// wins. A reading that is not a time refuses all: that timer could be the one
+// the owner just used.
+func leastIdle(_ readings: [IdleReading]) throws -> IdleReading {
+    var least: IdleReading?
+    for reading in readings {
+        guard reading.seconds.isFinite, reading.seconds >= 0 else {
+            throw HelperFailure.runtime(
+                "no idle time is available for \(reading.name) (\(reading.seconds))"
+            )
+        }
+        if let best = least, best.seconds <= reading.seconds { continue }
+        least = reading
+    }
+    guard let found = least else {
+        throw HelperFailure.runtime("no input types are listed to read idle time from")
+    }
+    return found
+}
+
+func ownerIdle(
+    reading read: (CGEventType) -> Double = { type in
+        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: type)
+    }
+) throws -> IdleReading {
+    try leastIdle(ownerInputTypes.map { (name: $0.name, seconds: read($0.type)) })
+}
+
+func idleRecord(_ reading: IdleReading) -> [String] {
+    ["idle", String(format: "%.3f", reading.seconds), reading.name]
+}
+
+// The session dictionary holds CGSSessionScreenIsLocked while the screen is
+// locked. Only read here: nothing unlocks the screen or touches login.
+func screenLocked(_ session: [String: Any]) -> Bool {
+    guard let flag = session["CGSSessionScreenIsLocked"] else { return false }
+    // Once the key exists, only a clear false reads as unlocked.
+    return (flag as? Bool) ?? true
+}
+
+func sessionLocked() throws -> Bool {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+        throw HelperFailure.runtime("no login session dictionary is available")
+    }
+    return screenLocked(session)
+}
+
+func lockedRecord(_ locked: Bool) -> [String] {
+    ["locked", locked ? "1" : "0"]
+}
+
 func permissions() {
     // Preflight calls only report state; none of them shows a prompt.
     Output.emit(["permission", "accessibility", AXIsProcessTrusted() ? "1" : "0"])
     Output.emit(["permission", "post-events", CGPreflightPostEventAccess() ? "1" : "0"])
     Output.emit(["permission", "screen-recording", CGPreflightScreenCaptureAccess() ? "1" : "0"])
+}
+
+func selfTestIdle() throws {
+    let readings: [IdleReading] = [("keyDown", 30.0), ("mouseMoved", 0.4), ("scrollWheel", 12.5)]
+    let least = try leastIdle(readings)
+    try check(least.name == "mouseMoved" && least.seconds == 0.4, "least idle wins")
+    try check(try leastIdle(readings.reversed()).name == "mouseMoved", "order is free")
+    try check(try leastIdle([("a", 5.0), ("b", 5.0)]).name == "a", "first of equals")
+    try check(try leastIdle([("only", 2.5)]).seconds == 2.5, "one reading passes")
+    try check(try leastIdle([("now", 0.0)]).seconds == 0, "zero idle passes")
+    // Types never seen read as long times, so they hide nothing.
+    let unseen: [IdleReading] = [("far", 3_650_897.09), ("near", 61.0), ("farther", 1e9)]
+    try check(try leastIdle(unseen).name == "near", "unseen types lose")
+    try check((try? leastIdle([])) == nil, "no types refused")
+    for bad in [-1.0, Double.nan, Double.infinity, -Double.infinity] {
+        let mixed: [IdleReading] = [("keyDown", 30.0), ("tabletPointer", bad), ("mouseMoved", 9.0)]
+        try check((try? leastIdle(mixed)) == nil, "idle \(bad) refused")
+    }
+    // A refusal names the type, so a bad one can be dropped from the list.
+    let refused = Result { try leastIdle([("tabletPointer", Double.nan)]) }
+    if case .failure(let failure) = refused {
+        try check("\(failure)".contains("tabletPointer"), "a refusal names the type")
+    } else {
+        try check(false, "nan refused")
+    }
+    try check(
+        idleRecord(("mouseMoved", 2603.3234)) == ["idle", "2603.323", "mouseMoved"],
+        "idle record"
+    )
+    let names = ownerInputTypes.map { $0.name }
+    let raws = ownerInputTypes.map { $0.type.rawValue }
+    try check(!names.isEmpty && Set(names).count == names.count, "type names are unique")
+    try check(Set(raws).count == raws.count, "type values are unique")
+    try check(names.contains("keyDown") && names.contains("mouseMoved"), "keys and mouse")
+    // kCGAnyInputEventType (~0) is the same number as tapDisabledByUserInput.
+    let notInput: Set<UInt32> = [
+        CGEventType.null.rawValue, CGEventType.tapDisabledByTimeout.rawValue,
+        CGEventType.tapDisabledByUserInput.rawValue, ~0,
+    ]
+    try check(Set(raws).isDisjoint(with: notInput), "only real input types are read")
+    // Each listed type is read through its own timer.
+    for entry in ownerInputTypes {
+        let only = try ownerIdle { $0 == entry.type ? 0.25 : 500 }
+        try check(only.name == entry.name && only.seconds == 0.25, "\(entry.name) is read")
+    }
+    let now = try ownerIdle()
+    try check(now.seconds >= 0 && names.contains(now.name), "idle time is readable")
 }
 
 func windowSelfTest() throws {
@@ -158,6 +280,18 @@ func windowSelfTest() throws {
     try check(qualifies(record, pid: 7, minimumSide: 100), "qualifying window")
     try check(!qualifies(record, pid: 8, minimumSide: 100), "other pid")
     try check(!qualifies(record, pid: 7, minimumSide: 150), "too small")
+    try selfTestIdle()
+    try check(screenLocked(["CGSSessionScreenIsLocked": true]), "a locked session")
+    try check(!screenLocked(["CGSSessionScreenIsLocked": false]), "an unlocked flag")
+    try check(!screenLocked([:]), "no flag means unlocked")
+    try check(!screenLocked(["CGSSessionScreenIsLocked": NSNumber(value: false)]), "a zero flag")
+    // Once the key exists, anything but a clear false reads as locked.
+    try check(screenLocked(["CGSSessionScreenIsLocked": "yes"]), "a text flag")
+    try check(screenLocked(["CGSSessionScreenIsLocked": 1]), "an integer flag")
+    try check(screenLocked(["CGSSessionScreenIsLocked": NSNumber(value: 2)]), "a number flag")
+    try check(lockedRecord(true) == ["locked", "1"], "locked record")
+    try check(lockedRecord(false) == ["locked", "0"], "unlocked record")
+    _ = try sessionLocked()
     Output.emit(["self-test", "ok"])
 }
 
@@ -184,11 +318,18 @@ struct WindowMain {
             case "permissions":
                 try options.finish()
                 permissions()
+            case "idle":
+                try options.finish()
+                // Both are read before either is printed.
+                let idle = try ownerIdle()
+                let locked = try sessionLocked()
+                Output.emit(idleRecord(idle))
+                Output.emit(lockedRecord(locked))
             case "self-test": try windowSelfTest()
             default:
                 throw HelperFailure.usage(
                     "unknown command \(options.command); expected list, wait, "
-                        + "activate, display, now, permissions or self-test"
+                        + "activate, display, now, idle, permissions or self-test"
                 )
             }
         }
