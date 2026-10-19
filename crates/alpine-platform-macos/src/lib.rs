@@ -2306,8 +2306,9 @@ pub mod native_validation {
             .replay_application_quit_with_handler(handler)
     }
 
-    /// Sends `application:openURLs:` to the application delegate three times:
-    /// before a handler exists, while a dispatch holds it, and while it idles.
+    /// Sends `application:openURLs:` to the application delegate: before a
+    /// handler exists, while a dispatch holds it, while it idles, and while a
+    /// modal panel is open around a Wake.
     ///
     /// # Errors
     ///

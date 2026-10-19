@@ -113,7 +113,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         events
     );
 
-    // application:openURLs: before a handler, while one is busy, while idle.
+    // application:openURLs: before a handler, while one is busy, while idle,
+    // and while a modal panel holds delivery past a Wake.
     let open_urls = [
         "file:///tmp/alpine%20open/one.rs",
         "https://example.com/two.rs",
@@ -149,12 +150,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             paths: idle_paths,
             dropped: 0,
         },
+        SurfaceEvent::Wake {
+            timestamp: panel_wake,
+        },
+        SurfaceEvent::OpenPaths {
+            timestamp: panel,
+            paths: panel_paths,
+            dropped: 0,
+        },
     ] = opened.as_slice()
     else {
         return Err(format!("unexpected open URL events: {opened:?}").into());
     };
     assert!(cold < wake && wake < held && held < idle);
-    assert_eq!([cold_paths, held_paths, idle_paths], [&expected; 3]);
+    assert!(idle < panel_wake && panel_wake < panel);
+    assert_eq!(
+        [cold_paths, held_paths, idle_paths, panel_paths],
+        [&expected; 4]
+    );
     drop(opened);
 
     let many: Vec<String> = (0..70)
@@ -173,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     assert_eq!(
         *bounded.lock().map_err(|_| "bounded receiver poisoned")?,
-        [(64, 6); 3]
+        [(64, 6); 4]
     );
 
     let unresolved_close_events = Arc::new(Mutex::new(Vec::new()));

@@ -1,6 +1,7 @@
 //! Paths macOS asks the editor to open: Finder's Open With and the Dock.
 
 use std::{
+    fmt::Display,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -15,7 +16,7 @@ use crate::{
 /// Whether paths macOS opens may still replace the restored session.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RestoredLaunch {
-    /// Set by `run()` until the first deliberate input.
+    /// Set by `run()` until the first deliberate input or loss of focus.
     Pending,
     #[default]
     Settled,
@@ -36,10 +37,10 @@ impl EditorApp {
         let mut replace_session = std::mem::take(&mut self.restored_launch)
             == RestoredLaunch::Pending
             && !self.holds_unsaved_work();
-        let recovered = self
-            .local_status
-            .clone()
-            .filter(|status| matches!(status, LocalStatus::Recovery(_)));
+        let recovered = match &self.local_status {
+            Some(LocalStatus::Recovery(warning)) => Some(Arc::clone(warning)),
+            _ => None,
+        };
         let mut failures = OpenFailures::default();
         let mut folders = Vec::new();
         let mut files = Vec::new();
@@ -61,7 +62,11 @@ impl EditorApp {
         for folder in folders {
             // A new workspace closes every tab, unsaved text included.
             if self.holds_unsaved_work() {
-                self.note_open_failure(&mut failures, &WorkspaceSelectionError::DirtyDocument);
+                let refused = format!(
+                    "save changes before opening the folder {}",
+                    folder.display()
+                );
+                self.note_open_failure(&mut failures, &refused);
                 continue;
             }
             match self.try_open_workspace_root(folder) {
@@ -89,8 +94,8 @@ impl EditorApp {
         effect.merge(self.report_open_outcome(failures, dropped, recovered))
     }
 
-    /// The first deliberate input ends the window in which opened paths
-    /// replace a restored session.
+    /// Deliberate input or losing focus ends the window in which opened
+    /// paths replace a restored session: the user has moved on.
     pub(crate) fn settle_launch_on_input(&mut self, event: &SurfaceEvent) {
         if matches!(
             event,
@@ -100,7 +105,8 @@ impl EditorApp {
             } | SurfaceEvent::Pointer {
                 action: PointerAction::Down,
                 ..
-            } | SurfaceEvent::Scroll { .. }
+            } | SurfaceEvent::Focus { focused: false, .. }
+                | SurfaceEvent::Scroll { .. }
                 | SurfaceEvent::Ime { .. }
                 | SurfaceEvent::Menu { .. }
         ) {
@@ -154,18 +160,19 @@ impl EditorApp {
         Ok(EventEffect::document_replacement())
     }
 
-    fn note_open_failure(&mut self, failures: &mut OpenFailures, error: &WorkspaceSelectionError) {
+    fn note_open_failure(&mut self, failures: &mut OpenFailures, error: &impl Display) {
         self.workspace_failures = self.workspace_failures.saturating_add(1);
         failures.count = failures.count.saturating_add(1);
         failures.first.get_or_insert_with(|| error.to_string());
     }
 
-    /// Shows what did not open; each successful open clears the status line.
+    /// Shows what did not open, after a recovery warning that was showing;
+    /// each successful open clears the status line.
     fn report_open_outcome(
         &mut self,
         failures: OpenFailures,
         dropped: usize,
-        recovered: Option<LocalStatus>,
+        recovered: Option<Arc<str>>,
     ) -> EventEffect {
         let failed = match (failures.count, failures.first) {
             (1, Some(first)) => Some(first),
@@ -174,16 +181,21 @@ impl EditorApp {
         };
         let skipped = (dropped > 0).then(|| format!("{dropped} more paths were not opened."));
         let message = match (failed, skipped) {
-            (Some(failed), Some(skipped)) => format!("{failed}. {skipped}"),
-            (Some(message), None) | (None, Some(message)) => message,
-            (None, None) => String::new(),
+            (Some(failed), Some(skipped)) => Some(format!("{failed}. {skipped}")),
+            (Some(message), None) | (None, Some(message)) => Some(message),
+            (None, None) => None,
         };
-        if message.is_empty() {
-            return recovered
-                .map_or_else(EventEffect::default, |status| self.set_local_status(status));
+        if let Some(message) = &message {
+            self.last_workspace_error = Some(Arc::from(message.as_str()));
         }
-        let message: Arc<str> = Arc::from(message);
-        self.last_workspace_error = Some(Arc::clone(&message));
-        self.set_local_status(LocalStatus::Workspace(message))
+        let status = match (recovered, message) {
+            (Some(warning), Some(message)) => {
+                LocalStatus::Recovery(Arc::from(format!("{warning} {message}")))
+            }
+            (Some(warning), None) => LocalStatus::Recovery(warning),
+            (None, Some(message)) => LocalStatus::Workspace(Arc::from(message)),
+            (None, None) => return EventEffect::default(),
+        };
+        self.set_local_status(status)
     }
 }

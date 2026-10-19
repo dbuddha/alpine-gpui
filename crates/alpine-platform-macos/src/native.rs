@@ -57,6 +57,7 @@ use alpine_scene::Scene;
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
 
+use crate::menu::MenuSignal;
 use crate::native_accessibility::{NativeAccessibilityAdapter, NativeAccessibilityElement};
 use crate::recorder::{self, TaskUsage};
 use crate::{
@@ -3311,6 +3312,8 @@ const OPEN_PATHS_LIMIT: usize = 64;
 struct PendingOpenPaths {
     paths: Vec<PathBuf>,
     dropped: usize,
+    // Open modal panels; a panel's command must apply to the tab it chose.
+    holds: u32,
 }
 
 impl PendingOpenPaths {
@@ -3327,10 +3330,19 @@ impl PendingOpenPaths {
         }
     }
 
-    /// Takes the batch only when a handler is installed and not borrowed.
+    fn hold(&mut self) {
+        self.holds = self.holds.saturating_add(1);
+    }
+
+    fn release(&mut self) {
+        self.holds = self.holds.saturating_sub(1);
+    }
+
+    /// Takes the batch only with no panel open and an installed, idle handler.
     fn take_ready<H>(&mut self, handler: &RefCell<Option<H>>) -> Option<Self> {
-        let ready =
-            !self.paths.is_empty() && handler.try_borrow().is_ok_and(|handler| handler.is_some());
+        let ready = self.holds == 0
+            && !self.paths.is_empty()
+            && handler.try_borrow().is_ok_and(|handler| handler.is_some());
         ready.then(|| std::mem::take(self))
     }
 
@@ -3629,12 +3641,9 @@ define_class!(
         }
     }
 
-    // SAFETY: Each selector's Rust signature exactly matches the generated
-    // NSApplicationDelegate protocol. Alpine owns one process application and
-    // installs this main-thread-only delegate only for the native surface
-    // lifetime. Termination is always cancelled at AppKit so the admitted
-    // window-close path can drain and return through Rust ownership. The
-    // opened URL array is borrowed for the callback; only owned paths escape.
+    // SAFETY: Each selector's Rust signature matches NSApplicationDelegate.
+    // The main-thread-only delegate is installed for the surface lifetime, and
+    // callback arguments are borrowed for the call; only owned paths escape.
     unsafe impl NSApplicationDelegate for DisplayLinkDelegate {
         #[allow(
             non_snake_case,
@@ -3672,10 +3681,19 @@ define_class!(
             if self.ivars().lifecycle.load(Ordering::Acquire) != SURFACE_LIVE {
                 return;
             }
-            if let Ok(mut pending) = self.ivars().open_paths.try_borrow_mut() {
-                for url in urls {
-                    pending.admit(&url);
-                }
+            let queued = self
+                .ivars()
+                .open_paths
+                .try_borrow_mut()
+                .is_ok_and(|mut pending| {
+                    urls.iter().for_each(|url| pending.admit(&url));
+                    !pending.paths.is_empty()
+                });
+            if queued
+                && let Some(window) = &self.ivars().window
+                && window.isMiniaturized()
+            {
+                window.deminiaturize(None);
             }
             self.deliver_pending_open_paths();
         }
@@ -3976,6 +3994,18 @@ impl DisplayLinkDelegate {
         let result = self.dispatch_surface_event_at(event, EventReceipt::now());
         self.deliver_pending_open_paths();
         result
+    }
+
+    /// Holds delivery while a modal panel is open; closing delivers.
+    fn hold_open_paths(&self, hold: bool) {
+        if let Ok(mut pending) = self.ivars().open_paths.try_borrow_mut() {
+            if hold {
+                pending.hold();
+            } else {
+                pending.release();
+            }
+        }
+        self.deliver_pending_open_paths();
     }
 
     /// Hands queued paths to an installed, idle handler. Paths queued while a
@@ -5322,16 +5352,22 @@ impl NativeSurface {
         let menu_installed = MainThreadMarker::new().is_some_and(|main_thread| {
             crate::menu::install_handler(
                 main_thread,
-                Box::new(move |action| {
+                Box::new(move |signal| match signal {
                     // A menu command the editor never sees must not be
                     // silent, so a rejected dispatch reaches the surface error
                     // path exactly as a failed input event does.
-                    if let Err(error) = menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
-                        timestamp: menu_delegate.next_event_timestamp(),
-                        action,
-                    }) {
-                        menu_delegate.record_dispatch_error(error);
+                    MenuSignal::Action(action) => {
+                        if let Err(error) =
+                            menu_delegate.dispatch_surface_event(SurfaceEvent::Menu {
+                                timestamp: menu_delegate.next_event_timestamp(),
+                                action,
+                            })
+                        {
+                            menu_delegate.record_dispatch_error(error);
+                        }
                     }
+                    MenuSignal::PanelOpened => menu_delegate.hold_open_paths(true),
+                    MenuSignal::PanelClosed => menu_delegate.hold_open_paths(false),
                 }),
             )
         });
@@ -5882,8 +5918,15 @@ impl NativeSurface {
             timestamp: self.delegate.next_event_timestamp(),
         });
         open();
+        // An open modal panel holds delivery past other dispatches.
+        self.delegate.hold_open_paths(true);
+        open();
+        let panel_wake = self.delegate.dispatch_surface_event(SurfaceEvent::Wake {
+            timestamp: self.delegate.next_event_timestamp(),
+        });
+        self.delegate.hold_open_paths(false);
         self.delegate.clear_event_handler();
-        wake.map(|_| ())
+        wake.and(panel_wake).map(|_| ())
     }
 
     #[cfg(alpine_native_validation)]
@@ -7921,6 +7964,28 @@ mod open_paths_tests {
                 dropped: 0,
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_modal_panel_holds_paths_until_it_closes() -> Result<(), Box<dyn Error>> {
+        let handler: RefCell<Option<SurfaceEventHandler>> =
+            RefCell::new(Some(Box::new(|_| SurfaceResponse::default())));
+        let mut pending = PendingOpenPaths::default();
+        pending.hold();
+        pending.admit(&*numbered(0)?);
+        assert!(pending.take_ready(&handler).is_none(), "panel open");
+        pending.hold();
+        pending.release();
+        assert!(pending.take_ready(&handler).is_none(), "outer panel open");
+        pending.release();
+        let batch = pending.take_ready(&handler).ok_or("panel closed")?;
+        assert_eq!(batch.paths, [numbered_path(0)]);
+
+        // An unmatched release cannot underflow into a permanent hold.
+        pending.release();
+        pending.admit(&*numbered(1)?);
+        assert!(pending.take_ready(&handler).is_some());
         Ok(())
     }
 }

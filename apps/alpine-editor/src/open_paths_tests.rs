@@ -88,9 +88,14 @@ fn single_pane() -> session::SessionPanes {
 
 // A previous session: a workspace with two clean tabs, the first active.
 fn restored_session(workspace: &Scratch) -> Result<EditorApp, Box<dyn std::error::Error>> {
+    let state = session_state(workspace)?;
+    Ok(EditorApp::from_session(TestTextSystem, state).map_err(|error| error.to_string())?)
+}
+
+fn session_state(workspace: &Scratch) -> std::io::Result<session::SessionState> {
     let alpha = workspace.file("alpha.rs", "alpha\n")?;
     let beta = workspace.file("beta.rs", "beta\n")?;
-    let state = session::SessionState {
+    Ok(session::SessionState {
         workspace: Some(workspace.root.clone()),
         tabs: vec![
             session::SessionTab {
@@ -105,8 +110,7 @@ fn restored_session(workspace: &Scratch) -> Result<EditorApp, Box<dyn std::error
         active_tab: 0,
         panes: single_pane(),
         file_tree: session::SessionFileTree::default(),
-    };
-    Ok(EditorApp::from_session(TestTextSystem, state).map_err(|error| error.to_string())?)
+    })
 }
 
 #[test]
@@ -172,7 +176,8 @@ fn an_opened_folder_becomes_the_workspace_before_files_open() -> TestResult {
     );
     assert_eq!(app.tabs.len(), 2);
     assert!(app.document.is_dirty());
-    assert!(status(&app).contains("save changes"), "{}", status(&app));
+    let other = other.to_string_lossy();
+    assert!(status(&app).contains(&*other), "{}", status(&app));
     Ok(())
 }
 
@@ -214,6 +219,8 @@ fn opened_paths_at_a_restored_launch_win_over_the_session() -> TestResult {
     // run() marks a restored launch; paths then match an explicit launch.
     let mut launched = restored_session(&workspace)?;
     launched.restored_launch = RestoredLaunch::Pending;
+    // A tab never loaded holds no unsaved text.
+    assert_eq!(launched.tabs.is_deferred(1), Ok(true));
     let effect = launched.handle_event(&opened(&[&gamma], 0));
     let mut explicit =
         ExplicitPathTarget::open(&gamma, ExplicitPathKind::Any)?.into_app(TestTextSystem)?;
@@ -320,14 +327,35 @@ fn the_bundle_opens_text_and_folders_without_becoming_the_default() -> TestResul
     let types: serde_json::Value = serde_json::from_slice(&extract.stdout)?;
     let types = types.as_array().ok_or("document types array")?;
     let mut declared = Vec::new();
+    let mut extensions = Vec::new();
     for entry in types {
         assert_eq!(entry["CFBundleTypeRole"], "Editor");
         assert_eq!(entry["LSHandlerRank"], "Alternate");
-        let content = entry["LSItemContentTypes"]
-            .as_array()
-            .ok_or("content types")?;
-        declared.extend(content.iter().filter_map(serde_json::Value::as_str));
+        let content = entry["LSItemContentTypes"].as_array();
+        let listed = entry["CFBundleTypeExtensions"].as_array();
+        // Launch Services ignores extensions in an entry that lists types.
+        assert!(content.is_some() != listed.is_some(), "{entry}");
+        declared.extend(
+            content
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str),
+        );
+        extensions.extend(
+            listed
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str),
+        );
     }
+    // Dynamic UTIs (.rs, .toml) and .ts as MPEG-TS need extensions to match.
+    extensions.sort_unstable();
+    let mut expected = [
+        "rs", "toml", "lock", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "md", "c", "h",
+        "cc", "cpp", "hpp", "java", "go", "sh", "yaml", "yml", "txt",
+    ];
+    expected.sort_unstable();
+    assert_eq!(extensions, expected);
     declared.sort_unstable();
     assert_eq!(
         declared,
@@ -339,4 +367,118 @@ fn the_bundle_opens_text_and_folders_without_becoming_the_default() -> TestResul
         ]
     );
     Ok(())
+}
+
+#[test]
+fn losing_focus_ends_the_launch_window_and_passive_events_do_not() -> TestResult {
+    let workspace = Scratch::new("focus")?;
+    let elsewhere = Scratch::new("focus-elsewhere")?;
+    let gamma = elsewhere.file("gamma.rs", "gamma\n")?;
+    let timestamp = EventTimestamp::new(1);
+    let passive = [
+        SurfaceEvent::Wake { timestamp },
+        SurfaceEvent::Resize {
+            timestamp,
+            extent: alpine_platform_macos::SurfaceExtent::new(800.0, 600.0, 2.0)?,
+        },
+        SurfaceEvent::Pointer {
+            timestamp,
+            action: PointerAction::Moved,
+            position: Point::new(10.0, 10.0).ok_or("point")?,
+            button: alpine_platform_macos::PointerButton::None,
+            modifiers: alpine_platform_macos::Modifiers::default(),
+        },
+        SurfaceEvent::Focus {
+            timestamp,
+            input_epoch: InputEpoch::INITIAL,
+            focused: true,
+        },
+    ];
+    for event in passive {
+        let mut app = restored_session(&workspace)?;
+        app.restored_launch = RestoredLaunch::Pending;
+        app.handle_event(&event);
+        assert_eq!(app.restored_launch, RestoredLaunch::Pending, "{event:?}");
+    }
+
+    // The user moved on; a later Dock drop adds tabs to the session.
+    let mut app = restored_session(&workspace)?;
+    app.restored_launch = RestoredLaunch::Pending;
+    app.handle_event(&SurfaceEvent::Focus {
+        timestamp,
+        input_epoch: InputEpoch::INITIAL,
+        focused: false,
+    });
+    assert_eq!(app.restored_launch, RestoredLaunch::Settled);
+    app.handle_event(&opened(&[&gamma], 0));
+    assert_eq!(app.tabs.len(), 3);
+    assert!(app.workspace.is_some());
+    Ok(())
+}
+
+#[test]
+fn the_recovery_warning_survives_opened_paths() -> TestResult {
+    let workspace = Scratch::new("recovered")?;
+    let elsewhere = Scratch::new("recovered-elsewhere")?;
+    let gamma = elsewhere.file("gamma.rs", "gamma\n")?;
+    let state = recovery::RecoveryState {
+        session: session_state(&workspace)?,
+        documents: vec![recovery::RecoveredDocument {
+            tab: 0,
+            base: "alpha\n".into(),
+            local: "alpha edited\n".into(),
+        }],
+    };
+    let mut app = EditorApp::from_recovery(TestTextSystem, state).map_err(|e| e.to_string())?;
+    let Some(LocalStatus::Recovery(warning)) = app.local_status.clone() else {
+        return Err("restore set no recovery warning".into());
+    };
+    app.restored_launch = RestoredLaunch::Pending;
+
+    // Unsaved text keeps the session; the opened file's success restores it.
+    app.handle_event(&opened(&[&gamma], 0));
+    assert_eq!(app.tabs.len(), 3);
+    assert_eq!(
+        app.local_status,
+        Some(LocalStatus::Recovery(Arc::clone(&warning)))
+    );
+
+    // A failure joins the warning instead of replacing it.
+    app.handle_event(&opened(&[&elsewhere.root.join("missing.rs")], 0));
+    let Some(LocalStatus::Recovery(combined)) = app.local_status.clone() else {
+        return Err(format!("warning replaced: {:?}", app.local_status).into());
+    };
+    assert!(combined.starts_with(&*warning), "{combined}");
+    assert!(combined.contains("missing.rs"), "{combined}");
+    Ok(())
+}
+
+#[test]
+fn a_pending_recovery_counts_as_unsaved_text() -> TestResult {
+    let workspace = Scratch::new("pending")?;
+    let elsewhere = Scratch::new("pending-elsewhere")?;
+    let gamma = elsewhere.file("gamma.rs", "gamma\n")?;
+    let mut app = restored_session(&workspace)?;
+    app.pending_recovery = vec![
+        None,
+        Some(recovery::RecoveredDocument {
+            tab: 1,
+            base: "beta\n".into(),
+            local: "beta edited\n".into(),
+        }),
+    ];
+    app.restored_launch = RestoredLaunch::Pending;
+    app.handle_event(&opened(&[&gamma], 0));
+    assert_eq!(app.tabs.len(), 3);
+    assert!(app.workspace.is_some());
+    Ok(())
+}
+
+#[test]
+fn every_event_kind_has_a_validation_counter_slot() {
+    let open = opened(&[], 0);
+    assert_eq!(
+        usize::try_from(surface_event_kind(&open)).ok(),
+        Some(SURFACE_EVENT_KINDS)
+    );
 }
