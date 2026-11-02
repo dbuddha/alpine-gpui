@@ -1,7 +1,7 @@
 ---
 product: Alpine Editor
 parent: ../../AGENTS.md
-updated: 2026-10-17
+updated: 2026-11-02
 phase: "2, language agnostic: active, closes in M4"
 parity:
   core_editing: {status: partial, closes: M6}
@@ -14,6 +14,7 @@ criteria:
   "2.3": "two warm passes; sixth eviction tested with one slot detached and with five attached"
   "2.4": "passes on main"
 known_defects:
+  - "physical native validation: missing or zero presentedTime withholds close until timeout; the error identifies the missing evidence, but qualification still fails"
   - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays wait for S10"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
