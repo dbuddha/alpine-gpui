@@ -3414,7 +3414,7 @@ enum PendingLinkStep {
     Wait,
     // Pause and resume the running link to ask for a fresh callback.
     Restart,
-    // Drop the pending frame with zero submissions and report an error.
+    // Record a cancelled frame with zero submissions and no latched error.
     Cancel,
 }
 

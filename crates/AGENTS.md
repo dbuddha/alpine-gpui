@@ -3,7 +3,7 @@ scope: framework crates under crates/
 parent: ../AGENTS.md
 updated: 2026-10-17
 known_defects:
-  - "hosted CI: a resumed display link may never call back, so a pending frame never starts (0 submissions; runs 37150303820, 37223087925; editor native_process). Now bounded: three link restarts, then a zero-submission cancel with an error; unproven whether a restart revives the link"
+  - "hosted CI: a resumed display link may never call back, so a pending frame never starts (0 submissions; runs 37150303820, 37223087925; editor native_process). Now bounded: three link restarts, then a zero-submission cancel without a latched error; unproven whether a restart revives the link"
   - "unverified: applicationShouldTerminate always replies TerminateCancel and quits through window close, so a system logout or restart is likely cancelled"
 ---
 

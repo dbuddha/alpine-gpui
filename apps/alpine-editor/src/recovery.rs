@@ -917,8 +917,17 @@ mod tests {
             std::process::id(),
             TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
+        // A recycled pid can meet an old run's leftover; start empty.
+        remove_stale(&root)?;
         fs::create_dir_all(&root)?;
         Ok(root)
+    }
+
+    fn remove_stale(root: &Path) -> Result<(), io::Error> {
+        match fs::remove_dir_all(root) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
     }
 
     fn wrap_payload(payload: &[u8]) -> Vec<u8> {
