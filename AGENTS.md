@@ -31,7 +31,7 @@ milestones:
   - {id: M0, name: "reset: docs, CI, hygiene", status: done}
   - {id: M0e, name: "fix hosted native flakes", status: done}
   - {id: M1, name: "measurement: perf recorder and bench", status: done}
-  - {id: S, name: "stability: no lost text or hangs", status: planned}
+  - {id: S, name: "stability: no lost text or hangs", status: active}
   - {id: M2, name: "presentation latency and real 120 Hz", status: planned}
   - {id: M3, name: "daily-use defects and durability", status: planned}
   - {id: M4, name: "language intelligence, phase 2 close", status: planned}
@@ -41,7 +41,7 @@ milestones:
   - {id: M8, name: "real application and parity sweep, phase 5", status: planned}
 autonomy: "Deepak: agents may push branches, open and merge PRs, and delete their own merged branches, except ask_first"
 next:
-  - "S: S7 qualification, S8 stall log, then S9 and S10"
+  - "S: qualify #666, then finish #671, #672 and #674"
   - "M1 follow-up: does rust-analyzer load the open-repo workspace?"
   - "CP-S: owner dogfood day after S10"
 ask_first: [dependency changes, destructive actions, milestone design kickoff, new subsystem or public API or relaxed invariant, unsafe boundary or allowlist change, license or copied-source change, weakening a CI gate or threshold, anything that costs money]

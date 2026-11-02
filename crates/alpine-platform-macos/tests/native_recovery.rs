@@ -31,6 +31,9 @@ mod validation {
     const LOGICAL_HEIGHT: f64 = 64.0;
     const PAUSE_SETTLEMENT: Duration = Duration::from_millis(150);
     const HOSTED_PAUSE_SETTLEMENT: Duration = Duration::from_secs(5);
+    const MAX_PENDING_LINK_RESTARTS: u64 = 3;
+    // Five progress ticks: long enough to see a stray timer run or rearm.
+    const PROGRESS_IDLE_WINDOW: Duration = Duration::from_millis(200);
 
     pub(super) fn run() -> TestResult {
         let hosted_direct = match std::env::var_os("ALPINE_PRESENTATION_EVIDENCE_MODE") {
@@ -42,6 +45,7 @@ mod validation {
         validate_dropped_presentation(scene.clone(), clear, hosted_direct)?;
         validate_missing_presentation(scene.clone(), clear, hosted_direct)?;
         validate_silent_display_link(scene.clone(), clear, hosted_direct)?;
+        validate_pending_display_link_silence(scene.clone(), clear, hosted_direct)?;
         validate_supersession(scene.clone(), clear, hosted_direct)?;
         validate_device_loss(scene, clear, hosted_direct)
     }
@@ -118,6 +122,141 @@ mod validation {
         assert!(progress.timer_schedules() >= 1, "{progress:?}");
         assert!(!progress.timer_armed(), "{progress:?}");
         close_recovery_surface(surface, "silent display link")
+    }
+
+    fn validate_pending_display_link_silence(
+        scene: Scene,
+        clear: LinearRgba,
+        hosted_direct: bool,
+    ) -> TestResult {
+        let descriptor = SurfaceDescriptor::new("Alpine pending link silence", 96.0, 64.0, 1.0)?;
+        let surface = native_validation::new_surface(&descriptor)?;
+        let _backing_scale = prepare_visible_surface(&surface, hosted_direct)?;
+        validate_permanent_pending_silence(&surface, scene.clone(), clear)?;
+        validate_ended_pending_silence(&surface, scene, clear)?;
+        close_recovery_surface(surface, "pending display link silence")
+    }
+
+    // No update ever reaches the pending frame, so only the bounded restarts
+    // and the cancel can end it: zero submissions and no latched error.
+    fn validate_permanent_pending_silence(
+        surface: &NativeSurface,
+        scene: Scene,
+        clear: LinearRgba,
+    ) -> TestResult {
+        let before = surface.snapshot();
+        let progress_before = native_validation::frame_progress_evidence(surface);
+        assert!(!progress_before.timer_armed(), "{progress_before:?}");
+        native_validation::inject_pending_display_link_silence(surface, None);
+        let revision = surface.request_frame(scene, clear)?;
+        assert!(native_validation::frame_progress_evidence(surface).timer_armed());
+        // Three one-second restarts and the cancel take about four seconds.
+        native_validation::run_until_frame_terminal(surface, Duration::from_secs(10));
+        native_validation::inject_pending_display_link_silence(surface, Some(0));
+
+        let snapshot = surface.snapshot();
+        let progress = native_validation::frame_progress_evidence(surface);
+        let terminal = snapshot.last_terminal().ok_or_else(|| {
+            format!("permanent pending silence did not end: {snapshot:?}, {progress:?}")
+        })?;
+        eprintln!("permanent pending silence: {progress:?}, {terminal:?}");
+        assert_eq!(terminal.frame_revision(), revision, "{terminal:?}");
+        assert_eq!(terminal.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(terminal.submission_count(), 0);
+        assert_eq!(terminal.present_call_count(), 0);
+        assert_eq!(terminal.retained_bytes(), 0);
+        assert_eq!(snapshot.submission_count(), before.submission_count());
+        assert_eq!(snapshot.occupied_frame_slots(), 0);
+        assert!(snapshot.display_link_paused(), "{snapshot:?}");
+        // A pause during the wait restores the budget, so more is possible.
+        assert!(
+            progress.link_restarts() - progress_before.link_restarts() >= MAX_PENDING_LINK_RESTARTS,
+            "{progress:?}"
+        );
+        assert_eq!(
+            snapshot.cancelled_count(),
+            before.cancelled_count() + 1,
+            "{snapshot:?}"
+        );
+        assert_eq!(
+            progress.timer_terminals() - progress_before.timer_terminals(),
+            1,
+            "{progress:?}"
+        );
+        assert!(!progress.timer_armed(), "{progress:?}");
+        assert_eq!(surface.take_error()?, None);
+        assert_progress_idle(surface, progress)
+    }
+
+    // The silence ends after 35 ticks (about 1.4 s) whatever the restarts did,
+    // so the first restart has landed and a real update must draw the frame.
+    fn validate_ended_pending_silence(
+        surface: &NativeSurface,
+        scene: Scene,
+        clear: LinearRgba,
+    ) -> TestResult {
+        let before = surface.snapshot();
+        let progress_before = native_validation::frame_progress_evidence(surface);
+        native_validation::inject_pending_display_link_silence(surface, Some(35));
+        let revision = surface.request_frame(scene, clear)?;
+        native_validation::run_until_frame_terminal(surface, Duration::from_secs(10));
+
+        let snapshot = surface.snapshot();
+        let progress = native_validation::frame_progress_evidence(surface);
+        let restarts = progress.link_restarts() - progress_before.link_restarts();
+        let terminal = snapshot.last_terminal().ok_or_else(|| {
+            format!("ended pending silence did not draw: {snapshot:?}, {progress:?}")
+        })?;
+        eprintln!("ended pending silence: {progress:?}, {terminal:?}");
+        assert_eq!(surface.take_error()?, None);
+        assert!(
+            (1..=MAX_PENDING_LINK_RESTARTS).contains(&restarts),
+            "{progress:?}"
+        );
+        assert!(snapshot.callback_count() > before.callback_count());
+        assert!(snapshot.submission_count() > before.submission_count());
+        // Geometry churn may supersede an attempt and requeue the revision,
+        // but its final attempt must really submit.
+        assert_eq!(terminal.frame_revision(), revision, "{terminal:?}");
+        assert_ne!(terminal.outcome(), PresentationOutcome::Cancelled);
+        assert_eq!(terminal.submission_count(), 1);
+        assert_eq!(terminal.present_call_count(), 1);
+        assert!(terminal.eligible_at_commit());
+        assert_eq!(snapshot.occupied_frame_slots(), 0);
+        assert!(snapshot.display_link_paused(), "{snapshot:?}");
+        assert!(!progress.timer_armed(), "{progress:?}");
+        assert_progress_idle(surface, progress)
+    }
+
+    // Idle does nothing: once the frame ends no progress timer runs or arms.
+    fn assert_progress_idle(
+        surface: &NativeSurface,
+        ended: native_validation::FrameProgressEvidence,
+    ) -> TestResult {
+        let before = surface.snapshot();
+        autoreleasepool(|_| {
+            NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(
+                PROGRESS_IDLE_WINDOW.as_secs_f64(),
+            ));
+        });
+        let settled = native_validation::frame_progress_evidence(surface);
+        assert_eq!(
+            settled.timer_schedules(),
+            ended.timer_schedules(),
+            "{settled:?}"
+        );
+        assert_eq!(settled.timer_ticks(), ended.timer_ticks(), "{settled:?}");
+        assert_eq!(
+            settled.link_restarts(),
+            ended.link_restarts(),
+            "{settled:?}"
+        );
+        assert!(!settled.timer_armed(), "{settled:?}");
+        assert_eq!(
+            surface.snapshot().submission_count(),
+            before.submission_count()
+        );
+        Ok(())
     }
 
     fn validate_dropped_presentation(
