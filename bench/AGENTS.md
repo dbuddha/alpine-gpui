@@ -23,20 +23,21 @@ bench/helpers/build.sh          # helpers, reference editor, self-tests
 cd bench && cargo build --release
 target/release/bench workloads | stamp | permissions | fixtures
 target/release/bench scene-evidence <capture.tsv> <action.tsv>
+target/release/bench scene-session <native-fixture> <helper-dir> <new-output-dir>
 target/release/bench run <workload> --app alpine|zed|appkit [--trials 12] [--wait-idle MIN] [--dry-run]
 target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
 
 Scene diagnostics are opt-in and unqualified. `bench --help` defines capture,
-action format and caps. Ordinary runs require clean installed
+build stamps, action format and caps. Ordinary runs require clean installed
 `~/Applications/Alpine Editor.app`; scene mode captures test windows.
 `--dry-run` starts nothing.
 
 ## Approved screen session
 
 Request each session with duration. Use one input-idle minute and a supervised
-five-minute maximum condition wait (not yet enforced by CLI). Stop on input or
+five-minute maximum condition wait (enforced by scene-session only). Stop on input or
 lock; do independent work while approval waits.
 
 1. Quit Zed; `bench zed-isolation --allow-window --open-fixture` must report

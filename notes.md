@@ -13,16 +13,21 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: bf1b394, contract PR #676 and diagnostic PR #675 merged. M1 is a limited
+Main at inspection: 3312df1, diagnostic PR #677 merged; main CI passed
+(41669383511). M1 is a limited
 baseline, not proof of typing latency, comparable LSP memory or 120 Hz.
 The delivery automation is paused. New screen sessions require approval.
 
 ## Active work
 
-- Implement scene capture and offline replay diagnostics on
-  codex/scene-evidence-diagnostic. Synthetic checks do not qualify live output,
-  action provenance, visibility, editor typing or native presentation.
-- #676 main CI passed (41663939024); clean bf1b394 is installed. Approved
+- Draft #678 has the bounded native fixture and supervised positive/stale/wrong
+  controls on codex/scene-evidence-fixture. Offline checks do not qualify live
+  capture, visibility, editor typing or native presentation.
+- Clean merged #677 is installed. Approved disposable-data edit/save/reopen
+  smoke passed via LaunchServices. A post-quit UI query reopened the normal
+  profile; normal Quit protected conflicting recovered work. Left open,
+  unedited. Avoid UI queries after quit; verify process exit instead.
+- #676 main CI passed (41663939024); bf1b394 is preserved. Its approved
   November 3 smoke passed edit/save/fresh-process reopen/quit via LaunchServices,
   with disposable data and no crash log. Cold Dock launch remains untested;
   native Open appeared, but automated path entry failed. Screen use has ended.
@@ -32,6 +37,16 @@ The delivery automation is paused. New screen sessions require approval.
   #674 Finder/Dock opening. Refresh remote heads before reviewing each.
 
 ## Evidence and blockers
+
+- #678 CI passed at 365d8da (41676762061); 243 bench tests and required
+  clippy/fmt/policy checks passed again. One later attempt expired waiting for
+  AC and input quiet, before any fixture launched. The next approved attempt
+  captured 15 valid baseline-A frames, then rejected an extra same-PID 66x20
+  window over the title-bar area. No action or negative controls ran; no normal
+  teardown record exists. The owned fixture exited. Its identity is unproven;
+  do not ignore small windows. Raw evidence: /tmp/alpine-scene-session-678-20261103-approved2.
+- The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
+  Native submissions still have zero qualified presentations. Metal hold unchanged.
 
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified
@@ -56,10 +71,10 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Review the bounded scene diagnostic capture and replay slice; preserve the
-   explicit unqualified result and current shipping gates.
-2. Prepare a native action-recording fixture and timed live controls. Request
-   screen access only when that component experiment is ready.
+1. Identify the extra fixture window with focused visual/AX evidence in a new
+   approved session. Preserve rejection until its role and geometry are known.
+2. Review any proposed eligibility change and obtain approval for gate relaxation;
+   then rebuild clean tools and run positive/stale/wrong controls. Keep #678 draft.
 3. Qualify the method, then rerun affected final-head PR gates and review.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
@@ -76,7 +91,7 @@ relaxation. Screen approval and milestone acceptance are pending when needed.
   worktrees. Native test filters can pass while running zero tests.
 - Initial native visibility is sampled before the event loop; false there
   does not establish that a later physical failure was caused by occlusion.
-- The approved one-minute quiet/five-minute maximum wait policy is not yet
-  enforced by the bench CLI. Use bounded supervision until implemented.
+- Ordinary benchmark CLI waits still need external bounds. The opt-in scene
+  supervisor enforces one-minute quiet/five-minute maximum precondition wait.
 - The prospective twelve-trial protocol does not rewrite historical results
-  or change existing CLI defaults in this documentation PR.
+  or change ordinary benchmark CLI defaults.

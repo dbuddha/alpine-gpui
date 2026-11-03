@@ -14,6 +14,7 @@ mod paths;
 mod physical_evidence;
 mod procs;
 mod recorder_log;
+mod scene_session;
 mod stamp;
 mod stats;
 mod trial;

@@ -15,6 +15,7 @@ pub const USAGE: &str = "usage:
   bench run <workload> --app alpine|zed|appkit [--trials N] [--warmup N]
             [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH] [--dry-run]
             [--wait-idle MINUTES]
+  bench scene-session <native-fixture> <helper-dir> <new-output-dir> (approved screen only)
   bench scene-evidence <capture.tsv> <action.tsv>  (diagnostic consistency only)
   bench baseline <run-dir> --milestone ID [--note TEXT]
   bench workloads | stamp | fixtures | permissions
@@ -29,10 +30,36 @@ vertical grayscale patches: A=0,118,188,225,255; B is reversed. Nine points per
 patch are sampled in sRGB, each RGB channel within 12 of its expected value.
 The action sidecar contains exactly one TSV record:
 scene-action<TAB>alpine-scene-diagnostic/v1<TAB>PID<TAB>ID<TAB>MACH_TICK<TAB>A<TAB>B
-A trusted native driver must eventually record that action. A hand-written
+scene-session uses the native fixture to record an accepted action.
+Its Mach tick is a command-issued lower bound, not native submission latency.
+One positive/stale/wrong control each; 30 seconds per case; quiet wait <=5 min.
+No live method or physical gate is qualified by offline tests. A hand-written
 sidecar proves only replay consistency, never physical or typing qualification.
 Capture and replay limits: 2048 frames, 2 MiB capture, 256-byte action file.
-Live method, visibility and action provenance remain unqualified.";
+Live method, visibility and action provenance remain unqualified.
+
+Build scene-session tools only from clean HEAD:
+  export ALPINE_SCENE_REVISION=$(git rev-parse HEAD)
+  RUSTFLAGS='--cfg alpine_native_validation' CARGO_TARGET_DIR=target/scene-fixture cargo build --locked -p alpine-platform-macos --example scene_evidence_fixture
+  cargo build --manifest-path bench/Cargo.toml
+  bench/helpers/build.sh
+Run scene-session only with session approval; pass the fixture executable,
+bench/target/helpers, and a new output directory outside the repository.
+The fixture uses disposable HOME, clears inherited native test overrides,
+and records terminal failures and exact cleanup. Capture scale is fixed at 1;
+the centered strip is 500x40 points inside the measured outer frame.
+Only even integral outer widths 500..504 and heights 300..350 are supported;
+source dimensions and strip coordinates must match that measured mapping. Ready/baseline/capture/drain caps
+are 5/5/10/5 seconds within a 30-second case execution cap.
+Owned process-group termination and socket drain allow up to 0.5 seconds
+cleanup per child after the deadline. No process from the owner is signalled. Output is capped at 2 MiB
+capture, 64 KiB per child stderr/fixture, and 512 KiB helper evidence.
+Source commit, clean tree and executable hashes are retained in stamp.txt.
+Only these first-party binaries are supported. OS scheduling/reaping is an
+external dependency; cleanup failures invalidate the run. Conditions are
+checked at least each second and immediately before activation/capture/action.
+Every control needs valid full-trace clocks, geometry, identity and cleanup.
+Native Metal timestamp failure remains a hold, including when controls agree.";
 
 /// Timed keys closer than this mostly come back late on any editor.
 const MIN_KEY_INTERVAL_MS: u64 = 100;
@@ -59,6 +86,11 @@ pub enum Command {
         run_dir: PathBuf,
         milestone: String,
         note: String,
+    },
+    SceneSession {
+        fixture: PathBuf,
+        helpers: PathBuf,
+        output: PathBuf,
     },
     SceneEvidence {
         capture: PathBuf,
@@ -183,6 +215,18 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 wait_idle,
             }))
         }
+        "scene-session" => {
+            let parsed = split(rest, &[], &[])?;
+            parsed.exactly(
+                3,
+                "native fixture, helper directory and new output directory",
+            )?;
+            Ok(Command::SceneSession {
+                fixture: PathBuf::from(&parsed.positional[0]),
+                helpers: PathBuf::from(&parsed.positional[1]),
+                output: PathBuf::from(&parsed.positional[2]),
+            })
+        }
         "scene-evidence" => {
             let parsed = split(rest, &[], &[])?;
             parsed.exactly(2, "capture.tsv and single-action.tsv")?;
@@ -233,6 +277,11 @@ pub fn execute(command: Command) -> Result<(), String> {
             println!("{USAGE}");
             Ok(())
         }
+        Command::SceneSession {
+            fixture,
+            helpers,
+            output,
+        } => crate::scene_session::run(&fixture, &helpers, &output),
         Command::SceneEvidence { capture, actions } => {
             println!("{}", crate::physical_evidence::run(&capture, &actions)?);
             Ok(())
@@ -358,6 +407,23 @@ mod tests {
 
     fn args(text: &str) -> Vec<String> {
         text.split_whitespace().map(ToOwned::to_owned).collect()
+    }
+
+    #[test]
+    fn scene_session_requires_three_paths() -> Result<(), String> {
+        assert!(matches!(
+            parse(&args("scene-session fixture helpers output"))?,
+            Command::SceneSession { .. }
+        ));
+        for input in [
+            "scene-session",
+            "scene-session fixture helpers",
+            "scene-session fixture helpers output extra",
+            "scene-session --approve fixture helpers output",
+        ] {
+            assert!(parse(&args(input)).is_err());
+        }
+        Ok(())
     }
 
     #[test]
