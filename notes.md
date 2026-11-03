@@ -38,11 +38,15 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Evidence and blockers
 
-- First #678 scene control stopped before capture: native content was 500x300
-  points, but the measured opaque outer frame was 502x332. The diagnostic
-  mapping fix passed review and 243 tests. Input activity ended the approved
-  session before a second attempt; a new session is required. Native A submitted
-  once with zero qualified presentations; the Metal hold remains unchanged.
+- #678 CI passed at 365d8da (41676762061); 243 bench tests and required
+  clippy/fmt/policy checks passed again. One later attempt expired waiting for
+  AC and input quiet, before any fixture launched. The next approved attempt
+  captured 15 valid baseline-A frames, then rejected an extra same-PID 66x20
+  window over the title-bar area. No action or negative controls ran; no normal
+  teardown record exists. The owned fixture exited. Its identity is unproven;
+  do not ignore small windows. Raw evidence: /tmp/alpine-scene-session-678-20261103-approved2.
+- The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
+  Native submissions still have zero qualified presentations. Metal hold unchanged.
 
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified
@@ -67,10 +71,10 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Use clean final-head builds for the next approved session; keep #678 in
-   draft until its live controls pass. Retain the Metal timestamp hold.
-2. After clean builds and offline gates, request a new screen session for
-   positive/stale/wrong controls. No live method qualification is claimed.
+1. Identify the extra fixture window with focused visual/AX evidence in a new
+   approved session. Preserve rejection until its role and geometry are known.
+2. Review any proposed eligibility change and obtain approval for gate relaxation;
+   then rebuild clean tools and run positive/stale/wrong controls. Keep #678 draft.
 3. Qualify the method, then rerun affected final-head PR gates and review.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
