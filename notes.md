@@ -20,14 +20,14 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Active work
 
-- Prepare the bounded native scene fixture and supervised positive/stale/wrong
+- Draft #678 has the bounded native fixture and supervised positive/stale/wrong
   controls on codex/scene-evidence-fixture. Offline checks do not qualify live
   capture, visibility, editor typing or native presentation.
 - Clean merged #677 is installed. Approved disposable-data edit/save/reopen
   smoke passed via LaunchServices. A post-quit UI query reopened the normal
   profile; normal Quit protected conflicting recovered work. Left open,
   unedited. Avoid UI queries after quit; verify process exit instead.
-- #676 main CI passed (41663939024); clean bf1b394 is installed. Approved
+- #676 main CI passed (41663939024); bf1b394 is preserved. Its approved
   November 3 smoke passed edit/save/fresh-process reopen/quit via LaunchServices,
   with disposable data and no crash log. Cold Dock launch remains untested;
   native Open appeared, but automated path entry failed. Screen use has ended.
@@ -40,7 +40,8 @@ The delivery automation is paused. New screen sessions require approval.
 
 - First #678 scene control stopped before capture: native content was 500x300
   points, but the measured opaque outer frame was 502x332. The diagnostic
-  mapping fix passed review and offline gates; live capture is still pending. Native A submitted
+  mapping fix passed review and 243 tests. Input activity ended the approved
+  session before a second attempt; a new session is required. Native A submitted
   once with zero qualified presentations; the Metal hold remains unchanged.
 
 - #675 improves missing-presentation diagnostics only. Its merged-main live
@@ -66,8 +67,8 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Review the native fixture and bounded scene supervisor; retain the Metal
-   timestamp hold and explicit unqualified diagnostic results.
+1. Use clean final-head builds for the next approved session; keep #678 in
+   draft until its live controls pass. Retain the Metal timestamp hold.
 2. After clean builds and offline gates, request a new screen session for
    positive/stale/wrong controls. No live method qualification is claimed.
 3. Qualify the method, then rerun affected final-head PR gates and review.
