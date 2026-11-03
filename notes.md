@@ -13,16 +13,19 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: 6dd8ff0, diagnostic PR #675 merged. M1 is a limited
+Main at inspection: bf1b394, contract PR #676 and diagnostic PR #675 merged. M1 is a limited
 baseline, not proof of typing latency, comparable LSP memory or 120 Hz.
 The delivery automation is paused. New screen sessions require approval.
 
 ## Active work
 
-- Document the November 3 approved contract on codex/project-contract.
-  No product or CI gate code changes belong in this PR.
-- Next implementation: qualify screen-based physical evidence, retaining the
-  existing timestamp failure as a visible result until replacement qualifies.
+- Implement scene capture and offline replay diagnostics on
+  codex/scene-evidence-diagnostic. Synthetic checks do not qualify live output,
+  action provenance, visibility, editor typing or native presentation.
+- #676 main CI passed (41663939024); clean merged build is ready at
+  /tmp/alpine-676-merged/Alpine Editor.app. CLI usage-error smoke passed;
+  approval for the five-minute graphical smoke is pending.
+- Qualify screen-based physical evidence before replacing the timestamp gate.
 - Continue the existing PR queue one at a time after the evidence decision:
   #666 pending-frame recovery, #671 horizontal scroll, #672 unsaved overlays,
   #674 Finder/Dock opening. Refresh remote heads before reviewing each.
@@ -43,16 +46,19 @@ The delivery automation is paused. New screen sessions require approval.
   repeated runs cannot fix this implementation gap.
 - Open-repo gave Zed folder plus file and Alpine only a file. Comparable
   workspace loading and server-memory claims remain unqualified.
-- Existing benchmarks do not prove everyday startup readiness. Audit their
-  endpoints and original statistics before revising memory/startup budgets.
+- Historical launch medians: idle 283.351 ms, 50 MiB 425.871 ms, below the
+  retained 335/475 ms budgets. Idle tree p50 mean was 29,021,014 bytes, median
+  28,877,664; idle app/tree matched. These do not prove language-ready startup
+  or comparable workspace/server memory; no budget changed.
 - OCaml/Haskell, structural parsing, Vim, Git, Markdown preview, preferences
   UI and debugger are planned scope, not implemented claims.
 
 ## Next steps and decisions
 
-1. Review and land the documentation contract with its instruction checks.
-2. Specify and test physical scene/text verification offline; request a timed
-   screen session only when the live experiment is ready.
+1. Review the bounded scene diagnostic capture and replay slice; preserve the
+   explicit unqualified result and current shipping gates.
+2. Prepare a native action-recording fixture and timed live controls. Request
+   screen access only when that component experiment is ready.
 3. Qualify the method, then rerun affected final-head PR gates and review.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.

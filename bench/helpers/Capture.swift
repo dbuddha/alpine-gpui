@@ -47,10 +47,13 @@ final class FrameTimer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let scale: CGFloat
     private(set) var frames = 0
     private var ready = false
+    private let scene: SceneSampler?
+    private var sceneTransform: [Double]?
 
-    init(region: CGRect, scale: CGFloat) {
+    init(region: CGRect, scale: CGFloat, scene: SceneSampler? = nil) {
         self.region = region
         self.scale = scale
+        self.scene = scene
     }
 
     func stream(
@@ -66,11 +69,44 @@ final class FrameTimer: NSObject, SCStreamOutput, SCStreamDelegate {
               let info = attachments.first,
               let rawStatus = (info[.status] as? NSNumber)?.intValue,
               SCFrameStatus(rawValue: rawStatus) == .complete,
-              let pixels = sampleBuffer.imageBuffer,
-              let hash = regionHash(pixels, region: region, scale: scale) else {
+              let pixels = sampleBuffer.imageBuffer else {
             return
         }
         let display = (info[.displayTime] as? NSNumber)?.uint64Value ?? 0
+        if let scene {
+            guard frames < sceneFrameCap else {
+                FileHandle.standardError.write(Data("error: diagnostic scene frame cap exceeded\n".utf8))
+                exit(1)
+            }
+            do {
+                guard let rectFields = info[.contentRect] as? [String: Any],
+                      let rect = CGRect(dictionaryRepresentation: rectFields as CFDictionary),
+                      let contentScale = (info[.contentScale] as? NSNumber)?.doubleValue,
+                      let displayScale = (info[.scaleFactor] as? NSNumber)?.doubleValue else {
+                    throw HelperFailure.runtime("missing diagnostic content transform")
+                }
+                try scene.validateTransform(rect: rect, contentScale: contentScale,
+                                            displayScale: displayScale, requestedScale: Double(scale))
+                let transform = [Double(rect.minX), Double(rect.minY), Double(rect.width),
+                                 Double(rect.height), contentScale, displayScale]
+                guard sceneTransform == nil || sceneTransform == transform else {
+                    throw HelperFailure.runtime("diagnostic content transform changed")
+                }
+                sceneTransform = transform
+                let samples = try scene.sample(pixels)
+                frames += 1
+                Output.emit(["scene-frame", String(frames), String(display), String(arrival),
+                             sceneState(samples), samples.map(String.init).joined(separator: ","),
+                             String(Double(rect.minX)), String(Double(rect.minY)),
+                             String(Double(rect.width)), String(Double(rect.height)),
+                             String(contentScale), String(displayScale)])
+            } catch {
+                FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+                exit(1)
+            }
+            return
+        }
+        guard let hash = regionHash(pixels, region: region, scale: scale) else { return }
         frames += 1
         if !ready {
             ready = true
@@ -92,12 +128,17 @@ struct CaptureRequest {
     let region: CGRect?
     let fps: Int
     let scale: Double
+    let diagnostic: Bool
 
     init(_ options: inout Options) throws {
+        diagnostic = options.command == "scene"
         pid = try options.pid()
         let window = try options.int("window-id")
         guard let id = UInt32(exactly: window) else {
             throw HelperFailure.usage("--window-id must be a window number")
+        }
+        guard !diagnostic || id > 0 else {
+            throw HelperFailure.usage("diagnostic scene needs a nonzero window")
         }
         windowID = id
         durationMs = try options.int("duration-ms")
@@ -108,6 +149,9 @@ struct CaptureRequest {
         guard durationMs > 0, durationMs <= 600_000, fps > 0, fps <= 240,
               scale > 0, scale <= 4 else {
             throw HelperFailure.usage("duration, fps or scale out of range")
+        }
+        if diagnostic && (region == nil || durationMs > 10_000 || fps > 120 || scale < 1) {
+            throw HelperFailure.usage("scene needs --region, duration <= 10000, fps <= 120 and scale >= 1")
         }
     }
 }
@@ -125,6 +169,13 @@ func capture(_ request: CaptureRequest) async throws {
         throw HelperFailure.runtime("window \(request.windowID) of pid \(request.pid) is not shareable")
     }
     let scale = CGFloat(request.scale)
+    if request.diagnostic {
+        guard window.frame.width.isFinite, window.frame.height.isFinite,
+              window.frame.width > 0, window.frame.height > 0,
+              window.frame.width * scale <= 4096, window.frame.height * scale <= 4096 else {
+            throw HelperFailure.runtime("diagnostic window dimensions out of range")
+        }
+    }
     let configuration = SCStreamConfiguration()
     configuration.width = max(1, Int((window.frame.width * scale).rounded()))
     configuration.height = max(1, Int((window.frame.height * scale).rounded()))
@@ -133,23 +184,38 @@ func capture(_ request: CaptureRequest) async throws {
     configuration.pixelFormat = kCVPixelFormatType_32BGRA
     configuration.showsCursor = false
     let region = request.region ?? CGRect(origin: .zero, size: window.frame.size)
-    let timer = FrameTimer(region: region, scale: scale)
+    let scene = request.diagnostic
+        ? try SceneSampler(width: configuration.width, height: configuration.height,
+                           region: region, scale: scale) : nil
+    if scene != nil { configuration.colorSpaceName = CGColorSpace.sRGB }
+    let timer = FrameTimer(region: region, scale: scale, scene: scene)
     let stream = SCStream(
         filter: SCContentFilter(desktopIndependentWindow: window),
         configuration: configuration,
         delegate: timer
     )
     try stream.addStreamOutput(timer, type: .screen, sampleHandlerQueue: timer.queue)
+    if let scene {
+        Output.emit(["scene-source", sceneSchema, String(request.pid), String(request.windowID),
+                     String(scene.width), String(scene.height), String(request.scale),
+                     String(Int(scene.region.minX)), String(Int(scene.region.minY)),
+                     String(Int(scene.region.width)), String(Int(scene.region.height)),
+                     String(Clock.now()), String(Clock.timebase.numer), String(Clock.timebase.denom),
+                     String(sceneFrameCap), String(request.durationMs), "srgb"])
+    }
     try await stream.startCapture()
-    Output.emit(["started", String(Clock.now()), String(configuration.width), String(configuration.height)])
+    if scene == nil {
+        Output.emit(["started", String(Clock.now()), String(configuration.width), String(configuration.height)])
+    }
     try await Task.sleep(nanoseconds: UInt64(request.durationMs) * 1_000_000)
     try await stream.stopCapture()
     let frames = timer.queue.sync { timer.frames }
-    Output.emit(["end", String(Clock.now()), String(frames)])
+    Output.emit([scene == nil ? "end" : "scene-end", String(Clock.now()), String(frames)])
 }
 
 func captureSelfTest() throws {
     try commonSelfTest()
+    try sceneSelfTest()
     var created: CVPixelBuffer?
     let status = CVPixelBufferCreate(nil, 64, 32, kCVPixelFormatType_32BGRA, nil, &created)
     guard status == kCVReturnSuccess, let buffer = created else {
@@ -182,7 +248,7 @@ struct CaptureMain {
         do {
             var options = try Options(Array(CommandLine.arguments.dropFirst()))
             switch options.command {
-            case "run":
+            case "run", "scene":
                 let request = try CaptureRequest(&options)
                 // ScreenCaptureKit needs a window server connection; AppKit
                 // opens it, and a prohibited policy keeps the helper unfocused.
@@ -192,7 +258,7 @@ struct CaptureMain {
                 try options.finish()
                 try captureSelfTest()
             default:
-                throw HelperFailure.usage("unknown command \(options.command); expected run or self-test")
+                throw HelperFailure.usage("unknown command \(options.command); expected run, scene or self-test")
             }
             exit(0)
         } catch let failure as HelperFailure {
