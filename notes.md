@@ -13,15 +13,18 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: bf1b394, contract PR #676 and diagnostic PR #675 merged. M1 is a limited
+Main at inspection: 3312df1, diagnostic PR #677 merged; main CI passed
+(41669383511). M1 is a limited
 baseline, not proof of typing latency, comparable LSP memory or 120 Hz.
 The delivery automation is paused. New screen sessions require approval.
 
 ## Active work
 
-- Implement scene capture and offline replay diagnostics on
-  codex/scene-evidence-diagnostic. Synthetic checks do not qualify live output,
-  action provenance, visibility, editor typing or native presentation.
+- Prepare the bounded native scene fixture and supervised positive/stale/wrong
+  controls on codex/scene-evidence-fixture. Offline checks do not qualify live
+  capture, visibility, editor typing or native presentation.
+- Clean merged #677 bundle: /tmp/alpine-677-merged/Alpine Editor.app. CLI usage
+  and synthetic replay smoke passed; graphical smoke remains unapproved.
 - #676 main CI passed (41663939024); clean bf1b394 is installed. Approved
   November 3 smoke passed edit/save/fresh-process reopen/quit via LaunchServices,
   with disposable data and no crash log. Cold Dock launch remains untested;
@@ -56,10 +59,10 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Review the bounded scene diagnostic capture and replay slice; preserve the
-   explicit unqualified result and current shipping gates.
-2. Prepare a native action-recording fixture and timed live controls. Request
-   screen access only when that component experiment is ready.
+1. Review the native fixture and bounded scene supervisor; retain the Metal
+   timestamp hold and explicit unqualified diagnostic results.
+2. After clean builds and offline gates, request a new screen session for
+   positive/stale/wrong controls. No live method qualification is claimed.
 3. Qualify the method, then rerun affected final-head PR gates and review.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
@@ -76,7 +79,7 @@ relaxation. Screen approval and milestone acceptance are pending when needed.
   worktrees. Native test filters can pass while running zero tests.
 - Initial native visibility is sampled before the event loop; false there
   does not establish that a later physical failure was caused by occlusion.
-- The approved one-minute quiet/five-minute maximum wait policy is not yet
-  enforced by the bench CLI. Use bounded supervision until implemented.
+- Ordinary benchmark CLI waits still need external bounds. The opt-in scene
+  supervisor enforces one-minute quiet/five-minute maximum precondition wait.
 - The prospective twelve-trial protocol does not rewrite historical results
-  or change existing CLI defaults in this documentation PR.
+  or change ordinary benchmark CLI defaults.
