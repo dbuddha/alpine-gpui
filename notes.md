@@ -23,8 +23,10 @@ The delivery automation is paused. New screen sessions require approval.
 - Prepare the bounded native scene fixture and supervised positive/stale/wrong
   controls on codex/scene-evidence-fixture. Offline checks do not qualify live
   capture, visibility, editor typing or native presentation.
-- Clean merged #677 bundle: /tmp/alpine-677-merged/Alpine Editor.app. CLI usage
-  and synthetic replay smoke passed; graphical smoke remains unapproved.
+- Clean merged #677 is installed. Approved disposable-data edit/save/reopen
+  smoke passed via LaunchServices. A post-quit UI query reopened the normal
+  profile; normal Quit protected conflicting recovered work. Left open,
+  unedited. Avoid UI queries after quit; verify process exit instead.
 - #676 main CI passed (41663939024); clean bf1b394 is installed. Approved
   November 3 smoke passed edit/save/fresh-process reopen/quit via LaunchServices,
   with disposable data and no crash log. Cold Dock launch remains untested;
@@ -35,6 +37,11 @@ The delivery automation is paused. New screen sessions require approval.
   #674 Finder/Dock opening. Refresh remote heads before reviewing each.
 
 ## Evidence and blockers
+
+- First #678 scene control stopped before capture: native content was 500x300
+  points, but the measured opaque outer frame was 502x332. The diagnostic
+  mapping fix passed review and offline gates; live capture is still pending. Native A submitted
+  once with zero qualified presentations; the Metal hold remains unchanged.
 
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified

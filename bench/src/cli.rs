@@ -47,7 +47,9 @@ Run scene-session only with session approval; pass the fixture executable,
 bench/target/helpers, and a new output directory outside the repository.
 The fixture uses disposable HOME, clears inherited native test overrides,
 and records terminal failures and exact cleanup. Capture scale is fixed at 1;
-the central content strip is 500x40 points. Ready/baseline/capture/drain caps
+the centered strip is 500x40 points inside the measured outer frame.
+Only even integral outer widths 500..504 and heights 300..350 are supported;
+source dimensions and strip coordinates must match that measured mapping. Ready/baseline/capture/drain caps
 are 5/5/10/5 seconds within a 30-second case execution cap.
 Owned process-group termination and socket drain allow up to 0.5 seconds
 cleanup per child after the deadline. No process from the owner is signalled. Output is capped at 2 MiB

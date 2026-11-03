@@ -307,7 +307,9 @@ pub fn baseline(
     capture: &str,
     pid: u32,
     window: u32,
+    width: f64,
     height: f64,
+    region_x: f64,
     region_y: f64,
 ) -> Result<(), String> {
     let complete = capture.rsplit_once('\n').map_or("", |(prefix, _)| prefix);
@@ -316,10 +318,10 @@ pub fn baseline(
     let f = fields(first, 17)?;
     if source.pid != u64::from(pid)
         || source.window != u64::from(window)
-        || source.width != 500
+        || crate::stats::to_f64(source.width) != width
         || crate::stats::to_f64(source.height) != height
         || source.scale != 1.0
-        || f[7] != "0"
+        || f[7].parse::<f64>().map_err(|e| e.to_string())? != region_x
         || f[8].parse::<f64>().map_err(|e| e.to_string())? != region_y
         || f[9] != "500"
         || f[10] != "40"
@@ -603,18 +605,62 @@ mod tests {
         let frame =
             frame(1, 5, 21, State::A).replace("\t0\t0\t100\t40\t1\t1", "\t0\t0\t500\t328\t1\t1");
         let good = source.to_owned() + &frame;
-        baseline(&good, 123, 456, 328.0, 158.0)?;
-        baseline(&(good.clone() + "scene-frame\t2"), 123, 456, 328.0, 158.0)?;
+        baseline(&good, 123, 456, 500.0, 328.0, 0.0, 158.0)?;
+        baseline(
+            &(good.clone() + "scene-frame\t2"),
+            123,
+            456,
+            500.0,
+            328.0,
+            0.0,
+            158.0,
+        )?;
         for (pid, window, height, y) in [
             (124, 456, 328.0, 158.0),
             (123, 457, 328.0, 158.0),
             (123, 456, 329.0, 158.0),
             (123, 456, 328.0, 159.0),
         ] {
-            assert!(baseline(&good, pid, window, height, y).is_err());
+            assert!(baseline(&good, pid, window, 500.0, height, 0.0, y).is_err());
         }
-        assert!(baseline(&good.replace("\tA\t", "\tB\t"), 123, 456, 328.0, 158.0).is_err());
-        assert!(baseline(source, 123, 456, 328.0, 158.0).is_err());
+        assert!(
+            baseline(
+                &good.replace("\tA\t", "\tB\t"),
+                123,
+                456,
+                500.0,
+                328.0,
+                0.0,
+                158.0
+            )
+            .is_err()
+        );
+        assert!(baseline(source, 123, 456, 500.0, 328.0, 0.0, 158.0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn bordered_capture_requires_exact_outer_and_strip_mapping() -> Result<(), String> {
+        let source = "scene-source\talpine-scene-diagnostic/v1\t123\t456\t502\t332\t1\t1\t146\t500\t40\t10\t1\t1\t2048\t8000\tsrgb\n";
+        let frame =
+            frame(1, 5, 21, State::A).replace("\t0\t0\t100\t40\t1\t1", "\t0\t0\t502\t332\t1\t1");
+        let good = source.to_owned() + &frame;
+        baseline(&good, 123, 456, 502.0, 332.0, 1.0, 146.0)?;
+        for (width, height, x, y) in [
+            (500.0, 332.0, 1.0, 146.0),
+            (502.0, 330.0, 1.0, 146.0),
+            (502.0, 332.0, 0.0, 146.0),
+            (502.0, 332.0, 1.0, 147.0),
+        ] {
+            assert!(baseline(&good, 123, 456, width, height, x, y).is_err());
+        }
+        for bad in [
+            good.replacen("\t1\t146\t500\t40", "\t0\t146\t500\t40", 1),
+            good.replacen("\t1\t146\t500\t40", "\t1\t147\t500\t40", 1),
+            good.replace("\t0\t0\t502\t332", "\t0\t0\t500\t332"),
+        ] {
+            assert!(baseline(&bad, 123, 456, 502.0, 332.0, 1.0, 146.0).is_err());
+        }
         Ok(())
     }
 

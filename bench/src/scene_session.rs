@@ -341,18 +341,20 @@ impl Drop for Session {
     clippy::float_cmp,
     reason = "fixed fixture geometry must match exactly"
 )]
-fn region(window: &helpers::WindowInfo) -> Result<f64> {
-    if window.width != 500.0
+fn region(window: &helpers::WindowInfo) -> Result<(f64, f64)> {
+    if !window.width.is_finite()
+        || !(500.0..=504.0).contains(&window.width)
+        || window.width % 2.0 != 0.0
         || !window.height.is_finite()
         || !(300.0..=350.0).contains(&window.height)
-        || window.height.fract() != 0.0
+        || window.height % 2.0 != 0.0
         || !window.x.is_finite()
         || !window.y.is_finite()
         || window.alpha != 1.0
     {
         return Err("unsupported fixture outer geometry".into());
     }
-    Ok(window.height - 300.0 + 130.0)
+    Ok(((window.width - 500.0) / 2.0, (window.height - 40.0) / 2.0))
 }
 #[allow(
     clippy::float_cmp,
@@ -417,7 +419,13 @@ fn action_record(text: &str, pid: u32, window: u32, tick: u64) -> Result<String>
     Ok(expected + "\n")
 }
 
-fn start_capture(helpers: &Path, dir: &Path, pid: u32, window: u32, y: f64) -> Result<Owned> {
+fn start_capture(
+    helpers: &Path,
+    dir: &Path,
+    pid: u32,
+    window: u32,
+    region: (f64, f64),
+) -> Result<Owned> {
     Owned::spawn(
         &helpers.join(helpers::CAPTURE),
         &[
@@ -429,7 +437,7 @@ fn start_capture(helpers: &Path, dir: &Path, pid: u32, window: u32, y: f64) -> R
             "--duration-ms",
             "8000",
             "--region",
-            &format!("0,{y},500,40"),
+            &format!("{},{},500,40", region.0, region.1),
             "--scale",
             "1",
         ],
@@ -437,6 +445,44 @@ fn start_capture(helpers: &Path, dir: &Path, pid: u32, window: u32, y: f64) -> R
         Some(dir.join("capture")),
         None,
     )
+}
+
+fn wait_for_baseline(
+    session: &mut Session,
+    app: &mut Owned,
+    capture: &mut Owned,
+    window: &helpers::WindowInfo,
+    region: (f64, f64),
+    deadline: Instant,
+) -> Result<()> {
+    let baseline_deadline = (Instant::now() + Duration::from_secs(5)).min(deadline);
+    let mut next_check = Instant::now();
+    loop {
+        remaining(baseline_deadline)?;
+        if Instant::now() >= next_check {
+            let start = Instant::now();
+            next_check = start + Duration::from_secs(1);
+            session.verify(window, sample_deadline(start, baseline_deadline))?;
+        }
+        if app.done()? || capture.done()? {
+            return Err("child ended before baseline".into());
+        }
+        if physical_evidence::baseline(
+            &capture.output()?,
+            app.child.id(),
+            window.id,
+            window.width,
+            window.height,
+            region.0,
+            region.1,
+        )
+        .is_ok()
+        {
+            break;
+        }
+        thread::sleep(poll_delay(Instant::now(), next_check, baseline_deadline)?);
+    }
+    Ok(())
 }
 
 fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Result<String> {
@@ -479,28 +525,11 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         i32::try_from(pid).map_err(|e| e.to_string())?,
         ready_deadline,
     )?;
-    let y = region(&window)?;
+    let region = region(&window)?;
     session.verify(&window, deadline)?;
     let capture_deadline = (Instant::now() + Duration::from_secs(10)).min(deadline);
-    let mut capture = start_capture(&session.helpers, dir, pid, window.id, y)?;
-    let baseline_deadline = (Instant::now() + Duration::from_secs(5)).min(deadline);
-    next_check = Instant::now();
-    loop {
-        remaining(baseline_deadline)?;
-        if Instant::now() >= next_check {
-            let start = Instant::now();
-            next_check = start + Duration::from_secs(1);
-            session.verify(&window, sample_deadline(start, baseline_deadline))?;
-        }
-        if app.done()? || capture.done()? {
-            return Err("child ended before baseline".into());
-        }
-        if physical_evidence::baseline(&capture.output()?, pid, window.id, window.height, y).is_ok()
-        {
-            break;
-        }
-        thread::sleep(poll_delay(Instant::now(), next_check, baseline_deadline)?);
-    }
+    let mut capture = start_capture(&session.helpers, dir, pid, window.id, region)?;
+    wait_for_baseline(session, &mut app, &mut capture, &window, region, deadline)?;
     session.verify(&window, capture_deadline)?;
     let (tick, timebase) =
         helpers::parse_now(&session.call(helpers::WINDOW, &["now"], capture_deadline)?)?;
@@ -726,14 +755,14 @@ mod tests {
     }
     #[test]
     fn central_strip_and_backing_geometry_are_exact() -> Result<()> {
-        assert!((region(&window())? - 158.0).abs() < f64::EPSILON);
+        assert_eq!(region(&window())?, (0.0, 144.0));
         let mut bad = window();
-        for value in [499.0, 501.0, f64::NAN] {
+        for value in [499.0, 501.0, 503.0, 505.0, 502.5, f64::NAN] {
             bad.width = value;
             assert!(region(&bad).is_err());
         }
         bad = window();
-        for value in [299.0, 351.0, 328.5, f64::INFINITY] {
+        for value in [299.0, 331.0, 351.0, 328.5, f64::INFINITY] {
             bad.height = value;
             assert!(region(&bad).is_err());
         }
@@ -751,6 +780,21 @@ mod tests {
         }
         assert!(ready(ready_line, 3, "123").is_err());
         assert!(ready(ready_line, 2, "different").is_err());
+        Ok(())
+    }
+    #[test]
+    fn observed_outer_frame_accepts_the_content_border() -> Result<()> {
+        let mut observed = window();
+        observed.width = 502.0;
+        observed.height = 332.0;
+        assert_eq!(region(&observed)?, (1.0, 146.0));
+        observed.width = 504.0;
+        assert_eq!(region(&observed)?, (2.0, 146.0));
+        for height in [300.0, 350.0] {
+            observed.height = height;
+            let (_, y) = region(&observed)?;
+            assert!(y >= height - 300.0 && y + 40.0 <= 300.0);
+        }
         Ok(())
     }
     #[test]
