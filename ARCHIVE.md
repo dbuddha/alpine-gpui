@@ -1,9 +1,29 @@
 # Archive
 
 History and overflow, newest first. Nothing here is an operating rule; the
-AGENTS.md files are. Read this file to learn why something is the way it is.
+AGENTS.md files and project.md define the current contract. Read this file to learn why something is the way it is.
 Older material: tag `pre-cleanup-2026-09`, and the last `docs/` tree before the
 2026-09-30 reset at commit `6e6282b` (`git show 6e6282b:docs/<path>`).
+
+## 2026-11-03: owner-approved project contract and evidence correction
+
+Deepak Buddha approved editor-first delivery on a performance-first reusable
+framework, the seven-language daily-driver scope, local Git and Markdown,
+Vim without multi-cursor, and a later source debugger. project.md owns the
+six-stage sequence and acceptance matrix; notes.md owns current state. M1
+remains a limited baseline. Every milestone needs owner verification; stability
+and daily-driver close require five normal working days without data loss or a
+blocking failure. New screen sessions need approval. Exact release targets and
+qualified development non-regression checks replace the ambiguous gate wording.
+
+Correction to October 18's physical-failure explanation: the initial native
+visibility flag is sampled before event-loop progress and does not establish
+occlusion as the cause. Later visible, sized windows still produced missing or
+zero presentation timestamps. Merged diagnostic PR
+[#675](https://github.com/dbuddha/alpine-gpui/pull/675) reports that evidence
+failure; the merged-main check had three submissions and zero qualified
+presentations. It is not a physical pass. Replacement screen-based evidence
+must qualify before replacing the gate. No historical measurements are erased.
 
 ## 2026-10-18: M1 closed (pending CP1)
 
