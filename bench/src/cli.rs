@@ -15,12 +15,24 @@ pub const USAGE: &str = "usage:
   bench run <workload> --app alpine|zed|appkit [--trials N] [--warmup N]
             [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH] [--dry-run]
             [--wait-idle MINUTES]
+  bench scene-evidence <capture.tsv> <action.tsv>  (diagnostic consistency only)
   bench baseline <run-dir> --milestone ID [--note TEXT]
   bench workloads | stamp | fixtures | permissions
   bench zed-isolation [--seconds N] [--allow-window] [--open-fixture]
 
 Build the Swift helpers first with bench/helpers/build.sh. The protocol is in
-bench/AGENTS.md.";
+bench/AGENTS.md.
+
+Scene diagnostics: capture with bench-capture scene --pid PID --window-id ID
+--duration-ms 10000 --region X,Y,W,H --scale 1. The region has five equal
+vertical grayscale patches: A=0,118,188,225,255; B is reversed. Nine points per
+patch are sampled in sRGB, each RGB channel within 12 of its expected value.
+The action sidecar contains exactly one TSV record:
+scene-action<TAB>alpine-scene-diagnostic/v1<TAB>PID<TAB>ID<TAB>MACH_TICK<TAB>A<TAB>B
+A trusted native driver must eventually record that action. A hand-written
+sidecar proves only replay consistency, never physical or typing qualification.
+Capture and replay limits: 2048 frames, 2 MiB capture, 256-byte action file.
+Live method, visibility and action provenance remain unqualified.";
 
 /// Timed keys closer than this mostly come back late on any editor.
 const MIN_KEY_INTERVAL_MS: u64 = 100;
@@ -47,6 +59,10 @@ pub enum Command {
         run_dir: PathBuf,
         milestone: String,
         note: String,
+    },
+    SceneEvidence {
+        capture: PathBuf,
+        actions: PathBuf,
     },
     Workloads,
     Stamp,
@@ -167,6 +183,14 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 wait_idle,
             }))
         }
+        "scene-evidence" => {
+            let parsed = split(rest, &[], &[])?;
+            parsed.exactly(2, "capture.tsv and single-action.tsv")?;
+            Ok(Command::SceneEvidence {
+                capture: PathBuf::from(&parsed.positional[0]),
+                actions: PathBuf::from(&parsed.positional[1]),
+            })
+        }
         "baseline" => {
             let parsed = split(rest, &["milestone", "note"], &[])?;
             parsed.exactly(1, "one run directory")?;
@@ -207,6 +231,10 @@ pub fn execute(command: Command) -> Result<(), String> {
     match command {
         Command::Help => {
             println!("{USAGE}");
+            Ok(())
+        }
+        Command::SceneEvidence { capture, actions } => {
+            println!("{}", crate::physical_evidence::run(&capture, &actions)?);
             Ok(())
         }
         Command::Workloads => {
@@ -444,6 +472,26 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn scene_replay_requires_two_files_and_no_extra_actions() -> Result<(), String> {
+        assert_eq!(
+            parse(&args("scene-evidence capture.tsv action.tsv"))?,
+            Command::SceneEvidence {
+                capture: PathBuf::from("capture.tsv"),
+                actions: PathBuf::from("action.tsv")
+            }
+        );
+        for bad in [
+            "scene-evidence",
+            "scene-evidence capture.tsv",
+            "scene-evidence capture.tsv action.tsv second.tsv",
+            "scene-evidence capture.tsv --action 3",
+        ] {
+            assert!(parse(&args(bad)).is_err());
+        }
+        Ok(())
     }
 
     #[test]

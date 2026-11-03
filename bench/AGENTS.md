@@ -22,12 +22,16 @@ Compare Alpine, Zed and AppKit. Read ../project.md and ../notes.md first.
 bench/helpers/build.sh          # helpers, reference editor, self-tests
 cd bench && cargo build --release
 target/release/bench workloads | stamp | permissions | fixtures
+target/release/bench scene-evidence <capture.tsv> <action.tsv>
 target/release/bench run <workload> --app alpine|zed|appkit [--trials 12] [--wait-idle MIN] [--dry-run]
 target/release/bench baseline results/<run> --milestone M1 [--note TEXT]
 target/release/bench zed-isolation [--allow-window] [--open-fixture]
 ```
 
-`--dry-run` starts nothing. Measure clean installed `~/Applications/Alpine Editor.app`.
+Scene diagnostics are opt-in and unqualified. `bench --help` defines capture,
+action format and caps. Ordinary runs require clean installed
+`~/Applications/Alpine Editor.app`; scene mode captures test windows.
+`--dry-run` starts nothing.
 
 ## Approved screen session
 
@@ -37,8 +41,7 @@ lock; do independent work while approval waits.
 
 1. Quit Zed; `bench zed-isolation --allow-window --open-fixture` must report
    no change.
-2. The runner app needs Accessibility and Screen Recording (`bench
-   permissions`); helpers never prompt.
+2. Check runner Accessibility and Screen Recording with `bench permissions`.
 3. Stay hands-off until results print.
 
 ## Protocol
@@ -61,8 +64,7 @@ lock; do independent work while approval waits.
   invalidates the trial after.
 - `--wait-idle MIN`: each trial waits for MIN idle minutes (per-type input
   timers), AC power and an unlocked screen; owner input, a lock or an
-  unreadable clock voids it (not replaced after seeing results). The display
-  stays awake once the gate opens.
+  unreadable clock voids it (not replaced after seeing results). The display stays awake after admission.
 - Report 95% Student t intervals across trials.
 
 ## Permissions and input
@@ -79,9 +81,8 @@ exports, PID or mismatched windows fail closed.
 - Memory: phys_footprint of the app and its tree at 1 Hz, p50, p95, max per
   phase, and the largest per child name. `footprint_tool_end` cross-checks
   Apple's `footprint`.
-- CPU, wakeups and energy: deltas between phase boundary samples; startup
-  counts from process start. CPU and wakeups include reaped children;
-  energy counts processes alive at the end.
+- CPU/wakeups include reaped children; energy counts survivors. Phase deltas
+  start at boundaries; startup starts at process launch.
 - Keys are 250 ms apart (`--key-interval-ms`) from line 11. Hash timing is
   diagnostic: `key_hash_change_*` never claims keypress-to-screen.
   `keys_late`, `keys_missed` and `keys_ambiguous` count late, absent and
@@ -105,9 +106,8 @@ exports, PID or mismatched windows fail closed.
 
 ## Current limitations and required qualification
 
-Only a limited controlled profile exists. Everyday profiles, semantic typing,
-ready-to-edit and equivalent workspace load remain unqualified. Follow
-project.md for final comparison requirements; historical rows do not prove them.
+Everyday profiles, semantic typing, ready-to-edit and equivalent workspace
+load remain unqualified. Follow project.md for final comparisons.
 
 Matched: fixtures outside git, 960x572 pt windows (over 1 pt off invalidates),
 Menlo 15 pt with 22 pt lines, steady caret, environment, rust-analyzer and its

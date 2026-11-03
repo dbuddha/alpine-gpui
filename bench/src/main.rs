@@ -11,6 +11,7 @@ mod gate;
 mod helpers;
 mod isolation;
 mod paths;
+mod physical_evidence;
 mod procs;
 mod recorder_log;
 mod stamp;

@@ -27,7 +27,7 @@ compile() {
 compile bench-window "$helpers/Common.swift" "$helpers/Window.swift"
 compile bench-sample "$helpers/Common.swift" "$helpers/Sample.swift"
 compile bench-input "$helpers/Common.swift" "$helpers/Input.swift"
-compile bench-capture "$helpers/Common.swift" "$helpers/Capture.swift"
+compile bench-capture "$helpers/Common.swift" "$helpers/SceneEvidence.swift" "$helpers/Capture.swift"
 compile bench-reference-appkit "$bench_root/reference-appkit/ReferenceEditor.swift"
 
 for helper in bench-window bench-sample bench-input bench-capture; do
