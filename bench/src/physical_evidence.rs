@@ -169,7 +169,7 @@ fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
     let source = source(lines.next().ok_or("empty diagnostic capture")?)?;
     let action = action(actions, source)?;
     let mut frames = 0;
-    let mut display = source.start;
+    let mut display = 0;
     let mut arrival = source.start;
     let mut baseline = false;
     let mut first_b = None;
@@ -333,6 +333,15 @@ mod tests {
         let late =
             frame(1, 20, 21, State::A) + &frame(2, 40, 41, State::A) + &frame(3, 70, 71, State::B);
         assert_eq!(replay(&trace(&late, 3), ACTION)?.first_b, 70);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_a_static_baseline_displayed_before_capture_started() -> Result<(), String> {
+        let captured = frame(1, 5, 21, State::A) + &frame(2, 40, 41, State::B);
+        assert_eq!(replay(&trace(&captured, 2), ACTION)?.first_b, 40);
+        let zero = frame(1, 0, 21, State::A) + &frame(2, 40, 41, State::B);
+        assert!(replay(&trace(&zero, 2), ACTION).is_err());
         Ok(())
     }
 

@@ -22,9 +22,10 @@ The delivery automation is paused. New screen sessions require approval.
 - Implement scene capture and offline replay diagnostics on
   codex/scene-evidence-diagnostic. Synthetic checks do not qualify live output,
   action provenance, visibility, editor typing or native presentation.
-- #676 main CI passed (41663939024); clean merged build is ready at
-  /tmp/alpine-676-merged/Alpine Editor.app. CLI usage-error smoke passed;
-  approval for the five-minute graphical smoke is pending.
+- #676 main CI passed (41663939024); clean bf1b394 is installed. Approved
+  November 3 smoke passed edit/save/fresh-process reopen/quit via LaunchServices,
+  with disposable data and no crash log. Cold Dock launch remains untested;
+  native Open appeared, but automated path entry failed. Screen use has ended.
 - Qualify screen-based physical evidence before replacing the timestamp gate.
 - Continue the existing PR queue one at a time after the evidence decision:
   #666 pending-frame recovery, #671 horizontal scroll, #672 unsaved overlays,
