@@ -652,3 +652,86 @@ fn find_reveal_shows_the_match_start_first() -> TestResult {
     assert!(visible(&app, 300.0) && visible(&app, 310.0));
     Ok(())
 }
+
+#[test]
+fn find_navigation_dispatch_keeps_a_wide_match_start_visible() -> TestResult {
+    let mut app = long_line_app(500, 2)?;
+    let _ = app.handle_key(KEY_F, Modifiers::from_bits(Modifiers::COMMAND));
+    let _ = app.handle_event(&ime(ImeEvent::Committed("x".repeat(150).into())));
+    let _ = app.complete_pending_find_for_test()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let frame = runtime.dispatch(&SurfaceEvent::Keyboard {
+        timestamp: EventTimestamp::new(1),
+        state: KeyState::Down,
+        physical_key: KEY_RETURN,
+        logical_key: Box::default(),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    });
+    assert!(frame.is_some());
+    let app = runtime.delegate();
+    assert_eq!(app.selection.range(), 150..300);
+    let (_, width) = text_area(app)?;
+    let start = 150.0 * ADVANCE - app.scroll_x;
+    assert!(
+        start >= 0.0 && start + CARET_WIDTH <= width,
+        "wide match start at {start} must remain visible after dispatch"
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelling_a_wide_composition_reveals_the_source_caret() -> TestResult {
+    let app = long_line_app(500, 2)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&ime(ImeEvent::Started));
+    let _ = runtime.dispatch(&ime(ImeEvent::Updated {
+        text: "x".repeat(300).into(),
+        selected_start_utf16: 300,
+        selected_length_utf16: 0,
+    }));
+    assert!(runtime.delegate().scroll_x > 0.0);
+    let _ = runtime.dispatch(&ime(ImeEvent::Cancelled));
+    let app = runtime.delegate();
+    assert!(app.composition.is_none());
+    assert_eq!(app.selection, Selection::caret(ByteOffset::new(0)));
+    assert_eq!(app.scroll_x, 0.0, "the restored caret must be visible");
+    Ok(())
+}
+
+#[test]
+fn showing_the_sidebar_reveals_the_caret_in_the_narrower_pane() -> TestResult {
+    let root = TempDir(std::env::temp_dir().join(format!(
+        "alpine-hscroll-{}-sidebar-reveal",
+        std::process::id()
+    )));
+    fs::create_dir_all(&root.0)?;
+    let path = root.0.join("long.txt");
+    fs::write(&path, "x".repeat(500))?;
+    for palette in [false, true] {
+        let mut app = EditorApp::open_workspace_lazy(TestTextSystem, &root.0)?;
+        let _ = app.open_workspace_path(&path, None)?;
+        app.file_tree.hide();
+        let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+        let _ = app.set_selection(Selection::caret(ByteOffset::new(400)));
+        let scene = app.try_scene(SceneRevision::new(2), viewport()?)?;
+        assert_caret_visible(&app, &scene)?;
+        if palette {
+            let _ = app.dispatch_command(EditorCommand::ToggleFileTree);
+        } else {
+            let _ = app.toggle_file_tree();
+        }
+        let _ = app.try_scene(SceneRevision::new(3), viewport()?)?;
+        let _ = app.handle_key(KEY_ESCAPE, Modifiers::default());
+        let scene = app.try_scene(SceneRevision::new(4), viewport()?)?;
+        assert_eq!(app.selection, Selection::caret(ByteOffset::new(400)));
+        assert!(app.file_tree.is_visible());
+        assert!(!app.file_tree.is_focused());
+        assert_caret_visible(&app, &scene)?;
+    }
+    Ok(())
+}

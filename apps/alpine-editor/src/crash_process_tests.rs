@@ -207,6 +207,11 @@ fn journey_root(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
+    // A recycled pid can meet an old run's leftover; start from an empty root.
+    match fs::remove_dir_all(&root) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
     fs::create_dir_all(root.join("home"))?;
     fs::write(root.join("document.rs"), "base")?;
     Ok(root)
