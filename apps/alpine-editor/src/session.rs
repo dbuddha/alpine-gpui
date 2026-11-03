@@ -728,6 +728,7 @@ impl<'a> Reader<'a> {
         let view = DocumentViewState {
             selection: Selection::new(ByteOffset::new(anchor), ByteOffset::new(head)),
             scroll_y: f32::from_bits(self.u32()?),
+            scroll_x: 0.0,
         };
         validate_view(view).map_err(SessionCorrupt::Invalid)?;
         Ok(view)
@@ -959,6 +960,7 @@ mod tests {
         DocumentViewState {
             selection: Selection::caret(ByteOffset::new(offset)),
             scroll_y,
+            scroll_x: 0.0,
         }
     }
 
