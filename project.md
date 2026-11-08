@@ -1,8 +1,8 @@
 ---
 role: project objective and acceptance contract
 author: Deepak Buddha
-updated: 2026-11-03
-authority: owner-approved plan, 2026-11-03
+updated: 2026-11-08
+authority: owner-approved plan of 2026-11-03 and research remit of 2026-11-08
 related: [AGENTS.md, notes.md, apps/alpine-editor/AGENTS.md, bench/AGENTS.md]
 audience: Deepak's daily work on his Apple Silicon Mac
 distribution: local unsigned installed app, existing proprietary license
@@ -23,6 +23,8 @@ There is no fixed delivery date: finish useful, verified milestones promptly.
 Apple Silicon macOS is the sole platform target. The current M4 Mac and its
 built-in ProMotion display are the performance reference. Keep the current
 license; external distribution, signing and notarization are deferred.
+
+Maintain the app-builder skill and source-backed case studies as part of delivery. Use the research to choose experiments for editor workflows, framework performance and headless correctness checks. Record observed behavior, test conditions and the resulting adoption decision. [Case studies](<case studies/README.md>)
 
 ## Required daily-driver scope
 
