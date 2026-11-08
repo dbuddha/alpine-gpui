@@ -4736,29 +4736,19 @@ impl EditorApp {
                         )),
                     ));
                 }
-                if !document.is_dirty() {
-                    return None;
-                }
-                // Scratch, unavailable buffers, and a file whose last save
-                // failed cannot be persisted with Command-S. Blocking quit
-                // leaves the process running: AppKit Force Quit of a
-                // responding app takes the same terminate path we cancel.
-                if !document.persistable_with_command_s() {
-                    return None;
-                }
-                if index == active && self.last_file_error.is_some() {
+                if !document.is_dirty() || !document.is_file() {
                     return None;
                 }
                 let label = self
                     .tabs
                     .label(index)
                     .unwrap_or_else(|| Arc::from("this document"));
-                Some((
-                    index,
-                    Arc::from(format!(
-                        "Save changes in {label} with Command-S before closing."
-                    )),
-                ))
+                let message = if document.is_unavailable() || (index == active && self.last_file_error.is_some()) {
+                    format!("Use File > Save As to keep changes in {label}. Close again to quit without saving any files.")
+                } else {
+                    format!("Save {label} with Command-S or File > Save As. Close again to quit without saving any files.")
+                };
+                Some((index, Arc::from(message)))
             })
     }
 
@@ -4847,7 +4837,8 @@ impl EditorApp {
             } | SurfaceEvent::Pointer {
                 action: PointerAction::Down,
                 ..
-            } | SurfaceEvent::Menu { .. }
+            } | SurfaceEvent::Focus { focused: false, .. }
+                | SurfaceEvent::Menu { .. }
                 | SurfaceEvent::Ime { .. }
                 | SurfaceEvent::Scroll { .. }
         );

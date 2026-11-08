@@ -19,7 +19,7 @@ The delivery automation is paused. Screen sessions require approval.
 ## Active work
 
 - #678 is draft. CI passed at 927b108. Live capture saw the baseline and then an unexpected second fixture window. Diagnose its identity before qualifying the controls.
-- Stage 1 audit on November 8: eight main editor tests passed for atomic save, recovery, quit, session restoration and navigation. Source inspection found a failed-save plus failed-journal quit path requiring a disposable regression.
+- Stage 1 audit on November 8: eight main editor tests passed for atomic save, recovery, quit, session restoration and navigation. A disposable regression reproduced first Quit allowing closure after both save and recovery failed. The quit fix warns and offers Save As. Its regression verifies exact edited and external bytes.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
 - #676 main CI passed (41663939024); clean bf1b394 was tested. Approved
@@ -57,7 +57,7 @@ The delivery automation is paused. Screen sessions require approval.
 ## Next steps and decisions
 
 1. Prepare bounded fixture-window identification on #678 and request screen access for the diagnostic when ready.
-2. Reproduce the compound quit failure and verify preservation of the edited and external bytes.
+2. Verify the first-quit warning and Save As workflow on the clean installed fix in an approved screen session.
 3. Qualify the physical method, then run affected PR gates and review each final head.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
