@@ -58,6 +58,14 @@ mod protocol {
         }
         Err("command truncated or exceeds 96 bytes".into())
     }
+    pub fn check_drawable(ready: (u32, u32), current: (u32, u32)) -> Result<(), String> {
+        if current != ready {
+            return Err(format!(
+                "fixture drawable changed before action: {ready:?} -> {current:?}"
+            ));
+        }
+        Ok(())
+    }
     pub fn levels(control: &str, transitioned: bool) -> Result<[f32; 5], String> {
         let mut levels = [0.0, 0.18, 0.5, 0.75, 1.0];
         match (control, transitioned) {
@@ -137,6 +145,14 @@ mod protocol {
                 assert!(read(&mut invalid.as_bytes(), &mut false).is_err());
             }
             Ok(())
+        }
+        #[test]
+        fn launch_border_cannot_hide_a_changed_content_drawable() {
+            let ready = (1000, 600);
+            assert!(check_drawable(ready, ready).is_ok());
+            for changed in [(996, 600), (1004, 600), (1000, 596), (0, 0)] {
+                assert!(check_drawable(ready, changed).is_err());
+            }
         }
         #[test]
         fn independent_controls() -> Result<(), String> {
@@ -452,10 +468,20 @@ mod native {
                 }
             });
             let mut next_inspection = 1;
+            let mut awaiting_action = true;
+            let ready_drawable = (s.physical_width(), s.physical_height());
             while Instant::now() < deadline {
                 native_validation::drain_run_loop(|| false, 1, Duration::from_millis(10));
+                if awaiting_action {
+                    let current = surface.snapshot();
+                    protocol::check_drawable(
+                        ready_drawable,
+                        (current.physical_width(), current.physical_height()),
+                    )?;
+                }
                 match rx.try_recv() {
                     Ok(Ok(Command::Transition(window, tick))) => {
+                        awaiting_action = false;
                         present(&surface, &control, true, Some((window, tick)))?;
                     }
                     Ok(Ok(Command::Sharing(seq, main, child))) => {

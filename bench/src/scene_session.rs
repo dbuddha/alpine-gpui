@@ -728,6 +728,75 @@ fn wait_for_baseline(
     Ok(())
 }
 
+const PIN_STABLE: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct SettlingWindow {
+    last: Option<(helpers::WindowInfo, Instant)>,
+}
+impl SettlingWindow {
+    #[allow(
+        clippy::float_cmp,
+        reason = "only an exact centered two-point border change is admitted"
+    )]
+    fn observe(
+        &mut self,
+        window: helpers::WindowInfo,
+        started: Instant,
+        finished: Instant,
+        deadline: Instant,
+    ) -> Result<Option<helpers::WindowInfo>> {
+        if finished < started || finished >= deadline {
+            return Err("fixture geometry did not settle before readiness deadline".into());
+        }
+        region(&window)?;
+        if window.id == 0 || window.pid <= 0 || window.layer != 0 {
+            return Err("invalid settling fixture identity".into());
+        }
+        if let Some((last, since)) = &self.last {
+            if same_window(last, &window) {
+                return Ok(
+                    (started.saturating_duration_since(*since) >= PIN_STABLE).then_some(window)
+                );
+            }
+            if last.id != window.id
+                || last.pid != window.pid
+                || last.layer != window.layer
+                || last.alpha != window.alpha
+                || last.y != window.y
+                || last.height != window.height
+                || !matches!((last.width, window.width), (500.0, 502.0) | (502.0, 500.0))
+                || window.x - last.x != (last.width - window.width) / 2.0
+            {
+                return Err("fixture changed beyond its centered launch border".into());
+            }
+        }
+        self.last = Some((window, finished));
+        Ok(None)
+    }
+}
+
+fn wait_for_pin(
+    session: &mut Session,
+    app: &mut Owned,
+    deadline: Instant,
+) -> Result<helpers::WindowInfo> {
+    let mut settling = SettlingWindow::default();
+    loop {
+        let end = sample_deadline(Instant::now(), deadline);
+        session.require_conditions(end)?;
+        if app.done()? {
+            return Err("fixture exited while settling".into());
+        }
+        let started = Instant::now();
+        let window = session.window(app, None, None, end)?;
+        if let Some(pin) = settling.observe(window, started, Instant::now(), end)? {
+            return Ok(pin);
+        }
+        thread::sleep(remaining(deadline)?.min(POLL));
+    }
+}
+
 fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Result<String> {
     session.sharing = None;
     fs::create_dir(dir).map_err(|e| e.to_string())?;
@@ -765,9 +834,9 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         &["activate", "--pid", &pid.to_string()],
         ready_deadline,
     )?;
-    let window = session.window(&mut app, None, None, ready_deadline)?;
+    let window = wait_for_pin(session, &mut app, ready_deadline)?;
     let region = region(&window)?;
-    session.verify(&mut app, &window, None, deadline)?;
+    session.verify(&mut app, &window, None, ready_deadline)?;
     let capture_deadline = (Instant::now() + Duration::from_secs(10)).min(deadline);
     let mut capture = start_capture(&session.helpers, dir, pid, window.id, region)?;
     wait_for_baseline(session, &mut app, &mut capture, &window, region, deadline)?;
@@ -1535,6 +1604,96 @@ if [ -f "$base/listed" ]; then /bin/cat "$base/after"; else : > "$base/listed"; 
                 valid
             );
         }
+        Ok(())
+    }
+    #[test]
+    fn pins_the_settled_fixture_border() -> Result<()> {
+        let (mut initial, _, _) = observed(2);
+        initial.id = 220_750;
+        initial.x = 505.0;
+        initial.width = 502.0;
+        let mut settled = initial.clone();
+        settled.x = 506.0;
+        settled.width = 500.0;
+        let list = |w: helpers::WindowInfo| helpers::WindowList {
+            front_pid: 2,
+            front_name: "fixture".into(),
+            windows: vec![w],
+        };
+        let mut settling = SettlingWindow::default();
+        let start = Instant::now();
+        let ms = |n| start + Duration::from_millis(n);
+        let end = ms(5000);
+        assert!(
+            settling
+                .observe(initial.clone(), ms(0), ms(10), end)?
+                .is_none()
+        );
+        assert!(
+            settling
+                .observe(settled.clone(), ms(100), ms(111), end)?
+                .is_none()
+        );
+        assert!(
+            settling
+                .observe(settled.clone(), ms(360), ms(370), end)?
+                .is_none()
+        );
+        let pin = settling
+            .observe(settled.clone(), ms(380), ms(390), end)?
+            .ok_or("stable window missing")?;
+        assert_eq!(pin, settled);
+        assert!(select_fixture_window(&list(initial), 2, Some(&pin), false).is_err());
+        Ok(())
+    }
+    #[test]
+    fn settling_rejects_movement_identity_resize_and_deadline() -> Result<()> {
+        let (main, _, _) = observed(2);
+        let start = Instant::now();
+        let end = start + Duration::from_secs(5);
+        for field in [
+            "x",
+            "y",
+            "height",
+            "id",
+            "pid",
+            "alpha",
+            "layer",
+            "odd",
+            "wider",
+            "uncentered",
+        ] {
+            let mut state = SettlingWindow::default();
+            state.observe(main.clone(), start, start, end)?;
+            let mut bad = main.clone();
+            match field {
+                "x" => bad.x += 1.0,
+                "y" => bad.y += 1.0,
+                "height" => bad.height -= 2.0,
+                "id" => bad.id += 1,
+                "pid" => bad.pid += 1,
+                "alpha" => bad.alpha = 0.5,
+                "layer" => bad.layer = 1,
+                "odd" => bad.width = 501.0,
+                "wider" => {
+                    bad.width = 504.0;
+                    bad.x -= 2.0;
+                }
+                _ => bad.width = 502.0,
+            }
+            assert!(state.observe(bad, start, start, end).is_err(), "{field}");
+        }
+        let mut state = SettlingWindow::default();
+        for i in 0..50 {
+            let mut w = main.clone();
+            if i % 2 == 1 {
+                w.width = 502.0;
+                w.x -= 1.0;
+            }
+            let t = start + Duration::from_millis(i * 100);
+            assert!(state.observe(w, t, t, end)?.is_none());
+        }
+        assert!(state.observe(main, end, end, end).is_err());
         Ok(())
     }
     #[test]

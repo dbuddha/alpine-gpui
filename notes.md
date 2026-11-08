@@ -18,8 +18,9 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #678 is draft. Review the supervised freeze/verify/release protocol offline.
-  Physical qualification and the Metal hold remain open.
+- #678 is draft. The positive control passed on 3392090. The stale fixture failed
+  during launch before capture, and the wrong control did not run. Review the
+  bounded pre-pin settling check before a new approved clean run.
 - The main editor suite passed 707 tests with three ignored. The November 8 audit also passed eight focused tests for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
@@ -34,14 +35,14 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Evidence and blockers
 
-- On 6fa5f6b the failed positive control recorded 30 A and 784 B frames, nine
-  verified attached indicators, then an unresolved tenth inspection. Inspect-stop
-  showed no parent and exact teardown. The last display preceded scene-end by
-  25.303 ms. Logs cannot order the tenth check against stopCapture. Evidence:
-  bench/results/scene-inspection/alpine-scene-6fa5f6b-nov08.
-- Supervised boundary/v1 freezes frame admission at the declared cutoff and
-  verifies the final sample with the stream attached before releasing it.
-  The stale control still requires A displayed after its admission witness.
+- On 3392090 the positive control verified A-to-B (335 frames), the frozen final
+  frame while attached, completed capture stop and exact native teardown. The
+  stale process's sole main window changed from (505,342,502,332) to
+  (506,342,500,332) with the same ID 220750 and center. It was rejected before
+  capture or transition. Evidence: bench/results/scene-inspection/alpine-scene-3392090-nov08.
+- The proposed pre-pin check allows that centered launch border only, requires
+  matching samples separated by 250 ms, and retains the five-second deadline.
+  Exact geometry still applies after pinning. Physical qualification is open.
 - The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
   Native submissions still have zero qualified presentations. Metal hold unchanged.
 
