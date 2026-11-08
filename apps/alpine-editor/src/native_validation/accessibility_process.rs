@@ -664,7 +664,7 @@ fn qualify_workspace(
             .map_err(|error| format!("dirty-close native tree query failed: {error}"))?;
     assert!(blocked.nodes().iter().any(|node| {
         node.role() == "AXStaticText"
-            && node.label() == "Save changes in main.rs with Command-S before closing."
+            && node.label() == "Save main.rs with Command-S or File > Save As. Close again to quit without saving any files."
     }));
     maximum_action_frames = maximum_action_frames.max(open_palette_and_activate(
         &surface,

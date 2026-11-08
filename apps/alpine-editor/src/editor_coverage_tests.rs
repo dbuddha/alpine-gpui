@@ -2211,7 +2211,7 @@ fn close_blockers_preserve_file_error_recovery_and_activation_identity()
 
 #[test]
 #[cfg(not(target_family = "windows"))]
-fn deleted_file_save_error_does_not_pin_quit() -> Result<(), Box<dyn std::error::Error>> {
+fn deleted_file_save_error_warns_once_before_discard() -> Result<(), Box<dyn std::error::Error>> {
     let file = TestFile::new("hello")?;
     let mut app = EditorApp::open_file(TestTextSystem, file.path())?;
     assert!(
@@ -2226,7 +2226,64 @@ fn deleted_file_save_error_does_not_pin_quit() -> Result<(), Box<dyn std::error:
     );
     assert!(app.last_file_error.is_some());
     assert!(app.document.is_dirty());
+    assert!(app.handle_close_request().cancel_close);
+    app.handle_event(&SurfaceEvent::Focus {
+        timestamp: EventTimestamp::new(2),
+        input_epoch: InputEpoch::INITIAL,
+        focused: false,
+    });
+    assert!(app.handle_close_request().cancel_close);
     assert!(!app.handle_close_request().cancel_close);
+    Ok(())
+}
+
+#[test]
+fn first_quit_preserves_dirty_bytes_when_save_and_journal_both_fail()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let path = root.path().join("file.rs");
+    let blocked = root.path().join("state");
+    fs::write(&path, "base")?;
+    fs::write(&blocked, "not a directory")?;
+    let mut app = EditorApp::open_file(TestTextSystem, &path)?;
+    app.configure_persistence(blocked.join("session.bin"))?;
+    assert!(app.replace_range(0..4, "local edits").document_changed);
+    fs::write(&path, "external changes")?;
+    app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert_eq!(app.save_failures, 1);
+    app.publish_recovery();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let status = app.recovery.as_ref().ok_or("missing writer")?.status();
+        if status.completed_generation == status.published_generation && status.last_error.is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "writer did not report failure"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(app.buffer().snapshot().text(), "local edits");
+    assert_eq!(fs::read_to_string(&path)?, "external changes");
+    assert!(
+        app.handle_event_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(1),
+        })
+        .cancel_close,
+        "first close allowed after document save and recovery write both failed"
+    );
+    assert!(matches!(
+        app.local_status,
+        Some(LocalStatus::CloseBlocked(ref message))
+            if message.contains("Save As") && message.contains("quit without saving")
+    ));
+    assert_eq!(app.buffer().snapshot().text(), "local edits");
+    let saved_copy = root.path().join("saved-copy.rs");
+    app.save_document_as(&saved_copy);
+    assert_eq!(fs::read_to_string(saved_copy)?, "local edits");
+    assert_eq!(fs::read_to_string(&path)?, "external changes");
     Ok(())
 }
 
@@ -2271,18 +2328,46 @@ fn editing_after_a_blocked_quit_requires_a_fresh_warning() -> Result<(), Box<dyn
 }
 
 #[test]
-fn unavailable_dirty_buffer_does_not_pin_quit() -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = test_app()?;
-    let buffer = Buffer::new("kept");
-    app.document = EditorDocument::Unavailable {
-        clean_revision: buffer.revision().get().saturating_add(1),
-        recovery_base: buffer.snapshot(),
-        buffer,
-        conflict: ExternalChange::Deleted,
-    };
-    assert!(app.document.is_dirty());
-    assert!(!app.document.persistable_with_command_s());
-    assert!(!app.handle_close_request().cancel_close);
+fn quit_finds_edited_missing_file_after_switching_tabs() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    root.write("missing.rs", "old")?;
+    root.write("present.rs", "keep")?;
+    let path = fs::canonicalize(root.path().join("missing.rs"))?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, root.path())?;
+    for name in ["missing.rs", "present.rs"] {
+        let index = app
+            .workspace
+            .as_ref()
+            .ok_or("workspace")?
+            .index_named(name)
+            .ok_or("file")?;
+        app.open_workspace_entry(index)?;
+    }
+    let state = app.capture_session().map_err(|e| format!("{e:?}"))?;
+    drop(app);
+    fs::remove_file(&path)?;
+    let mut app = EditorApp::from_session(TestTextSystem, state).map_err(|e| e.to_string())?;
+    let present = app.tabs.active_index();
+    let missing = app
+        .tabs
+        .index_for_path(&path)
+        .ok_or("restored missing tab")?;
+    app.activate_document_tab(missing)?;
+    assert!(app.document.is_unavailable());
+    assert!(app.replace_range(0..0, "new edits").document_changed);
+    app.handle_event(&key(KEY_S, Modifiers::from_bits(Modifiers::COMMAND)));
+    assert!(app.last_file_error.is_some());
+    app.activate_document_tab(present)?;
+    assert!(app.handle_close_request().cancel_close);
+    assert_eq!(app.tabs.active_index(), missing);
+    assert_eq!(app.buffer().snapshot().text(), "new edits");
+    assert!(
+        matches!(&app.local_status, Some(LocalStatus::CloseBlocked(message)) if message.contains("Save As"))
+    );
+    let copy = root.path().join("safe.rs");
+    app.save_document_as(&copy);
+    assert_eq!(fs::read_to_string(copy)?, "new edits");
+    assert!(!path.exists());
     Ok(())
 }
 
@@ -3205,7 +3290,9 @@ fn explicit_file_launch_composes_dirty_recovery_without_replacing_local_text()
     assert!(app.document.is_dirty());
     assert_eq!(
         app.local_status.as_ref().map(LocalStatus::message),
-        Some("Save changes in recovered.rs with Command-S before closing.")
+        Some(
+            "Save recovered.rs with Command-S or File > Save As. Close again to quit without saving any files."
+        )
     );
     drop(app);
 
@@ -4453,7 +4540,9 @@ fn bounded_tabs_preserve_dirty_documents_and_refuse_dirty_close()
     assert_eq!(app.buffer().snapshot().text(), dirty_alpha);
     assert_eq!(
         app.local_status.as_ref().map(LocalStatus::message),
-        Some("Save changes in alpha.rs with Command-S before closing.")
+        Some(
+            "Save alpha.rs with Command-S or File > Save As. Close again to quit without saving any files."
+        )
     );
 
     assert_eq!(app.open_workspace_entry(alpha)?, EventEffect::default());
