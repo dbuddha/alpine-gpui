@@ -57,7 +57,7 @@ The delivery automation is paused. Screen sessions require approval.
 ## Next steps and decisions
 
 1. Prepare bounded fixture-window identification on #678 and request screen access for the diagnostic when ready.
-2. Verify the first-quit warning and Save As workflow on the clean installed fix in an approved screen session.
+2. Draft #680 passed its disposable native Save As, cancel, inactive-tab and quit journey on c8c2ab4. Verify installed Dock launch and merged main.
 3. Qualify the physical method, then run affected PR gates and review each final head.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.

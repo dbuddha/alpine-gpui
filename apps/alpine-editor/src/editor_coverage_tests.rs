@@ -2263,7 +2263,7 @@ fn first_quit_preserves_dirty_bytes_when_save_and_journal_both_fail()
             std::time::Instant::now() < deadline,
             "writer did not report failure"
         );
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(app.buffer().snapshot().text(), "local edits");
     assert_eq!(fs::read_to_string(&path)?, "external changes");
