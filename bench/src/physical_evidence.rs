@@ -42,6 +42,7 @@ fn number(text: &str) -> Result<u64, String> {
 enum State {
     A,
     B,
+    Invalid,
 }
 
 fn classify(samples: &[u8; SAMPLES]) -> Result<State, String> {
@@ -161,18 +162,64 @@ struct Observation {
     first_b: u64,
 }
 
-fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
+fn transform(f: &[&str], source: Source) -> Result<Vec<f64>, String> {
+    let transform: Vec<f64> = f[6..]
+        .iter()
+        .map(|v| v.parse().map_err(|_| "invalid transform"))
+        .collect::<Result<_, _>>()?;
+    if transform.iter().any(|v| !v.is_finite())
+        || transform[0] != 0.0
+        || transform[1] != 0.0
+        || transform[4] <= 0.0
+        || !(1.0..=4.0).contains(&transform[5])
+        || (transform[4] * transform[5] - source.scale).abs() > 0.000_001
+        || (transform[2] * transform[5] - crate::stats::to_f64(source.width)).abs() > 0.000_001
+        || (transform[3] * transform[5] - crate::stats::to_f64(source.height)).abs() > 0.000_001
+    {
+        return Err("unsupported diagnostic content transform".to_owned());
+    }
+    Ok(transform)
+}
+
+fn frame_state(f: &[&str], control: Option<&str>) -> Result<State, String> {
+    let raw = samples(f[5])?;
+    let state = match classify(&raw) {
+        Ok(state) => state,
+        Err(_) if control == Some("wrong") && raw.iter().all(|v| v.abs_diff(188) <= TOLERANCE) => {
+            State::Invalid
+        }
+        Err(error) => return Err(error),
+    };
+    if f[4]
+        != match state {
+            State::A => "A",
+            State::B => "B",
+            State::Invalid => "invalid",
+        }
+    {
+        return Err("reported scene disagrees with raw samples".to_owned());
+    }
+    Ok(state)
+}
+
+fn inspect(
+    capture: &str,
+    actions: Option<&str>,
+    control: Option<&str>,
+    witness: Option<u64>,
+) -> Result<Observation, String> {
     if capture.len() as u64 > MAX_BYTES {
         return Err("diagnostic capture byte cap exceeded".to_owned());
     }
     let mut lines = capture.lines();
     let source = source(lines.next().ok_or("empty diagnostic capture")?)?;
-    let action = action(actions, source)?;
+    let action = actions.map_or(Ok(u64::MAX), |text| action(text, source))?;
     let mut frames = 0;
     let mut display = 0;
     let mut arrival = source.start;
     let mut baseline = false;
     let mut first_b = None;
+    let mut wrong = false;
     let mut ended = false;
     let mut previous_transform: Option<Vec<f64>> = None;
     for line in lines {
@@ -188,21 +235,7 @@ fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
             continue;
         }
         let f = fields(line, 12)?;
-        let transform: Vec<f64> = f[6..]
-            .iter()
-            .map(|v| v.parse().map_err(|_| "invalid transform"))
-            .collect::<Result<_, _>>()?;
-        if transform.iter().any(|v| !v.is_finite())
-            || transform[0] != 0.0
-            || transform[1] != 0.0
-            || transform[4] <= 0.0
-            || !(1.0..=4.0).contains(&transform[5])
-            || (transform[4] * transform[5] - source.scale).abs() > 0.000_001
-            || (transform[2] * transform[5] - crate::stats::to_f64(source.width)).abs() > 0.000_001
-            || (transform[3] * transform[5] - crate::stats::to_f64(source.height)).abs() > 0.000_001
-        {
-            return Err("unsupported diagnostic content transform".to_owned());
-        }
+        let transform = transform(&f, source)?;
         if previous_transform
             .as_ref()
             .is_some_and(|previous| *previous != transform)
@@ -218,17 +251,15 @@ fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
         if next_display <= display || next_arrival <= arrival || next_arrival < next_display {
             return Err("zero, regressing or inconsistent diagnostic timestamps".to_owned());
         }
-        let state = classify(&samples(f[5])?)?;
-        if f[4]
-            != match state {
-                State::A => "A",
-                State::B => "B",
-            }
-        {
-            return Err("reported scene disagrees with raw samples".to_owned());
-        }
+        let state = frame_state(&f, control)?;
         match state {
-            State::A if first_b.is_some() => return Err("scene regressed after B".to_owned()),
+            State::Invalid if !baseline || next_display <= action => {
+                return Err("wrong scene before action/baseline".into());
+            }
+            State::Invalid => wrong = true,
+            State::A if first_b.is_some() || wrong => {
+                return Err("scene regressed after B".to_owned());
+            }
             State::A => baseline |= next_arrival < action,
             State::B if next_display <= action || !baseline => {
                 return Err("B preceded the action or a captured A baseline".to_owned());
@@ -241,13 +272,114 @@ fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
         display = next_display;
         arrival = next_arrival;
     }
-    if !ended {
+    if actions.is_some() && !ended {
         return Err("diagnostic capture has no terminal record".to_owned());
+    }
+    if !baseline {
+        return Err("no captured A baseline".into());
+    }
+    if control == Some("stale") && witness.is_none_or(|after| after <= action || display <= after) {
+        return Err("stale control needs A displayed after the admission witness".into());
+    }
+    if let Some(control) = control
+        && (first_b.is_some()
+            || (control == "wrong" && !wrong)
+            || (control != "wrong" && control != "stale"))
+    {
+        return Err("unexpected negative-control scene outcome".into());
     }
     Ok(Observation {
         frames,
-        first_b: first_b.ok_or("no diagnostic A-to-B transition")?,
+        first_b: if actions.is_some() && control.is_none() {
+            first_b.ok_or("no diagnostic A-to-B transition")?
+        } else {
+            0
+        },
     })
+}
+
+fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
+    inspect(capture, Some(actions), None, None)
+}
+
+/// Validates complete baseline records and the supervisor's window mapping.
+#[allow(
+    clippy::float_cmp,
+    reason = "integer window geometry must match exactly"
+)]
+pub fn baseline(
+    capture: &str,
+    pid: u32,
+    window: u32,
+    width: f64,
+    height: f64,
+    region_x: f64,
+    region_y: f64,
+) -> Result<(), String> {
+    let complete = capture.rsplit_once('\n').map_or("", |(prefix, _)| prefix);
+    let first = complete.lines().next().ok_or("waiting for source")?;
+    let source = source(first)?;
+    let f = fields(first, 17)?;
+    if source.pid != u64::from(pid)
+        || source.window != u64::from(window)
+        || crate::stats::to_f64(source.width) != width
+        || crate::stats::to_f64(source.height) != height
+        || source.scale != 1.0
+        || f[7].parse::<f64>().map_err(|e| e.to_string())? != region_x
+        || f[8].parse::<f64>().map_err(|e| e.to_string())? != region_y
+        || f[9] != "500"
+        || f[10] != "40"
+    {
+        return Err("capture differs from verified fixture mapping".into());
+    }
+    inspect(complete, None, None, None).map(|_| ())
+}
+
+/// Requires the command clock to use the capture timebase.
+pub fn clock_matches(
+    capture: &str,
+    tick: u64,
+    timebase: crate::helpers::Timebase,
+) -> Result<(), String> {
+    let line = capture.lines().next().ok_or("missing capture clock")?;
+    let source = source(line)?;
+    let f = fields(line, 17)?;
+    if tick <= source.start || number(f[12])? != timebase.numer || number(f[13])? != timebase.denom
+    {
+        return Err("action clock differs from capture clock".into());
+    }
+    Ok(())
+}
+
+/// Validates the whole negative trace before accepting a semantic control.
+pub fn negative(
+    capture: &Path,
+    actions: &Path,
+    control: &str,
+    witness: Option<u64>,
+) -> Result<(), String> {
+    inspect(
+        &read_bounded(capture, MAX_BYTES)?,
+        Some(&read_bounded(actions, 256)?),
+        Some(control),
+        witness,
+    )
+    .map(|_| ())
+}
+
+/// Checks the sealed trace before authorizing stream release.
+pub fn frozen(
+    capture: &str,
+    actions: &str,
+    control: &str,
+    witness: Option<u64>,
+) -> Result<(), String> {
+    let control = match control {
+        "positive" => None,
+        "wrong" | "stale" => Some(control),
+        _ => return Err("unknown capture control".into()),
+    };
+    inspect(capture, Some(actions), control, witness).map(|_| ())
 }
 
 /// Checks trace consistency only; the action file is not independent proof.
@@ -450,6 +582,147 @@ mod tests {
         }
         assert!(replay(&valid().replace("\tsrgb", "\tdisplay-p3"), ACTION).is_err());
         assert!(replay(&(SOURCE.to_owned() + &"x".repeat(1025)), ACTION).is_err());
+    }
+
+    #[test]
+    fn stale_needs_a_display_sample_after_action() {
+        let before = frame(1, 20, 21, State::A);
+        for (rows, count) in [
+            (before.clone(), 1),
+            (before.clone() + &frame(2, 30, 41, State::A), 2),
+        ] {
+            assert!(inspect(&trace(&rows, count), Some(ACTION), Some("stale"), Some(35)).is_err());
+        }
+    }
+    #[test]
+    fn queued_a_after_command_does_not_prove_display_after_admission() -> Result<(), String> {
+        let before = frame(1, 20, 21, State::A);
+        let queued = trace(&(before.clone() + &frame(2, 34, 41, State::A)), 2);
+        for witness in [None, Some(30), Some(34), Some(35)] {
+            assert!(inspect(&queued, Some(ACTION), Some("stale"), witness).is_err());
+        }
+        let after = trace(&(before + &frame(2, 36, 41, State::A)), 2);
+        inspect(&after, Some(ACTION), Some("stale"), Some(35))?;
+        Ok(())
+    }
+    #[test]
+    fn negative_controls_validate_the_whole_trace() -> Result<(), String> {
+        let stale = trace(
+            &(frame(1, 20, 21, State::A) + &frame(2, 40, 41, State::A)),
+            2,
+        );
+        inspect(&stale, Some(ACTION), Some("stale"), Some(35))?;
+        let wrong_samples = [188; SAMPLES]
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let wrong =
+            format!("scene-frame\t2\t40\t41\tinvalid\t{wrong_samples}\t0\t0\t100\t40\t1\t1\n");
+        let good = trace(&(frame(1, 20, 21, State::A) + &wrong), 2);
+        inspect(&good, Some(ACTION), Some("wrong"), None)?;
+        for bad in [
+            good.replace("scene-end\t100\t2", "scene-end\t100\t3"),
+            good.replace("scene-end\t100\t2\n", ""),
+            good.replace("\t40\t41\tinvalid", "\t40\t39\tinvalid"),
+            good.replace("188", "0"),
+            trace(
+                &(frame(1, 20, 21, State::A) + &wrong + &frame(3, 60, 61, State::A)),
+                3,
+            ),
+        ] {
+            assert!(inspect(&bad, Some(ACTION), Some("wrong"), None).is_err());
+        }
+        assert!(inspect(&valid(), Some(ACTION), Some("wrong"), None).is_err());
+        assert!(inspect(&valid(), Some(ACTION), Some("stale"), Some(35)).is_err());
+        assert!(
+            inspect(
+                &stale.replace("scene-end\t100\t2\n", ""),
+                Some(ACTION),
+                Some("stale"),
+                Some(35)
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+    #[test]
+    fn live_baseline_requires_raw_a_and_verified_window_mapping() -> Result<(), String> {
+        let source = "scene-source\talpine-scene-diagnostic/v1\t123\t456\t500\t328\t1\t0\t158\t500\t40\t10\t1\t1\t2048\t8000\tsrgb\n";
+        let frame =
+            frame(1, 5, 21, State::A).replace("\t0\t0\t100\t40\t1\t1", "\t0\t0\t500\t328\t1\t1");
+        let good = source.to_owned() + &frame;
+        baseline(&good, 123, 456, 500.0, 328.0, 0.0, 158.0)?;
+        baseline(
+            &(good.clone() + "scene-frame\t2"),
+            123,
+            456,
+            500.0,
+            328.0,
+            0.0,
+            158.0,
+        )?;
+        for (pid, window, height, y) in [
+            (124, 456, 328.0, 158.0),
+            (123, 457, 328.0, 158.0),
+            (123, 456, 329.0, 158.0),
+            (123, 456, 328.0, 159.0),
+        ] {
+            assert!(baseline(&good, pid, window, 500.0, height, 0.0, y).is_err());
+        }
+        assert!(
+            baseline(
+                &good.replace("\tA\t", "\tB\t"),
+                123,
+                456,
+                500.0,
+                328.0,
+                0.0,
+                158.0
+            )
+            .is_err()
+        );
+        assert!(baseline(source, 123, 456, 500.0, 328.0, 0.0, 158.0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn bordered_capture_requires_exact_outer_and_strip_mapping() -> Result<(), String> {
+        let source = "scene-source\talpine-scene-diagnostic/v1\t123\t456\t502\t332\t1\t1\t146\t500\t40\t10\t1\t1\t2048\t8000\tsrgb\n";
+        let frame =
+            frame(1, 5, 21, State::A).replace("\t0\t0\t100\t40\t1\t1", "\t0\t0\t502\t332\t1\t1");
+        let good = source.to_owned() + &frame;
+        baseline(&good, 123, 456, 502.0, 332.0, 1.0, 146.0)?;
+        for (width, height, x, y) in [
+            (500.0, 332.0, 1.0, 146.0),
+            (502.0, 330.0, 1.0, 146.0),
+            (502.0, 332.0, 0.0, 146.0),
+            (502.0, 332.0, 1.0, 147.0),
+        ] {
+            assert!(baseline(&good, 123, 456, width, height, x, y).is_err());
+        }
+        for bad in [
+            good.replacen("\t1\t146\t500\t40", "\t0\t146\t500\t40", 1),
+            good.replacen("\t1\t146\t500\t40", "\t1\t147\t500\t40", 1),
+            good.replace("\t0\t0\t502\t332", "\t0\t0\t500\t332"),
+        ] {
+            assert!(baseline(&bad, 123, 456, 502.0, 332.0, 1.0, 146.0).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn supervisor_clock_must_match_capture() -> Result<(), String> {
+        let timebase = crate::helpers::Timebase { numer: 1, denom: 1 };
+        clock_matches(SOURCE, 30, timebase)?;
+        assert!(clock_matches(SOURCE, 10, timebase).is_err());
+        assert!(
+            clock_matches(SOURCE, 30, crate::helpers::Timebase { numer: 2, denom: 1 }).is_err()
+        );
+        assert!(
+            clock_matches(SOURCE, 30, crate::helpers::Timebase { numer: 1, denom: 0 }).is_err()
+        );
+        Ok(())
     }
 
     #[test]

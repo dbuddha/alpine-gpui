@@ -41,6 +41,38 @@ func regionHash(_ buffer: CVPixelBuffer, region: CGRect, scale: CGFloat) -> UInt
     return hash
 }
 
+private let boundaryVersion = "alpine-scene-boundary/v1"
+
+private func boundaryRecord(_ kind: String, _ fields: [String]) {
+    let line = ([kind] + fields).joined(separator: "\t") + "\n"
+    FileHandle.standardError.write(Data(line.utf8))
+}
+
+private func awaitRelease(_ expected: String, deadline: UInt64, from pipe: FileHandle = .standardInput) throws {
+    let bytes = Array(expected.utf8)
+    guard bytes.count <= 256 else { throw HelperFailure.runtime("release exceeds 256 bytes") }
+    var offset = 0
+    var input = pollfd(fd: pipe.fileDescriptor, events: Int16(POLLIN), revents: 0)
+    while Clock.now() < deadline {
+        let ready = Darwin.poll(&input, 1, 10)
+        if ready == 0 || (ready < 0 && errno == EINTR) { continue }
+        guard ready > 0, input.revents & Int16(POLLERR | POLLNVAL) == 0 else {
+            throw HelperFailure.runtime("release pipe failed")
+        }
+        guard let byte = try pipe.read(upToCount: 1)?.first else {
+            guard offset == bytes.count, Clock.now() < deadline else {
+                throw HelperFailure.runtime("truncated or expired release")
+            }
+            return
+        }
+        guard offset < bytes.count, bytes[offset] == byte else {
+            throw HelperFailure.runtime("mismatched release")
+        }
+        offset += 1
+    }
+    throw HelperFailure.runtime("release deadline expired")
+}
+
 final class FrameTimer: NSObject, SCStreamOutput, SCStreamDelegate {
     let queue = DispatchQueue(label: "bench.capture.frames")
     private let region: CGRect
@@ -49,11 +81,39 @@ final class FrameTimer: NSObject, SCStreamOutput, SCStreamDelegate {
     private var ready = false
     private let scene: SceneSampler?
     private var sceneTransform: [Double]?
+    private let supervised: Bool
+    private var admission: Range<UInt64>?
+    private var lastDisplay: UInt64 = 0
+    private var lastArrival: UInt64 = 0
 
-    init(region: CGRect, scale: CGFloat, scene: SceneSampler? = nil) {
+    init(region: CGRect, scale: CGFloat, scene: SceneSampler? = nil, supervised: Bool = false) {
+        self.supervised = supervised
         self.region = region
         self.scale = scale
         self.scene = scene
+    }
+
+    func arm(_ source: [String]) {
+        queue.sync {
+            let start = Clock.now()
+            let cutoff = start + Clock.ticks(nanos: 8_000_000_000)
+            admission = start..<cutoff
+            boundaryRecord("scene-open", source + [String(start), String(cutoff)])
+        }
+    }
+
+    func freeze(_ source: [String]) throws -> (fields: [String], tick: UInt64) {
+        try queue.sync {
+            let now = Clock.now()
+            guard let interval = admission, now >= interval.upperBound, frames > 0,
+                  interval.contains(lastArrival), lastDisplay > 0, lastDisplay <= lastArrival else {
+                throw HelperFailure.runtime("invalid final capture sample")
+            }
+            admission = nil
+            let fields = source + [String(frames), String(lastDisplay), String(lastArrival), String(now)]
+            boundaryRecord("scene-freeze", fields)
+            return (fields, now)
+        }
     }
 
     func stream(
@@ -63,6 +123,7 @@ final class FrameTimer: NSObject, SCStreamOutput, SCStreamDelegate {
     ) {
         guard type == .screen, sampleBuffer.isValid else { return }
         let arrival = Clock.now()
+        if supervised && admission?.contains(arrival) != true { return }
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
             sampleBuffer, createIfNecessary: false
         ) as? [[SCStreamFrameInfo: Any]],
@@ -95,6 +156,7 @@ final class FrameTimer: NSObject, SCStreamOutput, SCStreamDelegate {
                 sceneTransform = transform
                 let samples = try scene.sample(pixels)
                 frames += 1
+                if supervised { lastDisplay = display; lastArrival = arrival }
                 Output.emit(["scene-frame", String(frames), String(display), String(arrival),
                              sceneState(samples), samples.map(String.init).joined(separator: ","),
                              String(Double(rect.minX)), String(Double(rect.minY)),
@@ -129,9 +191,11 @@ struct CaptureRequest {
     let fps: Int
     let scale: Double
     let diagnostic: Bool
+    let supervised: Bool
 
     init(_ options: inout Options) throws {
-        diagnostic = options.command == "scene"
+        supervised = options.command == "scene-supervised"
+        diagnostic = supervised || options.command == "scene"
         pid = try options.pid()
         let window = try options.int("window-id")
         guard let id = UInt32(exactly: window) else {
@@ -150,6 +214,7 @@ struct CaptureRequest {
               scale > 0, scale <= 4 else {
             throw HelperFailure.usage("duration, fps or scale out of range")
         }
+        if supervised && durationMs != 8000 { throw HelperFailure.usage("supervised scene requires 8000 ms") }
         if diagnostic && (region == nil || durationMs > 10_000 || fps > 120 || scale < 1) {
             throw HelperFailure.usage("scene needs --region, duration <= 10000, fps <= 120 and scale >= 1")
         }
@@ -188,7 +253,7 @@ func capture(_ request: CaptureRequest) async throws {
         ? try SceneSampler(width: configuration.width, height: configuration.height,
                            region: region, scale: scale) : nil
     if scene != nil { configuration.colorSpaceName = CGColorSpace.sRGB }
-    let timer = FrameTimer(region: region, scale: scale, scene: scene)
+    let timer = FrameTimer(region: region, scale: scale, scene: scene, supervised: request.supervised)
     let stream = SCStream(
         filter: SCContentFilter(desktopIndependentWindow: window),
         configuration: configuration,
@@ -204,17 +269,50 @@ func capture(_ request: CaptureRequest) async throws {
                      String(sceneFrameCap), String(request.durationMs), "srgb"])
     }
     try await stream.startCapture()
-    if scene == nil {
+    let source = [boundaryVersion, String(request.pid), String(request.windowID)]
+    if request.supervised { timer.arm(source) }
+    if scene != nil {
+        let started = "scene-stream-start\t\(sceneSchema)\t\(request.pid)\t\(request.windowID)\n"
+        FileHandle.standardError.write(Data(started.utf8))
+    } else {
         Output.emit(["started", String(Clock.now()), String(configuration.width), String(configuration.height)])
     }
     try await Task.sleep(nanoseconds: UInt64(request.durationMs) * 1_000_000)
+    var frozenTick: UInt64?
+    if request.supervised {
+        let (fields, tick) = try timer.freeze(source)
+        frozenTick = tick
+        let expected = (["scene-release"] + fields).joined(separator: "\t") + "\n"
+        do {
+            try awaitRelease(expected, deadline: tick + Clock.ticks(nanos: 1_000_000_000))
+        } catch {
+            try? await stream.stopCapture()
+            throw error
+        }
+    }
     try await stream.stopCapture()
+    let stopped = Clock.now()
     let frames = timer.queue.sync { timer.frames }
-    Output.emit([scene == nil ? "end" : "scene-end", String(Clock.now()), String(frames)])
+    if request.supervised { boundaryRecord("scene-stopped", source + [String(frames), String(stopped)]) }
+    Output.emit([scene == nil ? "end" : "scene-end", String(frozenTick ?? stopped), String(frames)])
 }
 
 func captureSelfTest() throws {
     try commonSelfTest()
+    let ack = "scene-release\ttest\n"
+    for text in [ack, "", String(ack.dropLast()), ack + ack, ack + "x", "other\n"] {
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+        try pipe.fileHandleForWriting.close()
+        let read = Result { try awaitRelease(ack, deadline: Clock.now() + Clock.ticks(nanos: 250_000_000), from: pipe.fileHandleForReading) }
+        switch read {
+        case .success: try check(text == ack, "accepted invalid release")
+        case .failure: try check(text != ack, "refused exact release")
+        }
+    }
+    let silent = Pipe()
+    let expired = Result { try awaitRelease(ack, deadline: Clock.now() + Clock.ticks(nanos: 1_000_000), from: silent.fileHandleForReading) }
+    if case .success = expired { throw HelperFailure.runtime("silent release accepted") }
     try sceneSelfTest()
     var created: CVPixelBuffer?
     let status = CVPixelBufferCreate(nil, 64, 32, kCVPixelFormatType_32BGRA, nil, &created)
@@ -248,7 +346,7 @@ struct CaptureMain {
         do {
             var options = try Options(Array(CommandLine.arguments.dropFirst()))
             switch options.command {
-            case "run", "scene":
+            case "run", "scene", "scene-supervised":
                 let request = try CaptureRequest(&options)
                 // ScreenCaptureKit needs a window server connection; AppKit
                 // opens it, and a prohibited policy keeps the helper unfocused.
