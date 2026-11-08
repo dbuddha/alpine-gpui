@@ -23,6 +23,8 @@ pub(crate) struct DocumentViewState {
     pub(crate) scroll_y: f32,
     // Horizontal offset in points; the session never persists it.
     pub(crate) scroll_x: f32,
+    // Absent on disk; first display reveals the caret at the actual width.
+    pub(crate) text_width: Option<alpine_text_layout::PositiveFinite>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +39,7 @@ impl Default for DocumentViewState {
             selection: Selection::caret(ByteOffset::new(0)),
             scroll_y: 0.0,
             scroll_x: 0.0,
+            text_width: None,
         }
     }
 }
@@ -751,6 +754,7 @@ mod tests {
             selection: Selection::caret(ByteOffset::new(offset)),
             scroll_y,
             scroll_x: 0.0,
+            text_width: None,
         }
     }
 

@@ -252,13 +252,12 @@ enum ScrollAxis {
     Vertical,
 }
 
-// `pending` waits for the next frame's viewport; `revealed` lets one event
-// skip a second reveal of a selection it already revealed.
+// A restored or revealed view already owns its selection's scroll position.
 #[derive(Clone, Copy, Debug, Default)]
 struct CaretReveal {
     pending: bool,
-    revealed: Option<Selection>,
-    text_width: f32,
+    handled_selection: Option<Selection>,
+    text_width: Option<PositiveFinite>,
 }
 
 fn tab_slot_bounds(sidebar: f32, index: usize, scroll_x: f32) -> Result<Rect, EditorRenderError> {
@@ -2859,6 +2858,7 @@ impl EditorApp {
                 .scroll_y
                 .min(usize_as_f32(snapshot.line_count()) * LINE_HEIGHT),
             scroll_x: finite_scroll(view.scroll_x),
+            text_width: view.text_width,
         }
     }
 
@@ -3197,8 +3197,9 @@ impl EditorApp {
                 .size()
                 .width(),
         );
-        self.caret_reveal.pending |= self.caret_reveal.text_width.to_bits() != text_width.to_bits();
-        self.caret_reveal.text_width = text_width;
+        let text_width = PositiveFinite::new(text_width).ok_or(EditorRenderError::Domain)?;
+        self.caret_reveal.pending |= self.caret_reveal.text_width != Some(text_width);
+        self.caret_reveal.text_width = Some(text_width);
         self.clamp_scroll();
         self.layout_cache.begin_frame()?;
         self.label_cache.begin_frame()?;
@@ -4509,16 +4510,8 @@ impl EditorApp {
         };
         let offset_x = if let Some(projection) = &projection {
             let line = projection.line(line)?;
-            let text = line
-                .snapshot
-                .slice(line.snapshot.line_byte_range(line.local)?)?;
             let font = self.resolved_font()?;
-            let content = text.trim_end_matches(['\r', '\n']);
-            self.text_system.caret_offset(
-                content,
-                font,
-                (utf16 as usize).min(content.encode_utf16().count()),
-            )?
+            self.marked_caret_offset(&line, font, utf16 as usize)?
         } else {
             x_for_utf16(&rendered.layout, utf16)
         };
@@ -4645,12 +4638,26 @@ impl EditorApp {
                 (self.workspace_scroll_y - delta_y).clamp(0.0, self.maximum_workspace_scroll());
             self.workspace_scroll_y.to_bits() != before.to_bits()
         } else {
-            let (delta_x, delta_y) =
-                self.predominant_scroll_deltas(delta_x, delta_y, phase, precise, modifiers);
+            let width = self
+                .active_pane_bounds()
+                .map_or(1.0, |pane| editor_text_width(pane.size().width()));
+            let maximum_x = self.maximum_scroll_x(width).max(self.scroll_x);
+            let maximum_y = self.maximum_scroll();
+            let (delta_x, delta_y) = self.predominant_scroll_deltas(
+                delta_x,
+                delta_y,
+                phase,
+                precise,
+                modifiers,
+                maximum_x > 0.0 && maximum_y > 0.0,
+            );
             let before = (self.scroll_y.to_bits(), self.scroll_x.to_bits());
-            self.scroll_y = (self.scroll_y - delta_y).clamp(0.0, self.maximum_scroll());
-            let maximum_x = self.maximum_scroll_x().max(self.scroll_x);
+            self.scroll_y = (self.scroll_y - delta_y).clamp(0.0, maximum_y);
             self.scroll_x = (self.scroll_x - delta_x).clamp(0.0, maximum_x);
+            if self.scroll_x.to_bits() != before.1 {
+                self.caret_reveal.text_width = PositiveFinite::new(width);
+                self.caret_reveal.pending = false;
+            }
             (self.scroll_y.to_bits(), self.scroll_x.to_bits()) != before
         };
         changed.then(EventEffect::visual).unwrap_or_default()
@@ -4666,6 +4673,7 @@ impl EditorApp {
         phase: ScrollPhase,
         precise: bool,
         modifiers: Modifiers,
+        both_axes_scroll: bool,
     ) -> (f32, f32) {
         let (delta_x, delta_y) =
             if !precise && delta_x == 0.0 && modifiers.contains(Modifiers::SHIFT) {
@@ -4696,8 +4704,7 @@ impl EditorApp {
                 self.scroll_axis.take().unwrap_or(dominant)
             }
         };
-        let horizontal = self.maximum_scroll_x().max(self.scroll_x) > 0.0;
-        if !horizontal || self.maximum_scroll() <= 0.0 {
+        if !both_axes_scroll {
             return (delta_x, delta_y);
         }
         match axis {
@@ -6088,6 +6095,8 @@ impl EditorApp {
         self.selection = target_view.selection;
         self.scroll_y = target_view.scroll_y.clamp(0.0, self.maximum_scroll());
         self.scroll_x = finite_scroll(target_view.scroll_x);
+        self.caret_reveal.text_width = target_view.text_width;
+        self.caret_reveal.handled_selection = Some(self.selection);
         self.composition = None;
         self.pointer_selecting = false;
         if let Err(error) = self.sync_active_pane_document() {
@@ -6415,21 +6424,18 @@ impl EditorApp {
         self.selection = Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end));
         self.composition = None;
         let snapshot = self.buffer().snapshot();
-        if let Ok(Some(line)) = Self::line_for_offset(&snapshot, range.start) {
-            let top = usize_as_f32(line) * LINE_HEIGHT;
-            let height = (self.last_viewport.height() - CONTENT_INSET * 2.0).max(LINE_HEIGHT);
-            if matches!(top.total_cmp(&self.scroll_y), std::cmp::Ordering::Less) {
-                self.scroll_y = top;
-            } else if matches!(
-                (top + LINE_HEIGHT).total_cmp(&(self.scroll_y + height)),
-                std::cmp::Ordering::Greater
-            ) {
-                self.scroll_y = (top + LINE_HEIGHT - height).max(0.0);
-            }
-            self.clamp_scroll();
+        if let Ok(Some(line)) = Self::line_for_offset(&snapshot, range.start)
+            && let Ok(pane) = self.active_pane_bounds()
+        {
+            self.scroll_y = Self::caret_scroll_target(
+                self.scroll_y,
+                usize_as_f32(line) * LINE_HEIGHT,
+                pane.size().height().max(1.0),
+                self.maximum_scroll(),
+            );
         }
         self.reveal_caret_horizontally(Some(range.start));
-        self.caret_reveal.revealed = Some(self.selection);
+        self.caret_reveal.handled_selection = Some(self.selection);
         EventEffect::visual()
     }
 
@@ -7132,10 +7138,7 @@ impl EditorApp {
     }
 
     // Bounded by the widest line the last frame laid out, not the document.
-    fn maximum_scroll_x(&self) -> f32 {
-        let text_width = self
-            .active_pane_bounds()
-            .map_or(1.0, |bounds| editor_text_width(bounds.size().width()));
+    fn maximum_scroll_x(&self, text_width: f32) -> f32 {
         let widest = self
             .rendered_lines
             .iter()
@@ -7156,13 +7159,30 @@ impl EditorApp {
         let wrap_width = PositiveFinite::new(text_width)?;
         let snapshot = self.buffer().snapshot();
         let line = Self::line_for_offset(&snapshot, offset).ok()??;
-        let start = snapshot.line_byte_range(line).ok()?.start;
-        let column = local_utf16(&snapshot, start, offset).ok()?;
         let layout = self
             .layout_cache
             .layout_line(&snapshot, line, font, wrap_width, &mut self.text_system)
             .ok()?;
+        let start = snapshot.line_byte_range(line).ok()?.start;
+        let column = local_utf16(&snapshot, start, offset).ok()?;
         Some(x_for_utf16(&layout, column))
+    }
+
+    fn marked_caret_offset(
+        &mut self,
+        line: &composition::Line<'_>,
+        font: FontKey,
+        column: usize,
+    ) -> Result<f32, EditorRenderError> {
+        let text = line
+            .snapshot
+            .slice(line.snapshot.line_byte_range(line.local)?)?;
+        let content = text.trim_end_matches(['\r', '\n']);
+        Ok(self.text_system.caret_offset(
+            content,
+            font,
+            column.min(content.encode_utf16().count()),
+        )?)
     }
 
     fn primary_caret_x(&mut self, text_width: f32) -> Option<f32> {
@@ -7177,9 +7197,8 @@ impl EditorApp {
             + composition.selected_start_utf16 as usize
             + composition.selected_length_utf16 as usize;
         let line = projection.line_at_utf16(index).ok()?;
-        let column = u32::try_from(index - line.base_utf16).ok()?;
-        let layout = self
-            .layout_cache
+        let column = index - line.base_utf16;
+        self.layout_cache
             .layout_line(
                 line.snapshot,
                 line.local,
@@ -7188,7 +7207,7 @@ impl EditorApp {
                 &mut self.text_system,
             )
             .ok()?;
-        Some(x_for_utf16(&layout, column))
+        self.marked_caret_offset(&line, font, column).ok()
     }
 
     // `first` is revealed last, so it wins when it and the caret do not fit.
@@ -7197,6 +7216,7 @@ impl EditorApp {
             return;
         };
         let text_width = editor_text_width(bounds.size().width());
+        self.caret_reveal.text_width = PositiveFinite::new(text_width);
         if let Some(caret_x) = self.primary_caret_x(text_width) {
             self.scroll_x = Self::caret_scroll_x_target(self.scroll_x, caret_x, text_width);
         }
@@ -7241,7 +7261,7 @@ impl EditorApp {
     }
 
     fn reveal_primary_caret(&mut self) -> EventEffect {
-        self.caret_reveal.revealed = Some(self.selection);
+        self.caret_reveal.handled_selection = Some(self.selection);
         let Ok(bounds) = self.active_pane_bounds() else {
             return EventEffect::default();
         };
@@ -7458,6 +7478,8 @@ impl EditorApp {
         self.composition = None;
         self.scroll_y = (u32_as_f32(selected.line.saturating_sub(1)) * LINE_HEIGHT)
             .clamp(0.0, self.maximum_scroll());
+        self.reveal_caret_horizontally(Some(selected.start));
+        self.caret_reveal.handled_selection = Some(self.selection);
     }
 
     fn open_workspace_path(
@@ -7488,6 +7510,7 @@ impl EditorApp {
             selection: self.selection,
             scroll_y: self.scroll_y,
             scroll_x: self.scroll_x,
+            text_width: self.caret_reveal.text_width,
         }
     }
 
@@ -7495,7 +7518,8 @@ impl EditorApp {
         self.selection = view.selection;
         self.scroll_y = view.scroll_y;
         self.scroll_x = finite_scroll(view.scroll_x);
-        self.caret_reveal.revealed = None;
+        self.caret_reveal.text_width = view.text_width;
+        self.caret_reveal.handled_selection = Some(self.selection);
         self.composition = None;
         self.pointer_selecting = false;
         self.rendered_lines.clear();
@@ -8228,6 +8252,7 @@ impl EditorApp {
             selection: Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end)),
             scroll_y: usize_as_f32(line.saturating_sub(1)) * LINE_HEIGHT,
             scroll_x: 0.0,
+            text_width: None,
         })
     }
 
@@ -8431,11 +8456,11 @@ impl EditorApp {
             self.input_failures = accessibility_admission_failures(self.input_failures, admitted);
         }
         let selection_changed = Self::selection_changed(selection_before, self.selection);
-        let revealed = self.caret_reveal.revealed.take() == Some(self.selection);
+        let revealed = self.caret_reveal.handled_selection.take() == Some(self.selection);
         if selection_changed && !revealed {
             effect = effect.merge(self.reveal_primary_caret());
         }
-        self.caret_reveal.revealed = None;
+        self.caret_reveal.handled_selection = None;
         self.advance_selection_revision(selection_before);
         let language_visual_changed = self.synchronize_language_after_event(context);
         effect.visual_changed |= language_visual_changed;
@@ -9028,11 +9053,24 @@ fn editor_clipboard_shortcut(event: &SurfaceEvent) -> Option<ClipboardOperation>
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static LOCAL_UTF16_PREFIX_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn local_utf16(
     snapshot: &BufferSnapshot,
     line_start: usize,
     offset: usize,
 ) -> Result<u32, EditorRenderError> {
+    #[cfg(test)]
+    LOCAL_UTF16_PREFIX_BYTES.with(|bytes| {
+        bytes.set(
+            bytes
+                .get()
+                .saturating_add(offset.saturating_sub(line_start)),
+        );
+    });
     let prefix = snapshot.slice(line_start..offset)?;
     u32::try_from(prefix.encode_utf16().count()).map_err(|_| EditorRenderError::Domain)
 }
@@ -11234,11 +11272,13 @@ mod session_integration_tests {
             selection: Selection::caret(ByteOffset::new(2)),
             scroll_y: 0.0,
             scroll_x: 0.0,
+            text_width: None,
         };
         let beta_view = DocumentViewState {
             selection: Selection::caret(ByteOffset::new(1)),
             scroll_y: 0.0,
             scroll_x: 0.0,
+            text_width: None,
         };
         session::SessionState {
             workspace: Some(root.to_path_buf()),
@@ -11257,6 +11297,7 @@ mod session_integration_tests {
                         selection: Selection::caret(ByteOffset::new(0)),
                         scroll_y: 0.0,
                         scroll_x: 0.0,
+                        text_width: None,
                     },
                 },
                 session::SessionTab {
@@ -11400,6 +11441,7 @@ mod session_integration_tests {
             selection: Selection::caret(ByteOffset::new(3)),
             scroll_y: f32::MAX,
             scroll_x: 0.0,
+            text_width: None,
         };
         let clamped_state = session::SessionState {
             workspace: Some(root.clone()),
@@ -11453,6 +11495,7 @@ mod session_integration_tests {
                 selection: Selection::new(ByteOffset::new(3), ByteOffset::new(6)),
                 scroll_y: f32::MAX,
                 scroll_x: 0.0,
+                text_width: None,
             },
         );
         assert_eq!(

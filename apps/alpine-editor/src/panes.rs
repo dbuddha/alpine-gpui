@@ -128,6 +128,7 @@ impl PaneGrid {
                 selection: view.selection,
                 scroll_y: finite_scroll(view.scroll_y),
                 scroll_x: finite_scroll(view.scroll_x),
+                text_width: view.text_width,
             }),
             occupied: true,
         };
@@ -704,6 +705,7 @@ mod tests {
             selection: alpine_text::Selection::caret(alpine_text::ByteOffset::new(offset)),
             scroll_y,
             scroll_x: 0.0,
+            text_width: None,
         }
     }
 
@@ -841,6 +843,7 @@ mod tests {
                 },
                 DocumentViewState {
                     scroll_x: invalid_scroll,
+                    text_width: None,
                     ..alpha_view
                 },
             ] {
@@ -896,6 +899,7 @@ mod tests {
                     selection: shared_alpha.selection,
                     scroll_y: alpha_view.scroll_y,
                     scroll_x: 0.0,
+                    text_width: None,
                 }
             ))
         );

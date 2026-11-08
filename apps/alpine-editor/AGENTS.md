@@ -1,73 +1,55 @@
 ---
 product: Alpine Editor
+role: editor operating rules
+author: Deepak Buddha
+authority: ../../project.md
+related: [../../AGENTS.md, ../../project.md, ../../notes.md, src/AGENTS.md]
 parent: ../../AGENTS.md
-updated: 2026-11-03
-phase: "2, language agnostic: active, closes in M4"
-parity:
-  core_editing: {status: partial, closes: M6}
-  navigation_and_search: {status: partial, closes: M8}
-  language_intelligence: {status: partial, closes: M4}
-  git: {status: none, closes: M7}
-criteria:
-  "2.1": "CI proves warm frames lex nothing and a cold first frame lexes only the laid-out range (SyntaxCache counters); the 100 ms budget, cold and warm, becomes a bench row in M1.4"
-  "2.2": "Rust passes; C++ shows clangd diagnostics only; Python, Java, TypeScript and JavaScript need a server"
-  "2.3": "two warm passes; sixth eviction tested with one slot detached and with five attached"
-  "2.4": "passes on main"
+updated: 2026-11-08
+stage: evidence and stability
+language_targets: [Rust, Python, C++, Java, TypeScript, OCaml, Haskell]
+implemented_language_evidence: Rust workflows; C++ diagnostics; other servers need qualification
 known_defects:
   - "physical native validation: missing or zero presentedTime withholds close until timeout; the error identifies the missing evidence, but qualification still fails"
-  - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays wait for S10"
+  - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays await PR #672"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
-  - "unsaved workspace overlays lost on tab switch; fix on local fix/576-overlay-acceptance (was #576)"
-parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in M4"
-out_of_scope: [AI, collaboration, extensions, remote development, debugger, built-in terminal]
+  - "unsaved workspace overlays lost on tab switch; PR #672, refresh its remote head before review"
+parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in stage 3"
+out_of_scope: [AI, collaboration, extensions, remote development, multi-cursor, built-in terminal]
 ---
 
 # Alpine Editor
 
-The daily-driver editor on Alpine GPUI: beat Zed at parity within the
-framework's budgets, and keep the core embeddable for the later terminal.
+Alpine Editor is the first product on Alpine GPUI. Read
+[project.md](../../project.md) for the seven-language scope, stage order,
+performance contract and owner checkpoints, and [notes.md](../../notes.md)
+for current evidence. Keep the core embeddable for the later terminal.
 
-## Criteria by phase
+## Feature contract
 
-Phase 2 (M4): each language group highlights within 100 ms with no server;
-definition, hover and references work once a server is ready; two languages stay
-warm and a sixth evicts by idle order; deleting a registry entry removes a
-language with no code change.
+Implement the workflow scope in project.md, not full Zed feature parity.
+The daily Vim subset, structural editing, local Git essentials, preferences
+and Markdown preview are release requirements. Multi-cursor is excluded.
+Debugging follows daily-driver functionality in stage 6; it is no longer
+excluded. Standard language tools remain in scope, with inlay hints off by
+default. No AI or cloud functionality is planned.
 
-Phase 3 (M6): `cmd-shift-l` edits all matches; syntax-node expand and shrink; a
-Vim subset; 500 cursors on 10,000 lines within one display refresh per
-keystroke at p95; undo restores every cursor.
+The language registry must eventually cover all seven target languages.
+OCaml and Haskell are not implemented today. Deleting a registry entry removes
+its language lookup without a code change; it does not remove a required
+language from release acceptance. Highlighting must work without a server.
+Keep the existing 100 ms cold/warm highlighting target and deterministic
+visible-range work counters; M1's recorded highlight rows do not qualify the
+new languages.
 
-Phase 4 (M7): breadcrumbs; branch name within 1 s of checkout; blame for the
-visible range; gutter diff; a stage-and-commit panel; no layout shift.
+## Performance
 
-Phase 5 (M8): independent windows; the design system as one tokens module; no
-element shift; the final run against Zed.
-
-Parity also needs auto-indent, bracket pairing, deep undo, huge files, inline
-diagnostics, completion, rename, format, code actions, inlay hints, signature
-help, file finder, outline.
-
-## Performance targets
-
-Against Zed: win every `beat_zed_on` metric in the root frontmatter, checked
-at milestone closes. Against the AppKit reference app: keypress-to-screen p50
-and p95 each within one display refresh (8.33 ms at 120 Hz) of AppKit's, the
-same scroll cadence, and lower memory and energy where the bench shows room.
-Every frame-producing interaction holds the display's refresh at p95 (8.33 ms
-at 120 Hz, 16.7 ms at 60 Hz) with at most 1% missed frames (gaps over 1.5
-refresh periods): typing, scroll, resize, selection drags, overlays, big files
-and 500 cursors, with servers and git running. Launch and file-open are exempt
-and get their own startup budgets. The AppKit and refresh targets each gate PRs
-once a milestone first meets them.
-
-Final comparisons use separate controlled and everyday settings, frozen before
-measurement. Require favorable confidence intervals on differences beyond
-measurement uncertainty in two independent sessions, with no fixed percentage
-margin. Report every required metric; missing values, ties and zero failures
-on both sides do not prove superiority. Never pool profiles, and never add
-trials after seeing results to force a win.
+The release targets and existing qualified budgets live only in project.md.
+Use correctness and qualified non-regression gates during development; a
+release shortfall needs Deepak's explicit acceptance. Missing screen evidence
+is not a pass. Final product claims use the everyday profile and equivalent
+workspace/server work, with controlled results reported separately.
 
 ## Two bars
 
@@ -83,7 +65,9 @@ and restore off the startup path.
 
 ## Language intelligence and git
 
-Design rules for M4 and M7, and the M4 slices, live in src/AGENTS.md.
+Implementation contracts for language tools and Git live in src/AGENTS.md.
+Debugger and structural-parser implementation need their scoped designs before
+code; dependency, public API and unsafe-boundary changes need approval.
 
 ## Verification
 

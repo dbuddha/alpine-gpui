@@ -15,12 +15,69 @@ pub const USAGE: &str = "usage:
   bench run <workload> --app alpine|zed|appkit [--trials N] [--warmup N]
             [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH] [--dry-run]
             [--wait-idle MINUTES]
+  bench scene-session <native-fixture> <helper-dir> <new-output-dir> (approved screen only)
+  bench scene-evidence <capture.tsv> <action.tsv>  (diagnostic consistency only)
   bench baseline <run-dir> --milestone ID [--note TEXT]
   bench workloads | stamp | fixtures | permissions
   bench zed-isolation [--seconds N] [--allow-window] [--open-fixture]
 
 Build the Swift helpers first with bench/helpers/build.sh. The protocol is in
-bench/AGENTS.md.";
+bench/AGENTS.md.
+
+Scene diagnostics: capture with bench-capture scene --pid PID --window-id ID
+--duration-ms 10000 --region X,Y,W,H --scale 1. The region has five equal
+vertical grayscale patches: A=0,118,188,225,255; B is reversed. Nine points per
+patch are sampled in sRGB, each RGB channel within 12 of its expected value.
+The action sidecar contains exactly one TSV record:
+scene-action<TAB>alpine-scene-diagnostic/v1<TAB>PID<TAB>ID<TAB>MACH_TICK<TAB>A<TAB>B
+scene-session uses the native fixture to record an accepted action.
+Its Mach tick is a command-issued lower bound, not native submission latency.
+One positive/stale/wrong control each; 30 seconds per case; quiet wait <=5 min.
+No live method or physical gate is qualified by offline tests. A hand-written
+sidecar proves only replay consistency, never physical or typing qualification.
+Capture and replay limits: 2048 frames, 2 MiB capture, 256-byte action file.
+Live method, visibility and action provenance remain unqualified.
+
+Build scene-session tools only from clean HEAD:
+  export ALPINE_SCENE_REVISION=$(git rev-parse HEAD)
+  RUSTFLAGS='--cfg alpine_native_validation' CARGO_TARGET_DIR=target/scene-fixture cargo build --locked -p alpine-platform-macos --example scene_evidence_fixture
+  cargo build --manifest-path bench/Cargo.toml
+  bench/helpers/build.sh
+Run scene-session only with session approval; pass the fixture executable,
+bench/target/helpers, and a new output directory outside the repository.
+The fixture uses disposable HOME, clears inherited native test overrides,
+and records terminal failures and exact cleanup. Capture scale is fixed at 1;
+the centered strip is 500x40 points inside the measured outer frame.
+Pinning requires matching visible window samples at least 250 ms apart within
+the original readiness deadline. Only a centered 500-to-502 or 502-to-500 point
+launch border change can restart that interval. The ready drawable size is
+checked until the action. Only even integral outer widths 500..504 and heights 300..350 are supported;
+source dimensions and strip coordinates must match that measured mapping. Ready/baseline/capture/drain caps
+are 5/5/10/5 seconds within a 30-second case execution cap.
+Owned process-group termination and socket drain allow up to 0.5 seconds
+cleanup per child after the deadline. No process from the owner is signalled. Output is capped at 2 MiB
+capture, 64 KiB per child stderr/fixture, and 512 KiB helper evidence.
+Supervised alpine-scene-boundary/v1 freezes admission on the sample queue eight seconds
+from its stamped opening tick. The helper reports final sequence, display,
+arrival and freeze ticks, then waits for one matching release and EOF for up
+to one second, inside the existing capture deadline. The supervisor verifies
+the frozen trace, presence, power and attached geometry before release. Capture
+stderr keeps open/freeze/stop records. final-proof.tsv records the verification
+tick and release after the command was written and its pipe closed. scene-end
+carries the measurement freeze tick and final frame count. scene-stopped carries
+the later stopCapture completion tick.
+Source commit, clean tree and executable hashes are retained in stamp.txt.
+Only these first-party binaries are supported. OS scheduling/reaping is an
+external dependency; cleanup failures invalidate the run. Conditions are
+checked at least each second and immediately before activation/capture/action.
+Before capture the fixture must own one visible window. After confirmed capture
+start, each sample may admit one registered NSLocalWindowSharingWindow parented
+to the pinned window and wholly in its title bar. The observed KVO wrapper
+requires its exact registered class and that exact immediate superclass. Queries are bounded
+to 32 per case. The stale control needs an A display tick after the supervisor
+observes fixture admission and records its second clock sample in admission.tsv.
+Every control needs valid full-trace clocks, geometry, identity and cleanup.
+Native Metal timestamp failure remains a hold, including when controls agree.";
 
 /// Timed keys closer than this mostly come back late on any editor.
 const MIN_KEY_INTERVAL_MS: u64 = 100;
@@ -47,6 +104,15 @@ pub enum Command {
         run_dir: PathBuf,
         milestone: String,
         note: String,
+    },
+    SceneSession {
+        fixture: PathBuf,
+        helpers: PathBuf,
+        output: PathBuf,
+    },
+    SceneEvidence {
+        capture: PathBuf,
+        actions: PathBuf,
     },
     Workloads,
     Stamp,
@@ -167,6 +233,26 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 wait_idle,
             }))
         }
+        "scene-session" => {
+            let parsed = split(rest, &[], &[])?;
+            parsed.exactly(
+                3,
+                "native fixture, helper directory and new output directory",
+            )?;
+            Ok(Command::SceneSession {
+                fixture: PathBuf::from(&parsed.positional[0]),
+                helpers: PathBuf::from(&parsed.positional[1]),
+                output: PathBuf::from(&parsed.positional[2]),
+            })
+        }
+        "scene-evidence" => {
+            let parsed = split(rest, &[], &[])?;
+            parsed.exactly(2, "capture.tsv and single-action.tsv")?;
+            Ok(Command::SceneEvidence {
+                capture: PathBuf::from(&parsed.positional[0]),
+                actions: PathBuf::from(&parsed.positional[1]),
+            })
+        }
         "baseline" => {
             let parsed = split(rest, &["milestone", "note"], &[])?;
             parsed.exactly(1, "one run directory")?;
@@ -207,6 +293,15 @@ pub fn execute(command: Command) -> Result<(), String> {
     match command {
         Command::Help => {
             println!("{USAGE}");
+            Ok(())
+        }
+        Command::SceneSession {
+            fixture,
+            helpers,
+            output,
+        } => crate::scene_session::run(&fixture, &helpers, &output),
+        Command::SceneEvidence { capture, actions } => {
+            println!("{}", crate::physical_evidence::run(&capture, &actions)?);
             Ok(())
         }
         Command::Workloads => {
@@ -333,6 +428,23 @@ mod tests {
     }
 
     #[test]
+    fn scene_session_requires_three_paths() -> Result<(), String> {
+        assert!(matches!(
+            parse(&args("scene-session fixture helpers output"))?,
+            Command::SceneSession { .. }
+        ));
+        for input in [
+            "scene-session",
+            "scene-session fixture helpers",
+            "scene-session fixture helpers output extra",
+            "scene-session --approve fixture helpers output",
+        ] {
+            assert!(parse(&args(input)).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn run_defaults_to_ten_trials() -> Result<(), String> {
         assert_eq!(
             parse(&args("run idle --app alpine"))?,
@@ -444,6 +556,26 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn scene_replay_requires_two_files_and_no_extra_actions() -> Result<(), String> {
+        assert_eq!(
+            parse(&args("scene-evidence capture.tsv action.tsv"))?,
+            Command::SceneEvidence {
+                capture: PathBuf::from("capture.tsv"),
+                actions: PathBuf::from("action.tsv")
+            }
+        );
+        for bad in [
+            "scene-evidence",
+            "scene-evidence capture.tsv",
+            "scene-evidence capture.tsv action.tsv second.tsv",
+            "scene-evidence capture.tsv --action 3",
+        ] {
+            assert!(parse(&args(bad)).is_err());
+        }
+        Ok(())
     }
 
     #[test]

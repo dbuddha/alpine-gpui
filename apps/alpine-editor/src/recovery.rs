@@ -868,6 +868,7 @@ mod tests {
             selection: Selection::caret(ByteOffset::new(offset)),
             scroll_y: 0.0,
             scroll_x: 0.0,
+            text_width: None,
         };
         let mut panes = [None; SESSION_PANE_CAPACITY];
         panes[0] = Some(SessionPane {

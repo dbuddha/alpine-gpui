@@ -729,6 +729,7 @@ impl<'a> Reader<'a> {
             selection: Selection::new(ByteOffset::new(anchor), ByteOffset::new(head)),
             scroll_y: f32::from_bits(self.u32()?),
             scroll_x: 0.0,
+            text_width: None,
         };
         validate_view(view).map_err(SessionCorrupt::Invalid)?;
         Ok(view)
@@ -961,6 +962,7 @@ mod tests {
             selection: Selection::caret(ByteOffset::new(offset)),
             scroll_y,
             scroll_x: 0.0,
+            text_width: None,
         }
     }
 

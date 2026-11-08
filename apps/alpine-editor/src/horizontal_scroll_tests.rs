@@ -735,3 +735,357 @@ fn showing_the_sidebar_reveals_the_caret_in_the_narrower_pane() -> TestResult {
     }
     Ok(())
 }
+
+fn dispatch_key(code: u16, modifiers: Modifiers) -> SurfaceEvent {
+    SurfaceEvent::Keyboard {
+        timestamp: EventTimestamp::new(1),
+        state: KeyState::Down,
+        physical_key: code,
+        logical_key: Box::default(),
+        modifiers,
+        repeat: false,
+    }
+}
+
+#[test]
+fn integrated_reveal_tab_switch_preserves_stored_view_with_a_different_caret() -> TestResult {
+    let files = TempFiles(
+        ["alpha", "beta"]
+            .map(|name| {
+                std::env::temp_dir().join(format!(
+                    "alpine-hscroll-switch-{}-{name}.txt",
+                    std::process::id()
+                ))
+            })
+            .to_vec(),
+    );
+    for path in &files.0 {
+        fs::write(path, "abcdefgh".repeat(72))?;
+    }
+    let mut app = EditorApp::open_file(TestTextSystem, &files.0[0])?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    let _ = scroll(&mut app, -240.0, 0.0, ScrollPhase::None);
+    let _ = app.open_workspace_path(&files.0[1], None)?;
+    let _ = app.set_selection(Selection::caret(ByteOffset::new(320)));
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&dispatch_key(
+        KEY_LEFT,
+        Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION),
+    ));
+    assert_eq!(runtime.delegate().tabs.active_index(), 0);
+    assert_eq!(runtime.delegate().selection.head().get(), 0);
+    assert_eq!(runtime.delegate().scroll_x, 240.0);
+    Ok(())
+}
+
+#[test]
+fn integrated_reveal_find_shows_matches_inside_a_row_split() -> TestResult {
+    let mut lines = vec!["plain"; 48];
+    lines[0] = "target";
+    lines[16] = "target";
+    let mut app = EditorApp::from_document(
+        TestTextSystem,
+        EditorDocument::scratch(&lines.join("\n")),
+        None,
+    )?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    let _ = app.split_active_pane(SplitAxis::Rows);
+    let _ = app.try_scene(SceneRevision::new(2), viewport()?)?;
+    let _ = app.handle_key(KEY_F, Modifiers::from_bits(Modifiers::COMMAND));
+    let _ = app.handle_event(&ime(ImeEvent::Committed("target".into())));
+    let _ = app.complete_pending_find_for_test()?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&dispatch_key(KEY_RETURN, Modifiers::default()));
+    let app = runtime.delegate();
+    assert_eq!(
+        app.selection.range().start,
+        lines[..16].join("\n").len() + 1
+    );
+    let y = 16.0 * LINE_HEIGHT - app.scroll_y;
+    assert!(
+        y >= 0.0 && y + LINE_HEIGHT <= app.active_pane_bounds()?.size().height(),
+        "match top {y} outside active pane"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn integrated_reveal_rtl_marked_text_agrees_with_the_native_caret() -> TestResult {
+    let mut system = alpine_text_layout::CoreTextSystem::new();
+    system.register_font(FONT_FAMILY, "Menlo-Regular")?;
+    let app = EditorApp::from_document(system, EditorDocument::scratch(""), None)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&ime(ImeEvent::Started));
+    let mark = "אבגדה".repeat(80);
+    let count = mark.encode_utf16().count();
+    let frame = runtime
+        .dispatch(&ime(ImeEvent::Updated {
+            text: mark.into(),
+            selected_start_utf16: u32::try_from(count)?,
+            selected_length_utf16: 0,
+        }))
+        .ok_or("missing composition frame")?;
+    let app = runtime.delegate();
+    assert!(app.composition.is_some());
+    assert_caret_visible(app, frame.scene())?;
+    let caret = caret_quad(app, frame.scene())?;
+    let request = AccessibilityRequest::first_rect_for_range(
+        AccessibilityRequestId::new(12),
+        accessibility::revision(app),
+        AccessibilityTextRange::new(count, 0),
+        true,
+    )?;
+    let reply = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(12),
+        request,
+    });
+    let Ok(AccessibilityPayload::TextGeometry { bounds, .. }) = reply
+        .accessibility_response()
+        .ok_or("missing marked-text geometry")?
+        .result()
+    else {
+        return Err("missing IME rectangle".into());
+    };
+    assert_eq!(
+        (bounds.x(), bounds.y()),
+        (caret.origin().x(), caret.origin().y())
+    );
+    Ok(())
+}
+
+#[test]
+fn integrated_reveal_rejected_line_never_copies_its_prefix() -> TestResult {
+    let bytes = alpine_text_layout::DEFAULT_MAX_LINE_BYTES + 1;
+    let mut app = EditorApp::from_document(
+        TestTextSystem,
+        EditorDocument::scratch(&"x".repeat(bytes)),
+        None,
+    )?;
+    LOCAL_UTF16_PREFIX_BYTES.with(|n| n.set(0));
+    assert_eq!(app.line_x_for_offset(bytes, 400.0), None);
+    assert_eq!(LOCAL_UTF16_PREFIX_BYTES.with(std::cell::Cell::get), 0);
+    Ok(())
+}
+
+#[test]
+fn integrated_reveal_focus_next_pane_restores_the_independent_view() -> TestResult {
+    let mut app = long_line_app(500, 2)?;
+    let _ = app.split_active_pane(SplitAxis::Columns);
+    let _ = app.try_scene(SceneRevision::new(2), viewport()?)?;
+    let _ = scroll(&mut app, -320.0, 0.0, ScrollPhase::None);
+    let _ = app.focus_next_pane();
+    let files = TempFiles(vec![
+        std::env::temp_dir().join(format!("alpine-hscroll-pane-{}.txt", std::process::id())),
+    ]);
+    fs::write(&files.0[0], "other".repeat(100))?;
+    let _ = app.open_workspace_path(&files.0[0], None)?;
+    let _ = app.set_selection(Selection::caret(ByteOffset::new(350)));
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    prepare_focus_next(&mut app)?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&dispatch_key(KEY_RETURN, Modifiers::default()));
+    assert_eq!(runtime.delegate().selection.head().get(), 0);
+    assert_eq!(runtime.delegate().scroll_x, 320.0);
+    Ok(())
+}
+
+fn prepare_focus_next(app: &mut EditorApp) -> TestResult {
+    let _ = app.open_command_palette();
+    let _ = app.handle_command_palette_ime(&ImeEvent::Committed("Pane: Focus Next".into()));
+    assert!(
+        app.command_palette
+            .visible_commands()?
+            .iter()
+            .any(|row| row.selected && row.command == EditorCommand::FocusNextPane)
+    );
+    Ok(())
+}
+
+#[test]
+fn integrated_view_width_does_not_treat_focus_as_a_resize() -> TestResult {
+    let mut app = long_line_app(500, 2)?;
+    let _ = app.split_active_pane(SplitAxis::Columns);
+    let _ = app.focus_next_pane();
+    let _ = app.try_scene(SceneRevision::new(2), viewport()?)?;
+    let _ = scroll(&mut app, -240.0, 0.0, ScrollPhase::None);
+    let wide = app.active_pane_bounds()?.size().width();
+    let _ = app.focus_next_pane();
+    let _ = app.split_active_pane(SplitAxis::Columns);
+    let _ = app.try_scene(SceneRevision::new(3), viewport()?)?;
+    assert!(app.active_pane_bounds()?.size().width() < wide);
+    prepare_focus_next(&mut app)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let _ = runtime.dispatch(&dispatch_key(KEY_RETURN, Modifiers::default()));
+    assert_eq!(
+        runtime.delegate().active_pane_bounds()?.size().width(),
+        wide
+    );
+    assert_eq!(runtime.delegate().scroll_x, 240.0);
+    Ok(())
+}
+
+#[test]
+fn integrated_view_legacy_inactive_tab_reveals_on_first_activation() -> TestResult {
+    let root =
+        TempDir(std::env::temp_dir().join(format!("alpine-hscroll-legacy-{}", std::process::id())));
+    fs::create_dir_all(&root.0)?;
+    let a = root.0.join("a.txt");
+    let b = root.0.join("b.txt");
+    fs::write(&a, "a".repeat(500))?;
+    fs::write(&b, "b")?;
+    let mut app = EditorApp::open_file(TestTextSystem, &a)?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    let _ = app.set_selection(Selection::caret(ByteOffset::new(400)));
+    let _ = app.open_workspace_path(&b, None)?;
+    let state = app.capture_session().map_err(|e| format!("{e:?}"))?;
+    let file = root.0.join("session.bin");
+    session::save(&file, &state)?;
+    let restored = EditorApp::from_session(TestTextSystem, session::load(&file)?)
+        .map_err(|e| e.to_string())?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(restored, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let frame = runtime
+        .dispatch(&dispatch_key(
+            KEY_LEFT,
+            Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION),
+        ))
+        .ok_or("missing activation frame")?;
+    assert_eq!(runtime.delegate().selection.head().get(), 400);
+    assert_caret_visible(runtime.delegate(), frame.scene())?;
+    let _ = runtime.dispatch(&SurfaceEvent::Scroll {
+        timestamp: EventTimestamp::new(2),
+        delta_x: 10_000.0,
+        delta_y: 0.0,
+        phase: ScrollPhase::None,
+        precise: true,
+        modifiers: Modifiers::default(),
+    });
+    let cycle = Modifiers::from_bits(Modifiers::COMMAND | Modifiers::OPTION);
+    let _ = runtime.dispatch(&dispatch_key(KEY_RIGHT, cycle));
+    let _ = runtime.dispatch(&dispatch_key(KEY_LEFT, cycle));
+    assert_eq!(runtime.delegate().selection.head().get(), 400);
+    assert_eq!(
+        runtime.delegate().scroll_x,
+        0.0,
+        "keep the live view's manual pan"
+    );
+    Ok(())
+}
+
+#[test]
+fn integrated_view_explicit_navigation_reveals_the_same_selected_range() -> TestResult {
+    let root = TempDir(
+        std::env::temp_dir().join(format!("alpine-hscroll-location-{}", std::process::id())),
+    );
+    fs::create_dir_all(&root.0)?;
+    let path = root.0.join("main.rs");
+    fs::write(&path, "a".repeat(500))?;
+    let path = fs::canonicalize(path)?;
+    let mut app = EditorApp::open_file(TestTextSystem, &path)?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    app.selection = Selection::new(ByteOffset::new(400), ByteOffset::new(404));
+    let identity = app.language_identity();
+    let input = app.active_rust_document().ok_or("rust input")?;
+    let uri = format!("file://{}", path.display());
+    let diagnostics: Box<serde_json::value::RawValue> = serde_json::from_str(&format!(
+        r#"{{"uri":"{uri}","version":1,"diagnostics":[]}}"#
+    ))?;
+    app.rust_diagnostics.install_for_test(
+        input,
+        &diagnostics,
+        rust_diagnostics::tests::mock_executable(),
+    )?;
+    let locations: Box<serde_json::value::RawValue> = serde_json::from_str(&format!(
+        r#"[{{"uri":"{uri}","range":{{"start":{{"line":0,"character":400}},"end":{{"line":0,"character":404}}}}}}]"#
+    ))?;
+    app.rust_diagnostics.install_navigation_for_test(
+        identity,
+        NavigationRequestKind::References,
+        &locations,
+    )?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let frame = runtime
+        .dispatch(&dispatch_key(KEY_RETURN, Modifiers::default()))
+        .ok_or("missing jump frame")?;
+    assert_eq!(runtime.delegate().selection.range(), 400..404);
+    assert_caret_visible(runtime.delegate(), frame.scene())
+}
+
+#[test]
+fn integrated_view_project_search_reveals_an_already_selected_match() -> TestResult {
+    let root =
+        TempDir(std::env::temp_dir().join(format!("alpine-hscroll-search-{}", std::process::id())));
+    fs::create_dir_all(&root.0)?;
+    let path = root.0.join("match.txt");
+    fs::write(&path, format!("{}needle", "a".repeat(400)))?;
+    let mut app = EditorApp::open_workspace(TestTextSystem, &root.0)?;
+    let _ = app.open_workspace_path(&path, None)?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    app.selection = Selection::new(ByteOffset::new(400), ByteOffset::new(406));
+    let _ = app.handle_key(
+        KEY_F,
+        Modifiers::from_bits(Modifiers::COMMAND | Modifiers::SHIFT),
+    );
+    let _ = app.handle_event(&ime(ImeEvent::Committed("needle".into())));
+    for _ in 0..64 {
+        let Some(request) = app.prepare_project_search_request()? else {
+            break;
+        };
+        let _ = app.apply_project_search_output(request.execute());
+    }
+    let found = app.project_search.selected_match()?;
+    assert_eq!(found.start..found.end, 400..406);
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let frame = runtime
+        .dispatch(&dispatch_key(KEY_RETURN, Modifiers::default()))
+        .ok_or("missing project match frame")?;
+    assert!(!runtime.delegate().project_search.is_open());
+    assert_caret_visible(runtime.delegate(), frame.scene())
+}
+
+#[test]
+fn integrated_view_decoded_inactive_pane_reveals_on_focus() -> TestResult {
+    let root = TempDir(std::env::temp_dir().join(format!(
+        "alpine-hscroll-inactive-pane-{}",
+        std::process::id()
+    )));
+    fs::create_dir_all(&root.0)?;
+    let a = root.0.join("a.txt");
+    let b = root.0.join("b.txt");
+    fs::write(&a, "a".repeat(500))?;
+    fs::write(&b, "b")?;
+    let mut app = EditorApp::open_file(TestTextSystem, &a)?;
+    let _ = app.try_scene(SceneRevision::new(1), viewport()?)?;
+    let _ = app.set_selection(Selection::caret(ByteOffset::new(400)));
+    let _ = app.split_active_pane(SplitAxis::Columns);
+    let _ = app.open_workspace_path(&b, None)?;
+    let state = app.capture_session().map_err(|e| format!("{e:?}"))?;
+    let file = root.0.join("session.bin");
+    session::save(&file, &state)?;
+    let mut restored = EditorApp::from_session(TestTextSystem, session::load(&file)?)
+        .map_err(|e| e.to_string())?;
+    prepare_focus_next(&mut restored)?;
+    let clear = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(restored, viewport()?, clear, WorkerConfig::default())?;
+    let _ = runtime.frame_if_dirty();
+    let frame = runtime
+        .dispatch(&dispatch_key(KEY_RETURN, Modifiers::default()))
+        .ok_or("missing focus frame")?;
+    assert_eq!(runtime.delegate().selection.head().get(), 400);
+    assert_caret_visible(runtime.delegate(), frame.scene())
+}
