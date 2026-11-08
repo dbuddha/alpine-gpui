@@ -148,7 +148,8 @@ struct Shared {
     // Held by whoever writes the journal, so a flush and the worker never race
     // their renames and an older snapshot cannot land after a newer one.
     write: Mutex<()>,
-    identity: Mutex<Option<RecoveryIdentity>>,
+    identity: Mutex<Option<(u64, RecoveryIdentity)>>,
+    durable_generation: AtomicU64,
     last_error: Mutex<Option<RecoveryError>>,
     published_generation: AtomicU64,
     completed_generation: AtomicU64,
@@ -163,6 +164,7 @@ impl Shared {
             latest: Mutex::new(None),
             write: Mutex::new(()),
             identity: Mutex::new(None),
+            durable_generation: AtomicU64::new(0),
             last_error: Mutex::new(None),
             published_generation: AtomicU64::new(0),
             completed_generation: AtomicU64::new(0),
@@ -190,6 +192,45 @@ impl RecoveryIdentity {
                         && *local == document.local.revision().get()
                 },
             )
+    }
+
+    fn matches_editor(&self, app: &crate::EditorApp) -> bool {
+        let session = &self.session;
+        if self.authority_revision != app.runtime_document_revision
+            || session.workspace.as_deref() != app.workspace.as_ref().map(crate::Workspace::root)
+            || usize::from(session.active_tab) != app.tabs.active_index()
+            || session.tabs.len() != app.tabs.len()
+        {
+            return false;
+        }
+        let Ok(panes) = app.panes.session_state(|id| app.tabs.index_for_id(id)) else {
+            return false;
+        };
+        if !pane_structure_eq(&session.panes, &panes) {
+            return false;
+        }
+        let mut dirty = self.documents.iter();
+        for (i, tab) in session.tabs.iter().enumerate() {
+            if tab.path.as_deref() != app.tabs.path_at(i) {
+                return false;
+            }
+            if app.tabs.is_deferred(i) == Ok(true) {
+                continue;
+            }
+            let Ok(doc) = app.tabs.document_at(i, &app.document) else {
+                return false;
+            };
+            if doc.is_dirty()
+                && !dirty.next().is_some_and(|&(index, base, local)| {
+                    usize::from(index) == i
+                        && base == doc.recovery_base().revision().get()
+                        && local == doc.buffer().revision().get()
+                })
+            {
+                return false;
+            }
+        }
+        dirty.next().is_none()
     }
 
     fn from_request(request: &RecoveryRequest) -> Result<Self, RecoveryError> {
@@ -277,33 +318,33 @@ impl RecoveryCoordinator {
             .identity
             .lock()
             .map_err(|_| RecoveryError::Disconnected)?;
-        if identity
-            .as_ref()
-            .is_some_and(|identity| identity.matches(&request))
+        if let Some((generation, current)) = identity.as_ref()
+            && current.matches(&request)
         {
-            return Ok(self.shared.published_generation.load(Ordering::Acquire));
+            return Ok(*generation);
         }
-        *identity = Some(RecoveryIdentity::from_request(&request)?);
-        drop(identity);
-        let generation = self
-            .shared
-            .published_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| RecoveryError::Invalid)?
-            .checked_add(1)
-            .ok_or(RecoveryError::Invalid)?;
+        let next_identity = RecoveryIdentity::from_request(&request)?;
         let mut latest = self
             .shared
             .latest
             .lock()
             .map_err(|_| RecoveryError::Disconnected)?;
+        let generation = self
+            .shared
+            .published_generation
+            .load(Ordering::Acquire)
+            .checked_add(1)
+            .ok_or(RecoveryError::Invalid)?;
         *latest = Some(Pending {
             generation,
             request,
         });
+        *identity = Some((generation, next_identity));
+        self.shared
+            .published_generation
+            .store(generation, Ordering::Release);
         drop(latest);
+        drop(identity);
         let signal = self.signal.as_ref().ok_or(RecoveryError::Disconnected)?;
         match signal.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) => Ok(generation),
@@ -311,9 +352,28 @@ impl RecoveryCoordinator {
         }
     }
 
+    pub(crate) fn confirms(&self, generation: u64, app: &crate::EditorApp) -> bool {
+        self.shared
+            .identity
+            .try_lock()
+            .ok()
+            .is_some_and(|identity| {
+                identity.as_ref().is_some_and(|(published, current)| {
+                    *published == generation
+                        && generation == self.shared.durable_generation.load(Ordering::Acquire)
+                        && current.matches_editor(app)
+                })
+            })
+    }
+
     pub(crate) fn status(&self) -> RecoveryStatus {
         let completed_generation = self.shared.completed_generation.load(Ordering::Acquire);
-        let last_error = self.shared.last_error.lock().ok().and_then(|error| *error);
+        let last_error =
+            if completed_generation == self.shared.durable_generation.load(Ordering::Acquire) {
+                None
+            } else {
+                self.shared.last_error.lock().ok().and_then(|error| *error)
+            };
         RecoveryStatus {
             published_generation: self.shared.published_generation.load(Ordering::Acquire),
             completed_generation,
@@ -367,10 +427,13 @@ impl FlushHandle {
         let deadline = Instant::now() + bound;
         loop {
             let published = self.shared.published_generation.load(Ordering::Acquire);
-            if self.shared.completed_generation.load(Ordering::Acquire) >= published {
-                // A failed write completes its generation too.
-                let failed = try_lock(&self.shared.last_error).and_then(|error| *error);
-                return failed.map_or(FlushOutcome::Durable, FlushOutcome::Failed);
+            if self.shared.durable_generation.load(Ordering::Acquire) >= published {
+                return FlushOutcome::Durable;
+            }
+            if self.shared.completed_generation.load(Ordering::Acquire) >= published
+                && let Some(error) = try_lock(&self.shared.last_error).and_then(|error| *error)
+            {
+                return FlushOutcome::Failed(error);
             }
             if let Some(outcome) = self.write_latest() {
                 return outcome;
@@ -390,6 +453,9 @@ impl FlushHandle {
         let result = encode(&request).and_then(|bytes| write_journal(&self.shared.path, &bytes));
         Some(match result {
             Ok(()) => {
+                self.shared
+                    .durable_generation
+                    .store(generation, Ordering::Release);
                 self.shared
                     .completed_generation
                     .fetch_max(generation, Ordering::AcqRel);
@@ -475,8 +541,14 @@ fn complete_generation(shared: &Shared, generation: u64, encoded: Result<Vec<u8>
         if let Ok(mut last_error) = shared.last_error.lock() {
             *last_error = error;
         }
-        if error.is_some()
-            && let Ok(mut identity) = shared.identity.lock()
+        if error.is_none() {
+            shared
+                .durable_generation
+                .store(generation, Ordering::Release);
+        } else if let Ok(mut identity) = shared.identity.lock()
+            && identity
+                .as_ref()
+                .is_some_and(|(published, _)| *published == generation)
         {
             *identity = None;
         }
@@ -508,13 +580,16 @@ fn session_structure_eq(left: &SessionState, right: &SessionState) -> bool {
             .iter()
             .zip(&right.tabs)
             .all(|(left, right)| left.path == right.path)
-        && left.panes.nodes == right.panes.nodes
-        && left.panes.active_pane == right.panes.active_pane
+        && pane_structure_eq(&left.panes, &right.panes)
+}
+
+fn pane_structure_eq(left: &session::SessionPanes, right: &session::SessionPanes) -> bool {
+    left.nodes == right.nodes
+        && left.active_pane == right.active_pane
         && left
             .panes
-            .panes
             .iter()
-            .zip(&right.panes.panes)
+            .zip(&right.panes)
             .all(|(left, right)| left.map(|pane| pane.tab) == right.map(|pane| pane.tab))
 }
 
@@ -1725,9 +1800,14 @@ mod tests {
             .write
             .lock()
             .map_err(|_| "write lock poisoned")?;
+        write_journal(&path, &encode(&request("in flight", 1))?)?;
         let outcome = thread::scope(|scope| {
             let flushing = scope.spawn(|| handle.flush(Duration::from_secs(5)));
             thread::sleep(Duration::from_millis(60));
+            coordinator
+                .shared
+                .durable_generation
+                .store(generation, Ordering::Release);
             coordinator
                 .shared
                 .completed_generation
@@ -1738,7 +1818,7 @@ mod tests {
         .map_err(|_| "flush thread panicked")?;
 
         assert_eq!(outcome, FlushOutcome::Durable);
-        assert!(!path.exists());
+        assert_eq!(load(&path)?.documents[0].local.as_ref(), "in flight");
         Ok(())
     }
 
@@ -1792,6 +1872,39 @@ mod tests {
         assert_eq!(
             coordinator.flush_handle().flush(Duration::ZERO),
             FlushOutcome::Failed(failure)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn flush_with_locked_error_slot_uses_the_successful_write_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_path, coordinator, _receiver) = pending_journal("flush-locked-error")?;
+        let first = coordinator.publish(request("failed", 1))?;
+        complete_generation(&coordinator.shared, first, Err(RecoveryError::Invalid));
+        let handle = coordinator.flush_handle();
+        let held = coordinator
+            .shared
+            .last_error
+            .lock()
+            .map_err(|_| "lock poisoned")?;
+        assert_eq!(handle.flush(Duration::ZERO), FlushOutcome::TimedOut);
+        let next = coordinator.publish(request("written", 2))?;
+        let (send, recv) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = send.send(handle.flush(Duration::ZERO));
+        });
+        let outcome = recv.recv_timeout(Duration::from_secs(2));
+        drop(held);
+        worker.join().map_err(|_| "flush panicked")?;
+        assert_eq!(outcome?, FlushOutcome::Written(next));
+        assert_eq!(coordinator.status().last_error, None);
+        assert_eq!(
+            coordinator
+                .shared
+                .durable_generation
+                .load(Ordering::Acquire),
+            next
         );
         Ok(())
     }

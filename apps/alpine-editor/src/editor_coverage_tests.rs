@@ -2061,6 +2061,13 @@ fn editor_runtime_returns_clipboard_and_dirty_close_responses()
             timestamp: EventTimestamp::new(3),
         })
         .into_parts();
+    assert_eq!(close, CloseDisposition::Cancel);
+    assert!(!dirty_runtime.snapshot().is_shutting_down());
+    let (_, _, close) = dirty_runtime
+        .dispatch_with_response(&SurfaceEvent::CloseRequested {
+            timestamp: EventTimestamp::new(4),
+        })
+        .into_parts();
     assert_eq!(close, CloseDisposition::Allow);
     assert!(dirty_runtime.snapshot().is_shutting_down());
 
@@ -2116,7 +2123,7 @@ fn dirty_file_close_is_blocked_until_atomic_save_succeeds() -> Result<(), Box<dy
 }
 
 #[test]
-fn dirty_untitled_close_is_allowed_because_command_s_cannot_persist_it()
+fn scratch_quit_without_recovery_offers_save_as_and_explicit_discard()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut app = test_app()?;
     assert!(
@@ -2140,11 +2147,16 @@ fn dirty_untitled_close_is_allowed_because_command_s_cannot_persist_it()
         Some(expected.as_str())
     );
     assert!(
-        !app.handle_event_with_response(&SurfaceEvent::CloseRequested {
+        app.handle_event_with_response(&SurfaceEvent::CloseRequested {
             timestamp: EventTimestamp::new(1),
         })
         .cancel_close
     );
+    assert!(
+        matches!(&app.local_status, Some(LocalStatus::CloseBlocked(message))
+        if message.contains("Save As") && !message.contains("Command-S"))
+    );
+    assert!(!app.handle_close_request().cancel_close);
     Ok(())
 }
 
@@ -2158,11 +2170,10 @@ fn close_blockers_preserve_file_error_recovery_and_activation_identity()
             .handle_event(&ime(ImeEvent::Committed("x".into())))
             .document_changed
     );
-    let allowed = file_error.handle_close_request();
-    assert!(!allowed.cancel_close);
-    assert_eq!(
-        file_error.local_status.as_ref().map(LocalStatus::message),
-        None
+    assert!(file_error.handle_close_request().cancel_close);
+    assert!(
+        matches!(&file_error.local_status, Some(LocalStatus::CloseBlocked(message))
+        if message.contains("Recovery is unconfirmed") && !message.contains("Command-S"))
     );
 
     let root = TestWorkspace::new()?;
@@ -8980,5 +8991,287 @@ fn performance_log_writes_both_tables_under_library_logs() -> Result<(), Box<dyn
         app.local_status.as_ref().map(LocalStatus::message),
         Some("Could not save the performance log: HOME is not set")
     );
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_retains_edits_after_journal_write_failure() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TestWorkspace::new()?;
+    let state = root.path().join("blocked-state");
+    fs::write(&state, b"regular file")?;
+    let mut app = test_app()?;
+    app.configure_persistence(state.join("session-v1.bin"))?;
+    let text = "scratch λ\nexact bytes\n";
+    assert!(
+        app.replace_range(0..app.buffer().snapshot().len_bytes(), text)
+            .document_changed
+    );
+    app.publish_recovery();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let status = app.recovery.as_ref().ok_or("missing writer")?.status();
+        if status.completed_generation == status.published_generation && status.last_error.is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not acknowledge failure"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        app.handle_close_request().cancel_close,
+        "first Quit lost scratch after journal failure"
+    );
+    let label = app
+        .tabs
+        .label(app.tabs.active_index())
+        .ok_or("scratch label")?;
+    assert!(
+        matches!(&app.local_status, Some(LocalStatus::CloseBlocked(message))
+        if message.contains(label.as_ref()) && message.contains("Save As") && message.contains("Close again")
+            && !message.contains("Command-S"))
+    );
+    let saved = root.path().join("saved.txt");
+    let _ = app.save_document_as(&saved);
+    assert_eq!(fs::read(saved)?, text.as_bytes());
+    assert!(app.handle_close_request().cancel_close);
+    assert_eq!(app.buffer().snapshot().text(), text);
+    assert!(!app.handle_close_request().cancel_close);
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_requires_current_durable_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let journal = root.path().join("recovery-v1.bin");
+    let (coordinator, _signal) = recovery::RecoveryCoordinator::without_worker(journal.clone());
+    let mut app = test_app()?;
+    app.recovery = Some(coordinator);
+    let text = "scratch λ\n";
+    assert!(
+        app.replace_range(0..app.buffer().snapshot().len_bytes(), text)
+            .document_changed
+    );
+    app.publish_recovery();
+    assert!(
+        app.handle_close_request().cancel_close,
+        "pending scratch was discarded"
+    );
+    let handle = app
+        .recovery
+        .as_ref()
+        .ok_or("missing writer")?
+        .flush_handle();
+    assert!(matches!(
+        handle.flush(std::time::Duration::from_secs(1)),
+        recovery::FlushOutcome::Written(_)
+    ));
+    assert!(!app.handle_close_request().cancel_close);
+    let restored = EditorApp::from_recovery(TestTextSystem, recovery::load(&journal)?)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(restored.buffer().snapshot().text(), text);
+    assert!(app.replace_range(0..0, "later ").document_changed);
+    assert!(
+        app.handle_close_request().cancel_close,
+        "stale durable generation was accepted"
+    );
+    assert!(app.replace_range(0..0, "late ").document_changed);
+    assert!(
+        app.handle_close_request().cancel_close,
+        "late mutation reused a discard warning"
+    );
+    assert!(
+        !app.handle_close_request().cancel_close,
+        "unchanged second Quit remains an escape"
+    );
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_current_worker_journal_reopens_after_one_quit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let session = root.path().join("session-v1.bin");
+    let journal = recovery::path_for_session(&session);
+    let mut app = test_app()?;
+    app.configure_persistence(session)?;
+    let text = "exact healthy scratch 🪴\nend\n";
+    assert!(
+        app.replace_range(0..app.buffer().snapshot().len_bytes(), text)
+            .document_changed
+    );
+    app.publish_recovery();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let status = app.recovery.as_ref().ok_or("missing worker")?.status();
+        if status.completed_generation == status.published_generation {
+            assert_eq!(status.last_error, None);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not publish scratch"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        recovery::load(&journal)?.documents[0].local.as_bytes(),
+        text.as_bytes()
+    );
+    app.set_selection(Selection::caret(ByteOffset::new(0)));
+    assert!(!app.handle_close_request().cancel_close);
+    drop(app);
+    let restored = EditorApp::from_recovery(TestTextSystem, recovery::load(&journal)?)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(restored.buffer().snapshot().text(), text);
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_capture_failure_does_not_reuse_a_durable_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let (writer, _signal) =
+        recovery::RecoveryCoordinator::without_worker(root.path().join("journal"));
+    let mut app = test_app()?;
+    app.recovery = Some(writer);
+    assert!(app.replace_range(0..0, "changed").document_changed);
+    app.publish_recovery();
+    let handle = app
+        .recovery
+        .as_ref()
+        .ok_or("missing writer")?
+        .flush_handle();
+    assert!(matches!(
+        handle.flush(std::time::Duration::ZERO),
+        recovery::FlushOutcome::Written(_)
+    ));
+    app.panes.inject_layout_fault();
+    assert!(app.capture_recovery_request().is_err());
+    assert!(!app.scratch_recovery_is_current());
+    app.publish_recovery();
+    assert!(app.recovery_generation.is_none());
+    assert!(app.handle_close_request().cancel_close);
+    assert!(!app.handle_close_request().cancel_close);
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_does_not_discard_a_new_close_blocker() -> Result<(), Box<dyn std::error::Error>> {
+    let file = TestFile::new("original")?;
+    let mut app = test_app()?;
+    assert!(app.replace_range(0..0, "scratch").document_changed);
+    assert!(app.handle_close_request().cancel_close);
+    app.open_workspace_path(file.path(), None)?;
+    assert!(app.replace_range(0..0, "late").document_changed);
+    assert!(app.handle_close_request().cancel_close);
+    assert!(
+        matches!(&app.local_status, Some(LocalStatus::CloseBlocked(message)) if message.contains("Command-S"))
+    );
+    assert!(!app.handle_close_request().cancel_close);
+    assert_eq!(fs::read(file.path())?, b"original");
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_keeps_the_inactive_tabs_rescue_warning_visible()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = TestWorkspace::new()?;
+    let file = root.path().join("clean.txt");
+    fs::write(&file, b"clean")?;
+    let blocked = root.path().join("not-a-directory");
+    fs::write(&blocked, b"blocked state")?;
+    let mut app = test_app()?;
+    assert!(app.replace_range(0..0, "keep scratch ").document_changed);
+    app.open_workspace_path(&file, None)?;
+    app.configure_persistence(blocked.join("session-v1.bin"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if app
+            .recovery
+            .as_ref()
+            .ok_or("missing worker")?
+            .status()
+            .last_error
+            .is_some()
+        {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let close = SurfaceEvent::CloseRequested {
+        timestamp: EventTimestamp::new(1),
+    };
+    let color = LinearRgba::new(0.02, 0.02, 0.02, 1.0).ok_or("clear color")?;
+    let mut runtime = Application::new(app, viewport()?, color, WorkerConfig::default())?;
+    assert_eq!(
+        runtime.dispatch_with_response(&close).into_parts().2,
+        CloseDisposition::Cancel
+    );
+    let request = AccessibilityRequest::snapshot(AccessibilityRequestId::new(4))?;
+    let response = runtime.dispatch_with_response(&SurfaceEvent::Accessibility {
+        timestamp: EventTimestamp::new(4),
+        request,
+    });
+    let Ok(AccessibilityPayload::Snapshot(snapshot)) = response
+        .accessibility_response()
+        .ok_or("missing accessibility response")?
+        .result()
+    else {
+        return Err("missing snapshot".into());
+    };
+    assert!(
+        snapshot
+            .nodes()
+            .iter()
+            .any(|node| node.role() == AccessibilityRole::Status
+                && node.name().contains("Save As")
+                && node.name().contains("Close again"))
+    );
+    assert_eq!(
+        runtime.dispatch_with_response(&close).into_parts().2,
+        CloseDisposition::Allow
+    );
+    assert_eq!(fs::read(&file)?, b"clean");
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_rearms_if_an_inactive_buffer_changes_late() -> Result<(), Box<dyn std::error::Error>>
+{
+    let file = TestFile::new("original")?;
+    let mut app = test_app()?;
+    assert!(app.replace_range(0..0, "scratch ").document_changed);
+    app.open_workspace_path(file.path(), None)?;
+    app.activate_document_tab(0)?;
+    assert!(app.handle_close_request().cancel_close);
+    let document = app
+        .tabs
+        .inactive_document_mut_for_path(file.path())
+        .ok_or("inactive file")?;
+    let mut change = Transaction::new(document.buffer().revision());
+    change.replace(0..0, "late ")?;
+    document.buffer_mut().apply(change)?;
+    assert!(app.handle_close_request().cancel_close);
+    assert!(!app.handle_close_request().cancel_close);
+    assert_eq!(fs::read(file.path())?, b"original");
+    Ok(())
+}
+
+#[test]
+fn scratch_quit_requires_a_warning_that_is_still_visible() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut app = test_app()?;
+    assert!(app.replace_range(0..0, "scratch").document_changed);
+    assert!(app.handle_close_request().cancel_close);
+    let warning = app.local_status.clone();
+    app.local_status = Some(LocalStatus::Workspace(Arc::from("asynchronous status")));
+    assert!(app.handle_close_request().cancel_close);
+    assert_eq!(app.local_status, warning);
+    assert!(!app.handle_close_request().cancel_close);
     Ok(())
 }

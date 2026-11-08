@@ -282,13 +282,7 @@ impl<T> DocumentTabs<T> {
         let index = self
             .index_for_id(id)
             .ok_or(DocumentTabError::InvalidPayloadState)?;
-        if index == self.active {
-            return Ok(active_document);
-        }
-        self.tabs[index]
-            .document
-            .as_ref()
-            .ok_or(DocumentTabError::InvalidPayloadState)
+        self.document_at(index, active_document)
     }
 
     pub(crate) fn id_at(&self, index: usize) -> Option<DocumentTabId> {
@@ -393,10 +387,17 @@ impl<T> DocumentTabs<T> {
         index: usize,
         active_document: &'a T,
     ) -> Result<&'a T, DocumentTabError> {
-        let id = self
-            .id_at(index)
+        let tab = self
+            .tabs
+            .get(index)
             .ok_or(DocumentTabError::InvalidPayloadState)?;
-        self.document_for_id(id, active_document)
+        if index == self.active {
+            Ok(active_document)
+        } else {
+            tab.document
+                .as_ref()
+                .ok_or(DocumentTabError::InvalidPayloadState)
+        }
     }
 
     pub(crate) fn active_workspace_entry(&self) -> Option<usize> {

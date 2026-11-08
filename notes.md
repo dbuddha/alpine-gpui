@@ -13,13 +13,13 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: 3312df1. #676 and #677 merged. M1 remains a limited baseline.
+Main at inspection: 741a8f1. #678 merged, with passing main CI and smoke. M1 remains a limited baseline.
 The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #678 is draft. CI passed at 927b108. Live capture saw the baseline and then an unexpected second fixture window. Diagnose its identity before qualifying the controls.
-- Stage 1 audit on November 8: eight main editor tests passed for atomic save, recovery, quit, session restoration and navigation. A disposable regression reproduced first Quit allowing closure after both save and recovery failed. The quit fix warns and offers Save As. Its regression verifies exact edited and external bytes.
+- Stage 1 scratch fix builds on the #680 file-backed guard at ecf1e21. Clean installed controls with disposable data showed healthy recovery surviving first Quit and restart, but a broken journal lost the untitled edits. Both failing-before regressions reproduced the unsafe first close.
+- The scratch fix checks that this profile’s writer acknowledged the current generation and that the document revisions and restore structure still match. External replacement of the journal is outside that check. Fresh review and installed healthy and degraded journeys are pending.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
 - #676 main CI passed (41663939024); clean bf1b394 was tested. Approved
@@ -36,8 +36,7 @@ The delivery automation is paused. Screen sessions require approval.
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified
   presentations. It did not repair the platform measurement limitation.
-- #666 remains held on physical evidence. Repeated zero timestamps do not
-  justify another blind renderer change or a passing result.
+- #666 at 20bb4a9 has green CI, visible bounded frame recovery and 12 valid matched idle pairs. Scroll qualification is held. Window-filtered capture found an extra 66 by 20 point window. A separate display crop contained a non-opaque sample. No qualified scroll rows exist.
 - #671 at b0f5805 includes reviewed find/IME/sidebar caret-reveal fixes and
   passing CI. Physical idle/scroll qualification remains incomplete; a
   system alert blocked the first run, and the retry stopped for goal review.
@@ -56,8 +55,8 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Prepare bounded fixture-window identification on #678 and request screen access for the diagnostic when ready.
-2. Draft #680 passed its disposable native Save As, cancel, inactive-tab and quit journey on c8c2ab4. Verify installed Dock launch and merged main.
+1. Review the scratch fix and verify first Quit, Save As, second Quit and recovery after restart on a clean installed build.
+2. #680 passed disposable file-backed Save As, cancel, inactive-tab and Quit journeys. Cold Dock launch and merged-main verification remain open.
 3. Qualify the physical method, then run affected PR gates and review each final head.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
