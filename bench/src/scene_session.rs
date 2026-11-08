@@ -305,31 +305,77 @@ impl Session {
         }
         Ok(())
     }
-    fn verify(&mut self, window: &helpers::WindowInfo, deadline: Instant) -> Result<()> {
+    fn verify(
+        &mut self,
+        app: &mut Owned,
+        window: &helpers::WindowInfo,
+        deadline: Instant,
+    ) -> Result<()> {
         let deadline = sample_deadline(Instant::now(), deadline);
         self.require_conditions(deadline)?;
-        if !same_window(window, &self.window(window.pid, deadline)?) {
+        if !same_window(window, &self.window(app, deadline)?) {
             return Err("fixture visibility or geometry changed".into());
         }
         remaining(deadline)?;
         Ok(())
     }
-    fn window(&mut self, pid: i32, deadline: Instant) -> Result<helpers::WindowInfo> {
+    fn window(&mut self, app: &mut Owned, deadline: Instant) -> Result<helpers::WindowInfo> {
+        let pid = i32::try_from(app.child.id()).map_err(|e| e.to_string())?;
         let list = helpers::parse_window_list(&self.call(helpers::WINDOW, &["list"], deadline)?)?;
-        if list
-            .windows
-            .iter()
-            .filter(|w| w.pid == pid && w.layer == 0 && w.alpha > 0.0)
-            .count()
-            != 1
-        {
-            return Err("fixture does not own exactly one eligible window".into());
-        }
-        match analysis::visibility(&list, pid, 100.0) {
-            analysis::Visibility::Visible(window) => Ok(window),
-            other => Err(other.describe()),
-        }
+        select_fixture_window(&list, pid, |command| {
+            let end = sample_deadline(Instant::now(), deadline);
+            self.require_conditions(end)?;
+            inspect_stop(app, command, end)
+        })
     }
+}
+
+fn select_fixture_window(
+    list: &helpers::WindowList,
+    pid: i32,
+    inspect: impl FnOnce(&str) -> Result<()>,
+) -> Result<helpers::WindowInfo> {
+    let eligible = list
+        .windows
+        .iter()
+        .filter(|w| w.pid == pid && w.layer == 0 && w.alpha > 0.0);
+    let count = eligible.clone().count();
+    if count != 1 {
+        let mut command = String::from("inspect-stop");
+        for window in eligible.take(4) {
+            write!(&mut command, " {}", window.id).map_err(|e| e.to_string())?;
+        }
+        command.push('\n');
+        let inspection = inspect(&command);
+        return Err(format!(
+            "fixture does not own exactly one eligible window (count={count}, command={}, inspection={inspection:?})",
+            command.trim_end()
+        ));
+    }
+    match analysis::visibility(list, pid, 100.0) {
+        analysis::Visibility::Visible(window) => Ok(window),
+        other => Err(other.describe()),
+    }
+}
+
+fn inspect_stop(app: &mut Owned, command: &str, deadline: Instant) -> Result<()> {
+    remaining(deadline)?;
+    app.send(command)?;
+    while !app.done()? {
+        thread::sleep(remaining(deadline)?.min(POLL));
+    }
+    remaining(deadline)?;
+    let output = app.output()?;
+    if !output
+        .lines()
+        .any(|line| line.starts_with("scene-inspect-end\t"))
+        || !output
+            .lines()
+            .any(|line| line.starts_with("scene-cleanup\texact=true\t"))
+    {
+        return Err("inspection or exact teardown record unavailable".into());
+    }
+    Ok(())
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -462,7 +508,7 @@ fn wait_for_baseline(
         if Instant::now() >= next_check {
             let start = Instant::now();
             next_check = start + Duration::from_secs(1);
-            session.verify(window, sample_deadline(start, baseline_deadline))?;
+            session.verify(app, window, sample_deadline(start, baseline_deadline))?;
         }
         if app.done()? || capture.done()? {
             return Err("child ended before baseline".into());
@@ -521,16 +567,13 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         &["activate", "--pid", &pid.to_string()],
         ready_deadline,
     )?;
-    let window = session.window(
-        i32::try_from(pid).map_err(|e| e.to_string())?,
-        ready_deadline,
-    )?;
+    let window = session.window(&mut app, ready_deadline)?;
     let region = region(&window)?;
-    session.verify(&window, deadline)?;
+    session.verify(&mut app, &window, deadline)?;
     let capture_deadline = (Instant::now() + Duration::from_secs(10)).min(deadline);
     let mut capture = start_capture(&session.helpers, dir, pid, window.id, region)?;
     wait_for_baseline(session, &mut app, &mut capture, &window, region, deadline)?;
-    session.verify(&window, capture_deadline)?;
+    session.verify(&mut app, &window, capture_deadline)?;
     let (tick, timebase) =
         helpers::parse_now(&session.call(helpers::WINDOW, &["now"], capture_deadline)?)?;
     physical_evidence::clock_matches(&capture.output()?, tick, timebase)?;
@@ -541,7 +584,7 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         if Instant::now() >= next_check {
             let start = Instant::now();
             next_check = start + Duration::from_secs(1);
-            session.verify(&window, sample_deadline(start, capture_deadline))?;
+            session.verify(&mut app, &window, sample_deadline(start, capture_deadline))?;
         }
         if app.done()? {
             return Err("fixture ended during capture".into());
@@ -551,7 +594,7 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         }
         thread::sleep(poll_delay(Instant::now(), next_check, capture_deadline)?);
     }
-    session.verify(&window, deadline)?;
+    session.verify(&mut app, &window, deadline)?;
     app.send("stop\n")?;
     let drain_deadline = (Instant::now() + Duration::from_secs(5)).min(deadline);
     while !app.done()? {
@@ -752,6 +795,68 @@ mod tests {
             width: 500.0,
             height: 328.0,
         }
+    }
+    #[test]
+    fn extra_fixture_windows_remain_rejected_after_inspection() {
+        let mut list = helpers::WindowList {
+            front_pid: 2,
+            front_name: "fixture".into(),
+            windows: vec![window()],
+        };
+        assert!(select_fixture_window(&list, 2, |_| unreachable!()).is_ok());
+        let mut other = window();
+        other.pid = 9;
+        other.id = 99;
+        other.order = 8;
+        list.windows.push(other);
+        for id in 4..=8 {
+            let mut w = window();
+            w.id = id;
+            w.width = 66.0;
+            w.height = 20.0;
+            list.windows.push(w);
+        }
+        for outcome in [Ok(()), Err("deadline".to_owned())] {
+            let mut called = false;
+            let result = select_fixture_window(&list, 2, |command| {
+                called = true;
+                assert_eq!(command, "inspect-stop 3 4 5 6\n");
+                outcome
+            });
+            assert!(called);
+            assert!(result.is_err_and(|error| {
+                error.contains("does not own exactly one eligible window (count=6")
+            }));
+        }
+    }
+    #[test]
+    fn inspection_requires_owned_exit_and_exact_cleanup() -> Result<()> {
+        for (script, valid) in [
+            (
+                "read -r command; test \"$command\" = 'inspect-stop 3 4' || exit 1; printf 'scene-inspect-end\trequested=2\tresolved=0\nscene-cleanup\texact=true\tfixture\n'",
+                true,
+            ),
+            (
+                "read -r command; printf 'scene-inspect-end\trequested=2\tresolved=0\n'",
+                false,
+            ),
+            (
+                "read -r command; printf 'scene-cleanup\texact=true\tfixture\n'",
+                false,
+            ),
+        ] {
+            let mut owned = Owned::spawn(Path::new("/bin/sh"), &["-c", script], 4096, None, None)?;
+            assert_eq!(
+                inspect_stop(
+                    &mut owned,
+                    "inspect-stop 3 4\n",
+                    Instant::now() + Duration::from_secs(1)
+                )
+                .is_ok(),
+                valid
+            );
+        }
+        Ok(())
     }
     #[test]
     fn central_strip_and_backing_geometry_are_exact() -> Result<()> {

@@ -1,7 +1,7 @@
 ---
 role: current project state and continuation
 author: Deepak Buddha
-updated: 2026-11-03
+updated: 2026-11-08
 authority: observed repository state; project.md owns acceptance
 related: [AGENTS.md, project.md, apps/alpine-editor/AGENTS.md, bench/AGENTS.md, ARCHIVE.md]
 stage: 1, evidence and stability
@@ -44,7 +44,7 @@ The delivery automation is paused. New screen sessions require approval.
   captured 15 valid baseline-A frames, then rejected an extra same-PID 66x20
   window over the title-bar area. No action or negative controls ran; no normal
   teardown record exists. The owned fixture exited. Its identity is unproven;
-  do not ignore small windows. Raw evidence: /tmp/alpine-scene-session-678-20261103-approved2.
+  do not ignore small windows. The temporary raw trace expired. The reviewed run summary is in #678.
 - The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
   Native submissions still have zero qualified presentations. Metal hold unchanged.
 
@@ -71,8 +71,8 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Identify the extra fixture window with focused visual/AX evidence in a new
-   approved session. Preserve rejection until its role and geometry are known.
+1. Review the bounded AppKit lookup of up to four rejected fixture window IDs.
+   A new approved session must establish the extra window identity and teardown.
 2. Review any proposed eligibility change and obtain approval for gate relaxation;
    then rebuild clean tools and run positive/stale/wrong controls. Keep #678 draft.
 3. Qualify the method, then rerun affected final-head PR gates and review.

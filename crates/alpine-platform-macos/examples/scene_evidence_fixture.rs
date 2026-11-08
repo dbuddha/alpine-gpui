@@ -7,6 +7,7 @@ mod protocol {
     pub enum Command {
         Transition(u32, u64),
         Stop,
+        InspectStop(Vec<u32>),
     }
     pub fn read(reader: &mut impl Read, transitioned: &mut bool) -> Result<Command, String> {
         let mut line = Vec::with_capacity(96);
@@ -18,6 +19,20 @@ mod protocol {
                     return Ok(Command::Stop);
                 }
                 let parts: Vec<_> = text.split(' ').collect();
+                if parts[0] == "inspect-stop" {
+                    if parts.len() > 5 {
+                        return Err("inspection exceeds four window IDs".into());
+                    }
+                    let mut ids = Vec::with_capacity(4);
+                    for raw in &parts[1..] {
+                        let id = raw.parse::<u32>().map_err(|e| e.to_string())?;
+                        if id == 0 || ids.contains(&id) {
+                            return Err("invalid inspection window ID".into());
+                        }
+                        ids.push(id);
+                    }
+                    return Ok(Command::InspectStop(ids));
+                }
                 if parts.len() != 3 || parts[0] != "transition" || *transitioned {
                     return Err("expected one transition WINDOW_ID MACH_TICK, then stop".into());
                 }
@@ -68,6 +83,29 @@ mod protocol {
             Ok(())
         }
         #[test]
+        fn inspection_is_bounded_and_available_before_or_after_action() -> Result<(), String> {
+            for mut changed in [false, true] {
+                assert_eq!(
+                    read(&mut &b"inspect-stop 12 34\n"[..], &mut changed)?,
+                    Command::InspectStop(vec![12, 34])
+                );
+            }
+            assert_eq!(
+                read(&mut &b"inspect-stop\n"[..], &mut false)?,
+                Command::InspectStop(Vec::new())
+            );
+            for bad in [
+                "inspect-stop 0\n",
+                "inspect-stop 4 4\n",
+                "inspect-stop 1 2 3 4 5\n",
+                "inspect-stop 4294967296\n",
+                "inspect-stop 4",
+            ] {
+                assert!(read(&mut bad.as_bytes(), &mut false).is_err());
+            }
+            Ok(())
+        }
+        #[test]
         fn independent_controls() -> Result<(), String> {
             let baseline = levels("positive", false)?;
             for name in ["positive", "stale", "wrong"] {
@@ -94,6 +132,44 @@ mod native {
         time::{Duration, Instant},
     };
     type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+    fn inspect_windows(ids: &[u32]) -> Result {
+        let mtm = objc2::MainThreadMarker::new().ok_or("inspection requires main thread")?;
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        let mut resolved = 0;
+        for id in ids {
+            let Some(window) = app.windowWithWindowNumber(isize::try_from(*id)?) else {
+                println!("scene-inspect\tcg_id={id}\tstatus=unresolved");
+                continue;
+            };
+            let number = window.windowNumber();
+            if u32::try_from(number) != Ok(*id) {
+                println!("scene-inspect\tcg_id={id}\tstatus=unresolved\tappkit_id={number}");
+                continue;
+            }
+            let object: &objc2::runtime::AnyObject = &window;
+            let bytes = object.class().name().to_bytes();
+            let class = if bytes.len() <= 96 && bytes.iter().all(u8::is_ascii_graphic) {
+                std::str::from_utf8(bytes)?
+            } else {
+                "unresolved"
+            };
+            let parent = window.parentWindow().map(|parent| parent.windowNumber());
+            let frame = window.frame();
+            let content = window
+                .contentView()
+                .map(|view| (view.frame(), view.bounds()));
+            println!(
+                "scene-inspect\tcg_id={id}\tappkit_id={number}\tclass={class}\tparent_id={parent:?}\tframe_appkit_screen={frame:?}\tcontent_frame_and_bounds_local={content:?}"
+            );
+            resolved += 1;
+        }
+        println!(
+            "scene-inspect-end\trequested={}\tresolved={resolved}",
+            ids.len()
+        );
+        std::io::stdout().flush()?;
+        Ok(())
+    }
     fn chart(control: &str, changed: bool) -> Result<Scene> {
         let mut builder = SceneBuilder::new(
             SceneRevision::new(if changed { 2 } else { 1 }),
@@ -203,7 +279,7 @@ mod native {
                 let mut input = std::io::stdin().lock();
                 for _ in 0..3 {
                     let command = protocol::read(&mut input, &mut transitioned);
-                    let stop = !command.as_ref().is_ok_and(|c| *c != Command::Stop);
+                    let stop = !matches!(command, Ok(Command::Transition(_, _)));
                     if tx.try_send(command).is_err() || stop {
                         break;
                     }
@@ -216,6 +292,7 @@ mod native {
                         present(&surface, &control, true, Some((window, tick)))?;
                     }
                     Ok(Ok(Command::Stop)) => return Ok(()),
+                    Ok(Ok(Command::InspectStop(ids))) => return inspect_windows(&ids),
                     Ok(Err(error)) => return Err(error.into()),
                     Err(mpsc::TryRecvError::Disconnected) => {
                         return Err("command stream ended before stop".into());
