@@ -1,7 +1,11 @@
 ---
 scope: framework crates under crates/
+role: framework operating rules
+author: Deepak Buddha
+authority: ../project.md
+related: [../AGENTS.md, ../project.md, ../notes.md]
 parent: ../AGENTS.md
-updated: 2026-10-17
+updated: 2026-11-03
 known_defects:
   - "hosted CI: a resumed display link may never call back, so a pending frame never starts (0 submissions; runs 37150303820, 37223087925; editor native_process). Now bounded: three link restarts, then a zero-submission cancel without a latched error; unproven whether a restart revives the link"
   - "unverified: applicationShouldTerminate always replies TerminateCancel and quits through window close, so a system logout or restart is likely cancelled"
@@ -9,8 +13,10 @@ known_defects:
 
 # Framework internals
 
-Rules for changes under `crates/`. The root AGENTS.md owns the invariants and
-budgets; this file owns how the framework keeps them.
+Rules for changes under `crates/`. Read ../project.md and ../notes.md first. Root AGENTS.md owns invariants;
+project.md owns acceptance and budgets. This file owns local mechanisms.
+Framework performance remains a constraint throughout editor delivery; formal
+GPUI comparisons follow daily-driver features in stage 5.
 
 ## Crate map
 

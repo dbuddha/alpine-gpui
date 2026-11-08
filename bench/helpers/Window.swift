@@ -18,7 +18,7 @@ struct WindowRecord {
     let bounds: CGRect
 }
 
-func onScreenWindows() -> [WindowRecord] {
+func onScreenWindows(exact: Bool = false) -> [WindowRecord] {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return []
@@ -29,8 +29,11 @@ func onScreenWindows() -> [WindowRecord] {
               let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
               let boundsEntry = entry[kCGWindowBounds as String] as? NSDictionary,
               let bounds = CGRect(dictionaryRepresentation: boundsEntry as CFDictionary) else {
+            if exact { return [] }
             continue
         }
+        if exact && (entry[kCGWindowLayer as String] as? NSNumber == nil
+            || entry[kCGWindowAlpha as String] as? NSNumber == nil) { return [] }
         records.append(WindowRecord(
             order: order,
             id: id,
@@ -56,12 +59,13 @@ func rounded(_ value: CGFloat) -> String {
     String(Int(value.rounded()))
 }
 
-func emitWindow(_ record: WindowRecord) {
+func emitWindow(_ record: WindowRecord, exact: Bool) {
+    let value: (CGFloat) -> String = exact ? { String(Double($0)) } : rounded
     Output.emit([
         "window", String(record.order), String(record.id), String(record.pid),
         record.owner, String(record.layer), String(record.alpha),
-        rounded(record.bounds.minX), rounded(record.bounds.minY),
-        rounded(record.bounds.width), rounded(record.bounds.height),
+        value(record.bounds.origin.x), value(record.bounds.origin.y),
+        value(record.bounds.width), value(record.bounds.height),
     ])
 }
 
@@ -70,10 +74,10 @@ func qualifies(_ record: WindowRecord, pid: pid_t, minimumSide: CGFloat) -> Bool
         && record.bounds.width >= minimumSide && record.bounds.height >= minimumSide
 }
 
-func list() {
+func list(exact: Bool) {
     let front = frontmostApplication()
     Output.emit(["front", String(front.pid), front.name])
-    onScreenWindows().forEach(emitWindow)
+    onScreenWindows(exact: exact).forEach { emitWindow($0, exact: exact) }
 }
 
 func waitForWindow(_ options: inout Options) throws {
@@ -301,9 +305,9 @@ struct WindowMain {
         runHelper {
             var options = try Options(Array(CommandLine.arguments.dropFirst()))
             switch options.command {
-            case "list":
+            case "list", "scene-list":
                 try options.finish()
-                list()
+                list(exact: options.command == "scene-list")
             case "wait": try waitForWindow(&options)
             case "activate": try activate(&options)
             case "display":
