@@ -18,7 +18,8 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #666 follows current main. Verify bounded cancellation, visible recovery when the link resumes, native teardown and matched idle/scroll behavior.
+- #666 follows current main. The `scene-session --ended-silence` case passed offline checks and review.
+  Verify visible recovery and matched idle/scroll on a clean final head.
 - Draft #680 protects dirty path-backed buffers. Its clean installed release passed native Open, failed-save Quit, canceled Save As, rescue and missing-file/tab-switch journeys with disposable data. Cold Dock launch remains open.
 - The main editor suite passed 707 tests with three ignored. The November 8 audit also passed eight focused tests for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
@@ -35,6 +36,8 @@ The delivery automation is paused. Screen sessions require approval.
 ## Evidence and blockers
 
 - #678 head c91ca53 passed all three controls in one set. Positive showed A then B, stale showed A after its admission witness, and wrong showed the expected invalid pattern. Each recorded attached final proof, capture stop and exact native teardown.
+- Main 741a8f1 CI passed. The clean release passed disposable edit/save, fresh-process reopen with visible saved text, and normal quit.
+- A single 60.218 s main idle interval had zero new recorder submissions. Same-PID samples bracketed 92.252 s, with one completed startup attempt. See bench/results/stability/741a8f1-idle-recorder-method. Matched trials are still required.
 - The main checkout retains raw results under bench/results/scene-inspection/alpine-scene-c91ca53-nov08. The fixed-scene method passed on the reference Mac. Typing, matched performance and the Metal timestamp hold require separate evidence.
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified
@@ -59,7 +62,11 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Exercise the B scene on #666 after bounded display-link silence. Verify restart and submission counters, timer disarm and cleanup.
+1. In an approved session run #666’s single ended-silence case. It injects
+   35 pending-silence ticks immediately before B, services window inspections
+   while B waits, and requires 1–3 restarts, a resumed callback, one eligible
+   submitted B, timer/slot/byte drain, visible A-to-B and exact teardown.
+   The original Metal timestamp and separate matched idle/scroll checks remain open.
 2. Freeze matched idle/scroll workloads and trial counts. Bound preconditions to five minutes and preserve invalid or adverse results.
 3. Qualify remaining stability PRs individually and verify each merged head.
 4. Complete stability scenarios and give Deepak a build/test guide for five

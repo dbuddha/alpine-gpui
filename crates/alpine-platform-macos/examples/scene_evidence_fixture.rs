@@ -69,10 +69,10 @@ mod protocol {
     pub fn levels(control: &str, transitioned: bool) -> Result<[f32; 5], String> {
         let mut levels = [0.0, 0.18, 0.5, 0.75, 1.0];
         match (control, transitioned) {
-            ("positive", true) => levels.reverse(),
+            ("positive" | "ended-silence", true) => levels.reverse(),
             ("wrong", true) => levels = [0.5; 5],
-            ("positive" | "stale" | "wrong", _) => (),
-            _ => return Err("expected positive, stale or wrong control".into()),
+            ("positive" | "stale" | "wrong" | "ended-silence", _) => (),
+            _ => return Err("expected positive, stale, wrong or ended-silence control".into()),
         }
         Ok(levels)
     }
@@ -157,10 +157,11 @@ mod protocol {
         #[test]
         fn independent_controls() -> Result<(), String> {
             let baseline = levels("positive", false)?;
-            for name in ["positive", "stale", "wrong"] {
+            for name in ["positive", "stale", "wrong", "ended-silence"] {
                 assert_eq!(levels(name, false)?, baseline);
             }
             assert_eq!(levels("positive", true)?, [1.0, 0.75, 0.5, 0.18, 0.0]);
+            assert_eq!(levels("ended-silence", true)?, levels("positive", true)?);
             assert_eq!(levels("stale", true)?, baseline);
             assert_eq!(levels("wrong", true)?, [0.5; 5]);
             assert!(levels("unknown", true).is_err());
@@ -173,7 +174,9 @@ mod protocol {
 mod native {
     use super::protocol::{self, Command};
     use alpine_core::{LinearRgba, Point, Rect, Size};
-    use alpine_platform_macos::{NativeSurface, SurfaceDescriptor, native_validation};
+    use alpine_platform_macos::{
+        NativeSurface, SurfaceDescriptor, SurfaceSnapshot, native_validation,
+    };
     use alpine_scene::{Primitive, Scene, SceneBuilder, SceneRevision};
     use std::{
         io::Write as _,
@@ -365,18 +368,19 @@ mod native {
         }
         Ok(builder.finish())
     }
-    fn present(
+    fn submit(
         surface: &NativeSurface,
         control: &str,
         changed: bool,
         action: Option<(u32, u64)>,
-    ) -> Result {
+    ) -> Result<(SurfaceSnapshot, u64)> {
+        let scene = chart(control, changed)?;
+        let clear = LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?;
         let previous = surface.snapshot();
-        let before = previous.submission_count();
-        surface.request_frame(
-            chart(control, changed)?,
-            LinearRgba::new(0.0, 0.0, 0.0, 1.0).ok_or("clear")?,
-        )?;
+        if control == "ended-silence" && changed {
+            native_validation::inject_pending_display_link_silence(surface, Some(35));
+        }
+        let revision = surface.request_frame(scene, clear)?.get();
         if let Some((window, tick)) = action {
             println!(
                 "scene-action\talpine-scene-diagnostic/v1\t{}\t{window}\t{tick}\tA\tB",
@@ -384,7 +388,25 @@ mod native {
             );
             std::io::stdout().flush()?;
         }
+        Ok((previous, revision))
+    }
+    fn present(
+        surface: &NativeSurface,
+        control: &str,
+        changed: bool,
+        action: Option<(u32, u64)>,
+    ) -> Result {
+        let (previous, revision) = submit(surface, control, changed, action)?;
         native_validation::run_until_frame_terminal(surface, Duration::from_secs(3));
+        terminal(surface, previous, revision, changed).map(|_| ())
+    }
+    fn terminal(
+        surface: &NativeSurface,
+        previous: SurfaceSnapshot,
+        revision: u64,
+        changed: bool,
+    ) -> Result<SurfaceSnapshot> {
+        let before = previous.submission_count();
         let s = surface.snapshot();
         let error = surface.take_error()?;
         println!(
@@ -404,7 +426,8 @@ mod native {
             return Err(error.into());
         }
         let terminal = s.last_terminal().ok_or("missing terminal outcome")?;
-        if terminal.requested_revision().get() != if changed { 2 } else { 1 }
+        if revision != if changed { 2 } else { 1 }
+            || terminal.requested_revision().get() != revision
             || previous
                 .last_terminal()
                 .is_some_and(|old| old.attempt() >= terminal.attempt())
@@ -419,7 +442,88 @@ mod native {
         {
             return Err("native submission or drain failed; see scene-native".into());
         }
-        Ok(())
+        Ok(s)
+    }
+    struct PendingSilence {
+        previous: SurfaceSnapshot,
+        revision: u64,
+        progress: native_validation::FrameProgressEvidence,
+        window: u32,
+        issued: u64,
+        deadline: Instant,
+    }
+    impl PendingSilence {
+        fn start(surface: &NativeSurface, window: u32, issued: u64) -> Result<Self> {
+            let progress = native_validation::frame_progress_evidence(surface);
+            if progress.timer_armed() {
+                return Err("A did not disarm its progress timer".into());
+            }
+            let (previous, revision) =
+                submit(surface, "ended-silence", true, Some((window, issued)))?;
+            Ok(Self {
+                previous,
+                revision,
+                progress,
+                window,
+                issued,
+                deadline: Instant::now() + Duration::from_secs(3),
+            })
+        }
+        fn poll(&self, surface: &NativeSurface) -> Result<bool> {
+            let now = surface.snapshot();
+            let progress = native_validation::frame_progress_evidence(surface);
+            if Instant::now() >= self.deadline {
+                let error = surface.take_error()?;
+                return Err(format!(
+                    "pending recovery timed out: {now:?}, {progress:?}, error={error:?}"
+                )
+                .into());
+            }
+            if now
+                .last_terminal()
+                .is_none_or(|terminal| terminal.requested_revision().get() != self.revision)
+                || now.occupied_frame_slots() != 0
+                || now.submitted_frame_slots() != 0
+                || now.current_retained_bytes() != 0
+                || !now.display_link_paused()
+                || progress.timer_armed()
+            {
+                return Ok(false);
+            }
+            let now = terminal(surface, self.previous, self.revision, true)?;
+            let end = now.last_terminal().ok_or("missing recovered terminal")?;
+            println!(
+                "scene-recovery\talpine-pending-silence/v1\t{}\t{}\t{}\t35\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}",
+                std::process::id(),
+                self.window,
+                self.issued,
+                self.revision,
+                end.frame_revision().get(),
+                progress
+                    .timer_ticks()
+                    .checked_sub(self.progress.timer_ticks())
+                    .ok_or("regressing timer ticks")?,
+                progress
+                    .link_restarts()
+                    .checked_sub(self.progress.link_restarts())
+                    .ok_or("regressing restarts")?,
+                now.callback_count()
+                    .checked_sub(self.previous.callback_count())
+                    .ok_or("regressing callbacks")?,
+                end.submission_count(),
+                end.present_call_count(),
+                end.eligible_at_commit(),
+                end.outcome(),
+                end.retained_bytes(),
+                progress.timer_armed(),
+                progress
+                    .silenced_updates()
+                    .checked_sub(self.progress.silenced_updates())
+                    .ok_or("regressing silenced updates")?
+            );
+            std::io::stdout().flush()?;
+            Ok(true)
+        }
     }
     pub fn run() -> Result {
         let revision =
@@ -469,6 +573,7 @@ mod native {
             });
             let mut next_inspection = 1;
             let mut awaiting_action = true;
+            let mut pending: Option<PendingSilence> = None;
             let ready_drawable = (s.physical_width(), s.physical_height());
             while Instant::now() < deadline {
                 native_validation::drain_run_loop(|| false, 1, Duration::from_millis(10));
@@ -479,10 +584,19 @@ mod native {
                         (current.physical_width(), current.physical_height()),
                     )?;
                 }
+                if let Some(frame) = &pending
+                    && frame.poll(&surface)?
+                {
+                    pending = None;
+                }
                 match rx.try_recv() {
                     Ok(Ok(Command::Transition(window, tick))) => {
                         awaiting_action = false;
-                        present(&surface, &control, true, Some((window, tick)))?;
+                        if control == "ended-silence" {
+                            pending = Some(PendingSilence::start(&surface, window, tick)?);
+                        } else {
+                            present(&surface, &control, true, Some((window, tick)))?;
+                        }
                     }
                     Ok(Ok(Command::Sharing(seq, main, child))) => {
                         if seq != next_inspection {
@@ -496,6 +610,9 @@ mod native {
                             std::process::id()
                         );
                         std::io::stdout().flush()?;
+                    }
+                    Ok(Ok(Command::Stop)) if pending.is_some() => {
+                        return Err("stop before recovery drained".into());
                     }
                     Ok(Ok(Command::Stop)) => return Ok(()),
                     Ok(Ok(Command::InspectStop(ids))) => return inspect_windows(&ids),

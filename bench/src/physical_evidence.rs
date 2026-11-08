@@ -375,7 +375,7 @@ pub fn frozen(
     witness: Option<u64>,
 ) -> Result<(), String> {
     let control = match control {
-        "positive" => None,
+        "positive" | "ended-silence" => None,
         "wrong" | "stale" => Some(control),
         _ => return Err("unknown capture control".into()),
     };
@@ -603,6 +603,18 @@ mod tests {
         }
         let after = trace(&(before + &frame(2, 36, 41, State::A)), 2);
         inspect(&after, Some(ACTION), Some("stale"), Some(35))?;
+        Ok(())
+    }
+    #[test]
+    fn ended_silence_requires_a_before_the_action_and_visible_b_afterward() -> Result<(), String> {
+        frozen(&valid(), ACTION, "ended-silence", None)?;
+        for rows in [
+            frame(1, 20, 21, State::A) + &frame(2, 40, 41, State::A),
+            frame(1, 20, 21, State::B) + &frame(2, 40, 41, State::B),
+            frame(1, 20, 21, State::A) + &frame(2, 30, 31, State::B),
+        ] {
+            assert!(frozen(&trace(&rows, 2), ACTION, "ended-silence", None).is_err());
+        }
         Ok(())
     }
     #[test]
