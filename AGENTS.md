@@ -1,8 +1,8 @@
 ---
 role: operating instructions
 author: Deepak Buddha
-updated: 2026-11-03
-authority: owner-approved project contract, 2026-11-03
+updated: 2026-11-08
+authority: owner-approved project contract of 2026-11-03 and research remit of 2026-11-08
 related: [project.md, notes.md, README.md, ARCHIVE.md]
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
@@ -31,6 +31,9 @@ and acceptance; notes.md owns current state. Scoped rules add local contracts.
 Code is evidence of implemented behavior, not proof that a target is complete.
 Correct stale notes when they disagree with code. ARCHIVE.md is history, never
 an operating rule. The GitHub repository is the project source of truth.
+
+Use [app-builder](skills/app-builder/SKILL.md) for Alpine engineering and comparative research.
+Add owner-named references to the [case studies index](<case studies/README.md>) and link findings to an Alpine experiment. project.md governs adoption.
 
 ## Architecture
 

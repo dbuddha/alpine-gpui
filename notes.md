@@ -13,21 +13,16 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: 3312df1, diagnostic PR #677 merged; main CI passed
-(41669383511). M1 is a limited
-baseline, not proof of typing latency, comparable LSP memory or 120 Hz.
-The delivery automation is paused. New screen sessions require approval.
+Main at inspection: e482b9f. #679 merged the skill, research and project instructions. M1 remains a limited baseline.
+The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- Draft #678 has the bounded native fixture and supervised positive/stale/wrong
-  controls on codex/scene-evidence-fixture. Offline checks do not qualify live
-  capture, visibility, editor typing or native presentation.
-- Clean merged #677 is installed. Approved disposable-data edit/save/reopen
-  smoke passed via LaunchServices. A post-quit UI query reopened the normal
-  profile; normal Quit protected conflicting recovered work. Left open,
-  unedited. Avoid UI queries after quit; verify process exit instead.
-- #676 main CI passed (41663939024); bf1b394 is preserved. Its approved
+- #678 is draft. CI passed at 927b108. Live capture saw the baseline and then an unexpected second fixture window. Diagnose its identity before qualifying the controls.
+- Stage 1 audit on November 8: eight main editor tests passed for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
+- Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
+- The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
+- #676 main CI passed (41663939024); clean bf1b394 was tested. Approved
   November 3 smoke passed edit/save/fresh-process reopen/quit via LaunchServices,
   with disposable data and no crash log. Cold Dock launch remains untested;
   native Open appeared, but automated path entry failed. Screen use has ended.
@@ -71,11 +66,9 @@ The delivery automation is paused. New screen sessions require approval.
 
 ## Next steps and decisions
 
-1. Review the bounded AppKit lookup of up to four rejected fixture window IDs.
-   A new approved session must establish the extra window identity and teardown.
-2. Review any proposed eligibility change and obtain approval for gate relaxation;
-   then rebuild clean tools and run positive/stale/wrong controls. Keep #678 draft.
-3. Qualify the method, then rerun affected final-head PR gates and review.
+1. Run the reviewed AppKit lookup on rejected fixture window IDs during an approved session. Record identity and normal teardown, retaining any rejection.
+2. Fix the reproduced first-quit failure and verify the edited buffer, external disk contents and deliberate discard path.
+3. Qualify the physical method, then run affected PR gates and review each final head.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
 
