@@ -54,6 +54,15 @@ are 5/5/10/5 seconds within a 30-second case execution cap.
 Owned process-group termination and socket drain allow up to 0.5 seconds
 cleanup per child after the deadline. No process from the owner is signalled. Output is capped at 2 MiB
 capture, 64 KiB per child stderr/fixture, and 512 KiB helper evidence.
+Supervised alpine-scene-boundary/v1 freezes admission on the sample queue eight seconds
+from its stamped opening tick. The helper reports final sequence, display,
+arrival and freeze ticks, then waits for one matching release and EOF for up
+to one second, inside the existing capture deadline. The supervisor verifies
+the frozen trace, presence, power and attached geometry before release. Capture
+stderr keeps open/freeze/stop records. final-proof.tsv records the verification
+tick and release after the command was written and its pipe closed. scene-end
+carries the measurement freeze tick and final frame count. scene-stopped carries
+the later stopCapture completion tick.
 Source commit, clean tree and executable hashes are retained in stamp.txt.
 Only these first-party binaries are supported. OS scheduling/reaping is an
 external dependency; cleanup failures invalidate the run. Conditions are

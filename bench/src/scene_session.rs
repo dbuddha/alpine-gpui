@@ -1,5 +1,7 @@
 //! Approved-session-only native controls. Results never replace a physical gate.
 
+mod boundary;
+
 use crate::{analysis, gate, helpers, physical_evidence, sharing_indicator::Proof};
 use std::fmt::Write as _;
 use std::{
@@ -660,7 +662,7 @@ fn start_capture(
     Owned::spawn(
         &helpers.join(helpers::CAPTURE),
         &[
-            "scene",
+            "scene-supervised",
             "--pid",
             &pid.to_string(),
             "--window-id",
@@ -789,13 +791,18 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         &mut action,
         (dir, capture_deadline),
     )?;
-    session.verify(&mut app, &window, None, deadline)?;
     app.send("stop\n")?;
     let drain_deadline = (Instant::now() + Duration::from_secs(5)).min(deadline);
+    let mut next_presence = Instant::now();
     while !app.done()? {
         remaining(drain_deadline)?;
-        thread::sleep(POLL);
+        if Instant::now() >= next_presence {
+            next_presence = Instant::now() + Duration::from_secs(1);
+            session.require_conditions(next_presence.min(drain_deadline))?;
+        }
+        thread::sleep(poll_delay(Instant::now(), next_presence, drain_deadline)?);
     }
+    session.require_conditions(deadline)?;
     let native = app.output()?;
     if !capture_started(&Owned::text(&capture.err)?, pid, window.id)? {
         return Err("missing capture-start marker".into());
@@ -813,6 +820,50 @@ struct Issued {
     window: u32,
     tick: u64,
     witness: Option<u64>,
+}
+
+fn pending_freeze(
+    capture: &Owned,
+    pid: u32,
+    window: u32,
+) -> Result<Option<(boundary::Frozen, String)>> {
+    let (seal, stopped) = boundary::records(&Owned::text(&capture.err)?, pid, window, false)?;
+    if stopped.is_some() {
+        return Err("capture stopped before release".into());
+    }
+    let frozen = if let Some(seal) = seal {
+        let trace = capture.output()?;
+        seal.ready(&trace)?.then_some((seal, trace))
+    } else {
+        None
+    };
+    Ok(frozen)
+}
+
+fn release_capture(
+    capture: &mut Owned,
+    seal: &boundary::Frozen,
+    trace: &str,
+    action: &Issued,
+    deadline: Instant,
+    ack: &str,
+) -> Result<()> {
+    let stderr = Owned::text(&capture.err)?;
+    if !capture_started(&stderr, action.pid, action.window)? {
+        return Err("stream-start marker changed".into());
+    }
+    let boundary = boundary::records(&stderr, action.pid, action.window, true)?;
+    if boundary.0.as_ref() != Some(seal)
+        || boundary.1.is_some()
+        || capture.output()? != trace
+        || capture.done()?
+    {
+        return Err("capture changed or ended before release".into());
+    }
+    remaining(deadline)?;
+    capture.send(ack)?;
+    drop(capture.child.stdin.take());
+    Ok(())
 }
 
 fn monitor_capture(
@@ -834,10 +885,47 @@ fn monitor_capture(
             && native.rsplit_once('\n').is_some_and(|(complete, _)| {
                 complete.lines().any(|l| l.starts_with("scene-action\t"))
             });
-        if Instant::now() >= next_check || witness_due {
+        let frozen = pending_freeze(capture, action.pid, window.id)?;
+        if Instant::now() >= next_check || witness_due || frozen.is_some() {
             let start = Instant::now();
             next_check = start + Duration::from_secs(1);
             let end = sample_deadline(start, deadline);
+            if let Some((seal, trace)) = frozen {
+                let accepted = action_record(&native, action.pid, action.window, action.tick)?;
+                let sealed = trace.clone() + &seal.end();
+                physical_evidence::frozen(&sealed, &accepted, control, action.witness)?;
+                let (verified, base) = seal.verify_and_release(
+                    || {
+                        session.verify(app, window, None, end)?;
+                        if app.done()? {
+                            return Err("fixture ended before release".into());
+                        }
+                        let (verified, base) =
+                            helpers::parse_now(&session.call(helpers::WINDOW, &["now"], end)?)?;
+                        physical_evidence::clock_matches(&trace, verified, base)?;
+                        Ok((verified, base))
+                    },
+                    |ack| release_capture(capture, &seal, &trace, action, end, ack),
+                )?;
+                fs::write(
+                    dir.join("final-proof.tsv"),
+                    format!(
+                        "{}scene-verified\t{verified}\t{}\t{}\n",
+                        seal.ack(),
+                        base.numer,
+                        base.denom
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+                let closing = Closing {
+                    seal,
+                    sealed,
+                    verified,
+                    pid: action.pid,
+                    window: action.window,
+                };
+                return closing.wait(session, app, capture, next_check, deadline);
+            }
             session.verify(app, window, None, end)?;
             if witness_due {
                 action_record(&native, action.pid, action.window, action.tick)?;
@@ -862,9 +950,58 @@ fn monitor_capture(
             return Err("fixture ended during capture".into());
         }
         if capture.done()? {
-            return Ok(());
+            return Err("capture exited without frozen verification and release".into());
         }
         thread::sleep(poll_delay(Instant::now(), next_check, deadline)?);
+    }
+}
+
+struct Closing {
+    seal: boundary::Frozen,
+    sealed: String,
+    verified: u64,
+    pid: u32,
+    window: u32,
+}
+impl Closing {
+    fn wait(
+        self,
+        session: &mut Session,
+        app: &mut Owned,
+        capture: &mut Owned,
+        mut next_check: Instant,
+        deadline: Instant,
+    ) -> Result<()> {
+        loop {
+            remaining(deadline)?;
+            if app.done()? {
+                return Err("fixture ended before capture teardown".into());
+            }
+            if capture.done()? {
+                break;
+            }
+            if Instant::now() >= next_check {
+                let start = Instant::now();
+                next_check = start + Duration::from_secs(1);
+                session.require_conditions(sample_deadline(start, deadline))?;
+            }
+            thread::sleep(poll_delay(Instant::now(), next_check, deadline)?);
+        }
+        session.require_conditions(deadline)?;
+        let (observed, base) =
+            helpers::parse_now(&session.call(helpers::WINDOW, &["now"], deadline)?)?;
+        physical_evidence::clock_matches(&self.sealed, observed, base)?;
+        self.complete(&Owned::text(&capture.err)?, &capture.output()?, observed)
+    }
+    fn complete(&self, stderr: &str, trace: &str, observed: u64) -> Result<()> {
+        let (seal, stopped) = boundary::records(stderr, self.pid, self.window, true)?;
+        if seal.as_ref() != Some(&self.seal)
+            || stopped.is_none_or(|t| t <= self.verified || t > observed)
+            || trace != self.sealed
+        {
+            return Err("capture terminal trace or stop-completion mismatch".into());
+        }
+        Ok(())
     }
 }
 
@@ -945,7 +1082,7 @@ fn stamp(fixture: &Path, helpers: &Path, output: &Path) -> Result<String> {
         return Err("helper build stamp is not clean HEAD".into());
     }
     let mut record = format!(
-        "revision={revision}\ntree=clean\nfixture_env=cleared; HOME/CFFIXED_USER_HOME/TMPDIR=disposable; PATH=/usr/bin:/bin; MTL_DEBUG_LAYER=1\nprofile=scale1,central500x40,8seconds,one positive/stale/wrong,no retries\n{helper_stamp}"
+        "revision={revision}\ntree=clean\nfixture_env=cleared; HOME/CFFIXED_USER_HOME/TMPDIR=disposable; PATH=/usr/bin:/bin; MTL_DEBUG_LAYER=1\nprofile=alpine-scene-boundary/v1,scale1,central500x40,8seconds,one positive/stale/wrong,no retries\n{helper_stamp}"
     );
     for path in [
         fixture.to_path_buf(),
@@ -1565,3 +1702,6 @@ if [ -f "$base/listed" ]; then /bin/cat "$base/after"; else : > "$base/listed"; 
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod end_tests;

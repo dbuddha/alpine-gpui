@@ -18,8 +18,8 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #678 is draft. Review the registered-class proof and run the positive, stale
-  and wrong controls on a clean build in a new approved session.
+- #678 is draft. Review the supervised freeze/verify/release protocol offline.
+  Physical qualification and the Metal hold remain open.
 - The main editor suite passed 707 tests with three ignored. The November 8 audit also passed eight focused tests for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
@@ -34,14 +34,14 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Evidence and blockers
 
-- On ca06260 the same fixture child (220511, parent 220503) reported runtime
-  NSLocalWindowSharingWindow during sharing and NSKVONotifying_NSLocalWindowSharingWindow
-  at teardown with identical geometry. The wrapper-only check rejected it after
-  34 baseline A frames. The fixture reported exact cleanup before any transition.
-  Evidence is under bench/results/scene-inspection/alpine-scene-ca06260-live-nov08.
-- The fixture now checks the registered base pointer or exact registered KVO
-  wrapper pointer and direct superclass. Fresh capture must verify this proof,
-  title-bar geometry and the stale control's post-admission display sample.
+- On 6fa5f6b the failed positive control recorded 30 A and 784 B frames, nine
+  verified attached indicators, then an unresolved tenth inspection. Inspect-stop
+  showed no parent and exact teardown. The last display preceded scene-end by
+  25.303 ms. Logs cannot order the tenth check against stopCapture. Evidence:
+  bench/results/scene-inspection/alpine-scene-6fa5f6b-nov08.
+- Supervised boundary/v1 freezes frame admission at the declared cutoff and
+  verifies the final sample with the stream attached before releasing it.
+  The stale control still requires A displayed after its admission witness.
 - The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
   Native submissions still have zero qualified presentations. Metal hold unchanged.
 

@@ -367,6 +367,21 @@ pub fn negative(
     .map(|_| ())
 }
 
+/// Checks the sealed trace before authorizing stream release.
+pub fn frozen(
+    capture: &str,
+    actions: &str,
+    control: &str,
+    witness: Option<u64>,
+) -> Result<(), String> {
+    let control = match control {
+        "positive" => None,
+        "wrong" | "stale" => Some(control),
+        _ => return Err("unknown capture control".into()),
+    };
+    inspect(capture, Some(actions), control, witness).map(|_| ())
+}
+
 /// Checks trace consistency only; the action file is not independent proof.
 pub fn run(capture: &Path, actions: &Path) -> Result<String, String> {
     let observation = replay(
