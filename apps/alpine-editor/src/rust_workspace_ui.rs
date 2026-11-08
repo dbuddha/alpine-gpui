@@ -111,10 +111,16 @@ impl WorkspaceEditPanel {
     }
 
     pub(crate) fn is_publication_pending(&self) -> bool {
-        matches!(
-            self.state,
-            PanelState::Queued { .. } | PanelState::Publishing(_)
-        )
+        self.pending_publication().is_some()
+    }
+
+    pub(crate) fn pending_publication(&self) -> Option<WorkspaceEditIdentity> {
+        match self.state {
+            PanelState::Queued { identity, .. } | PanelState::Publishing(identity) => {
+                Some(identity)
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn open_rename(&mut self) -> Result<bool, WorkspaceEditPanelError> {

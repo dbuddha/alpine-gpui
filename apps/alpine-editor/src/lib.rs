@@ -2149,6 +2149,15 @@ macro_rules! force_workspace_edit_publication_submission_failure {
     };
 }
 
+#[derive(PartialEq)]
+struct CloseWarning {
+    tab: Option<documents::DocumentTabId>,
+    message: Arc<str>,
+    publication: Option<rust_diagnostics::WorkspaceEditIdentity>,
+    authority_revision: u64,
+    dirty_tabs: Vec<(documents::DocumentTabId, u64)>,
+}
+
 struct EditorApp {
     settings: SettingsState,
     settings_reload: settings::SettingsReload,
@@ -2203,7 +2212,7 @@ struct EditorApp {
     clipboard_failures: u64,
     last_save: Option<SaveReport>,
     last_file_error: Option<FileError>,
-    close_attempts: u8,
+    close_warning: Option<CloseWarning>,
     last_clipboard_error: Option<ClipboardError>,
     workspace_failures: u64,
     last_workspace_error: Option<Arc<str>>,
@@ -2221,6 +2230,7 @@ struct EditorApp {
     panes: PaneGrid,
     session_path: Option<PathBuf>,
     recovery: Option<recovery::RecoveryCoordinator>,
+    recovery_generation: Option<u64>,
     last_recovery_error: Option<recovery::RecoveryError>,
     pending_recovery: Vec<Option<recovery::RecoveredDocument>>,
     restore_availability: RestoreAvailability,
@@ -2547,7 +2557,7 @@ impl EditorApp {
             clipboard_failures: 0,
             last_save: None,
             last_file_error: None,
-            close_attempts: 0,
+            close_warning: None,
             last_clipboard_error: None,
             workspace_failures: 0,
             last_workspace_error: None,
@@ -2565,6 +2575,7 @@ impl EditorApp {
             panes,
             session_path: None,
             recovery: None,
+            recovery_generation: None,
             last_recovery_error: None,
             pending_recovery: Vec::new(),
             restore_availability: RestoreAvailability::Strict,
@@ -2943,7 +2954,7 @@ impl EditorApp {
             .map_err(|_| recovery::RecoveryError::Invalid)?;
         let recovery_path = recovery::path_for_session(&path);
         let coordinator = recovery::RecoveryCoordinator::new(recovery_path)?;
-        coordinator.publish(request)?;
+        self.recovery_generation = Some(coordinator.publish(request)?);
         self.session_path = Some(path);
         self.recovery = Some(coordinator);
         self.last_recovery_error = None;
@@ -2956,12 +2967,11 @@ impl EditorApp {
         if self.recovery.is_none() {
             return;
         }
+        self.recovery_generation = None;
         let request = match self.capture_recovery_request() {
             Ok(request) => request,
             Err(error) => {
-                self.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
-                    "Recovery capture failed: {error:?}"
-                ))));
+                self.report_recovery_error(format!("Recovery capture failed: {error:?}"));
                 return;
             }
         };
@@ -2970,6 +2980,7 @@ impl EditorApp {
             .as_ref()
             .ok_or(recovery::RecoveryError::Disconnected)
             .and_then(|coordinator| coordinator.publish(request));
+        self.recovery_generation = result.as_ref().ok().copied();
         let error = result.err().or_else(|| {
             self.recovery
                 .as_ref()
@@ -2978,10 +2989,16 @@ impl EditorApp {
         if error != self.last_recovery_error {
             self.last_recovery_error = error;
             if let Some(error) = error {
-                self.local_status = Some(LocalStatus::Workspace(Arc::from(format!(
-                    "Dirty-buffer recovery degraded: {error}"
-                ))));
+                self.report_recovery_error(format!("Dirty-buffer recovery degraded: {error}"));
             }
+        }
+    }
+
+    fn report_recovery_error(&mut self, message: String) {
+        if self.close_warning.is_none()
+            || !matches!(self.local_status, Some(LocalStatus::CloseBlocked(_)))
+        {
+            self.local_status = Some(LocalStatus::Workspace(Arc::from(message)));
         }
     }
 
@@ -4688,14 +4705,17 @@ impl EditorApp {
             // A second Cmd-Q or Force Quit discards. The first attempt already
             // showed why close was refused; pinning the process after that is
             // how Force Quit of a responding app became a no-op.
-            if self.close_attempts >= 1 {
-                self.close_attempts = 0;
+            if matches!(&self.local_status, Some(LocalStatus::CloseBlocked(shown)) if shown == &message)
+                && self.close_warning.is_some()
+                && self.close_warning.as_ref()
+                    == Some(&self.close_warning_for(index, Arc::clone(&message)))
+            {
+                self.close_warning = None;
                 if let Some(capture) = self.dogfood_capture.as_ref() {
                     capture.capture(self);
                 }
                 return EditorTransition::default();
             }
-            self.close_attempts = 1;
             let mut effect = EventEffect::default();
             if index != self.tabs.active_index() {
                 effect = match self.activate_document_tab(index) {
@@ -4703,6 +4723,7 @@ impl EditorApp {
                     Err(error) => self.record_workspace_error(&error),
                 };
             }
+            self.close_warning = Some(self.close_warning_for(index, Arc::clone(&message)));
             effect = effect.merge(self.set_local_status(LocalStatus::CloseBlocked(message)));
             EditorTransition {
                 effect,
@@ -4710,7 +4731,7 @@ impl EditorApp {
                 cancel_close: true,
             }
         } else {
-            self.close_attempts = 0;
+            self.close_warning = None;
             if let Some(capture) = self.dogfood_capture.as_ref() {
                 capture.capture(self);
             }
@@ -4718,7 +4739,32 @@ impl EditorApp {
         }
     }
 
+    fn close_warning_for(&self, index: usize, message: Arc<str>) -> CloseWarning {
+        let dirty_tabs = (0..self.tabs.len())
+            .filter_map(|index| {
+                let document = self.tabs.document_at(index, &self.document).ok()?;
+                document
+                    .is_dirty()
+                    .then_some((self.tabs.id_at(index)?, document.buffer().revision().get()))
+            })
+            .collect();
+        CloseWarning {
+            tab: self.tabs.id_at(index),
+            message,
+            publication: self.workspace_edits.pending_publication(),
+            authority_revision: self.runtime_document_revision,
+            dirty_tabs,
+        }
+    }
+
+    fn scratch_recovery_is_current(&self) -> bool {
+        self.recovery_generation
+            .zip(self.recovery.as_ref())
+            .is_some_and(|(generation, writer)| writer.confirms(generation, self))
+    }
+
     fn close_blocking_document(&self) -> Option<(usize, Arc<str>)> {
+        let mut durable = None;
         let active = self.tabs.active_index();
         std::iter::once(active)
             .chain((0..self.tabs.len()).filter(|index| *index != active))
@@ -4736,14 +4782,21 @@ impl EditorApp {
                         )),
                     ));
                 }
-                if !document.is_dirty() || !document.is_file() {
+                if !document.is_dirty() {
+                    return None;
+                }
+                let scratch = !document.is_file();
+                let save_as = document.is_unavailable() || (index == active && self.last_file_error.is_some());
+                if scratch && *durable.get_or_insert_with(|| self.scratch_recovery_is_current()) {
                     return None;
                 }
                 let label = self
                     .tabs
                     .label(index)
                     .unwrap_or_else(|| Arc::from("this document"));
-                let message = if document.is_unavailable() || (index == active && self.last_file_error.is_some()) {
+                let message = if scratch {
+                    format!("Recovery is unconfirmed for {label}. Use File > Save As to keep changes. Close again to quit without saving any files.")
+                } else if save_as {
                     format!("Use File > Save As to keep changes in {label}. Close again to quit without saving any files.")
                 } else {
                     format!("Save {label} with Command-S or File > Save As. Close again to quit without saving any files.")
@@ -4826,7 +4879,7 @@ impl EditorApp {
     }
 
     fn clear_armed_close_on_interaction(&mut self, event: &SurfaceEvent) {
-        if self.close_attempts == 0 {
+        if self.close_warning.is_none() {
             return;
         }
         let user_interaction = matches!(
@@ -4843,7 +4896,7 @@ impl EditorApp {
                 | SurfaceEvent::Scroll { .. }
         );
         if user_interaction {
-            self.close_attempts = 0;
+            self.close_warning = None;
         }
     }
 
