@@ -318,7 +318,7 @@ mod validation {
         assert_eq!(after.current_retained_bytes(), 0);
         validate_bounded_accounting(after);
         assert!(after.display_link_paused());
-        // The frame-progress timer exists only while a frame is in flight.
+        // The frame-progress timer exists only for pending or in-flight work.
         assert_eq!(
             native_validation::frame_progress_evidence(&surface),
             native_validation::FrameProgressEvidence::default()

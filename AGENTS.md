@@ -6,10 +6,11 @@ authority: owner-approved project contract of 2026-11-03 and research remit of 2
 related: [project.md, notes.md, README.md, ARCHIVE.md]
 scoped_rules: [crates/AGENTS.md, apps/alpine-editor/AGENTS.md, apps/alpine-editor/src/AGENTS.md, bench/AGENTS.md]
 dev_mac: Mac16,1 M4, built-in ProMotion display, macOS 26.6.2, Command Line Tools only
+stage: 1, evidence and stability
 autonomy: routine branches, PRs and merges with applicable gates green
 ask_first: [paid actions, dependency changes, destructive actions, new subsystem design beyond project.md, public API changes, relaxed invariants, unsafe boundary or allowlist changes, license or copied-source changes, further gate relaxation]
 next:
-  - qualify physical evidence and complete the existing stability PR queue
+  - qualify physical recovery and matched performance for PR 666, then PRs 671, 672 and 674
   - repair semantic typing and equivalent workspace measurement
   - owner stability review and five working days of dogfood
 ---

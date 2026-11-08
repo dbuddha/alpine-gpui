@@ -15,7 +15,7 @@ pub const USAGE: &str = "usage:
   bench run <workload> --app alpine|zed|appkit [--trials N] [--warmup N]
             [--key-interval-ms N] [--keep-homes] [--rust-analyzer PATH] [--dry-run]
             [--wait-idle MINUTES]
-  bench scene-session <native-fixture> <helper-dir> <new-output-dir> (approved screen only)
+  bench scene-session <native-fixture> <helper-dir> <new-output-dir> [--ended-silence] (approved screen only)
   bench scene-evidence <capture.tsv> <action.tsv>  (diagnostic consistency only)
   bench baseline <run-dir> --milestone ID [--note TEXT]
   bench workloads | stamp | fixtures | permissions
@@ -32,7 +32,12 @@ The action sidecar contains exactly one TSV record:
 scene-action<TAB>alpine-scene-diagnostic/v1<TAB>PID<TAB>ID<TAB>MACH_TICK<TAB>A<TAB>B
 scene-session uses the native fixture to record an accepted action.
 Its Mach tick is a command-issued lower bound, not native submission latency.
-One positive/stale/wrong control each; 30 seconds per case; quiet wait <=5 min.
+The default runs positive/stale/wrong once each. --ended-silence runs one A-to-B
+case that suppresses pending display-link updates for 35 timer ticks immediately
+before requesting B. It requires bounded restart,
+a resumed callback, one eligible submitted B, full drain and visible recovery.
+The native diagnostic record is retained in ended-silence/recovery.tsv.
+Each profile allows 30 seconds per case; quiet wait <=5 min.
 No live method or physical gate is qualified by offline tests. A hand-written
 sidecar proves only replay consistency, never physical or typing qualification.
 Capture and replay limits: 2048 frames, 2 MiB capture, 256-byte action file.
@@ -106,6 +111,7 @@ pub enum Command {
         note: String,
     },
     SceneSession {
+        ended_silence: bool,
         fixture: PathBuf,
         helpers: PathBuf,
         output: PathBuf,
@@ -234,12 +240,13 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             }))
         }
         "scene-session" => {
-            let parsed = split(rest, &[], &[])?;
+            let parsed = split(rest, &[], &["ended-silence"])?;
             parsed.exactly(
                 3,
                 "native fixture, helper directory and new output directory",
             )?;
             Ok(Command::SceneSession {
+                ended_silence: parsed.flag("ended-silence"),
                 fixture: PathBuf::from(&parsed.positional[0]),
                 helpers: PathBuf::from(&parsed.positional[1]),
                 output: PathBuf::from(&parsed.positional[2]),
@@ -299,7 +306,8 @@ pub fn execute(command: Command) -> Result<(), String> {
             fixture,
             helpers,
             output,
-        } => crate::scene_session::run(&fixture, &helpers, &output),
+            ended_silence,
+        } => crate::scene_session::run(&fixture, &helpers, &output, ended_silence),
         Command::SceneEvidence { capture, actions } => {
             println!("{}", crate::physical_evidence::run(&capture, &actions)?);
             Ok(())
@@ -427,6 +435,26 @@ mod tests {
         text.split_whitespace().map(ToOwned::to_owned).collect()
     }
 
+    #[test]
+    fn ended_silence_is_an_explicit_scene_session() -> Result<(), String> {
+        assert!(matches!(
+            parse(&args(
+                "scene-session fixture helpers output --ended-silence"
+            ))?,
+            Command::SceneSession {
+                ended_silence: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse(&args("scene-session fixture helpers output"))?,
+            Command::SceneSession {
+                ended_silence: false,
+                ..
+            }
+        ));
+        Ok(())
+    }
     #[test]
     fn scene_session_requires_three_paths() -> Result<(), String> {
         assert!(matches!(

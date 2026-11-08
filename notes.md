@@ -13,14 +13,14 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: e482b9f. #679 merged the skill, research and project instructions. M1 remains a limited baseline.
+Main at inspection: 741a8f1. #678 merged the verified diagnostic controls. M1 remains a limited baseline.
 The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #678 is draft. The positive control passed on 3392090. The stale fixture failed
-  during launch before capture, and the wrong control did not run. Review the
-  bounded pre-pin settling check before a new approved clean run.
+- #666 follows current main. The `scene-session --ended-silence` case passed offline checks and review.
+  Verify visible recovery and matched idle/scroll on a clean final head.
+- Draft #680 protects dirty path-backed buffers. Its clean installed release passed native Open, failed-save Quit, canceled Save As, rescue and missing-file/tab-switch journeys with disposable data. Cold Dock launch remains open.
 - The main editor suite passed 707 tests with three ignored. The November 8 audit also passed eight focused tests for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
@@ -35,17 +35,10 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Evidence and blockers
 
-- On 3392090 the positive control verified A-to-B (335 frames), the frozen final
-  frame while attached, completed capture stop and exact native teardown. The
-  stale process's sole main window changed from (505,342,502,332) to
-  (506,342,500,332) with the same ID 220750 and center. It was rejected before
-  capture or transition. Evidence: bench/results/scene-inspection/alpine-scene-3392090-nov08.
-- The proposed pre-pin check allows that centered launch border only, requires
-  matching samples separated by 250 ms, and retains the five-second deadline.
-  Exact geometry still applies after pinning. Physical qualification is open.
-- The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
-  Native submissions still have zero qualified presentations. Metal hold unchanged.
-
+- #678 head c91ca53 passed all three controls in one set. Positive showed A then B, stale showed A after its admission witness, and wrong showed the expected invalid pattern. Each recorded attached final proof, capture stop and exact native teardown.
+- Main 741a8f1 CI passed. The clean release passed disposable edit/save, fresh-process reopen with visible saved text, and normal quit.
+- A single 60.218 s main idle interval had zero new recorder submissions. Same-PID samples bracketed 92.252 s, with one completed startup attempt. See bench/results/stability/741a8f1-idle-recorder-method. Matched trials are still required.
+- The main checkout retains raw results under bench/results/scene-inspection/alpine-scene-c91ca53-nov08. The fixed-scene method passed on the reference Mac. Typing, matched performance and the Metal timestamp hold require separate evidence.
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified
   presentations. It did not repair the platform measurement limitation.
@@ -69,10 +62,13 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Next steps and decisions
 
-1. After fresh review, run the final clean positive, stale and wrong controls
-   in an approved screen session. Retain all three outcomes.
-2. Fix the reproduced first-quit failure and verify the edited buffer, external disk contents and deliberate discard path.
-3. Qualify the physical method, then run affected PR gates and review each final head.
+1. In an approved session run #666’s single ended-silence case. It injects
+   35 pending-silence ticks immediately before B, services window inspections
+   while B waits, and requires 1–3 restarts, a resumed callback, one eligible
+   submitted B, timer/slot/byte drain, visible A-to-B and exact teardown.
+   The original Metal timestamp and separate matched idle/scroll checks remain open.
+2. Freeze matched idle/scroll workloads and trial counts. Bound preconditions to five minutes and preserve invalid or adverse results.
+3. Qualify remaining stability PRs individually and verify each merged head.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
 

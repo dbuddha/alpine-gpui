@@ -961,6 +961,9 @@ fn monitor_capture(
             let end = sample_deadline(start, deadline);
             if let Some((seal, trace)) = frozen {
                 let accepted = action_record(&native, action.pid, action.window, action.tick)?;
+                if control == "ended-silence" {
+                    recovery_record(&native, action)?;
+                }
                 let sealed = trace.clone() + &seal.end();
                 physical_evidence::frozen(&sealed, &accepted, control, action.witness)?;
                 let (verified, base) = seal.verify_and_release(
@@ -1074,6 +1077,68 @@ impl Closing {
     }
 }
 
+fn recovery_record<'a>(native: &'a str, action: &Issued) -> Result<&'a str> {
+    let mut records = native
+        .lines()
+        .filter(|line| line.starts_with("scene-recovery"));
+    let row = records
+        .next()
+        .ok_or("missing ended-silence terminal evidence")?;
+    if row.len() > 512 || records.next().is_some() {
+        return Err("oversize or duplicate recovery record".into());
+    }
+    let fields: Vec<_> = row.split('\t').collect();
+    let [
+        kind,
+        version,
+        pid,
+        window,
+        tick,
+        silence,
+        requested,
+        drawn,
+        ticks,
+        restarts,
+        callbacks,
+        submits,
+        presents,
+        eligible,
+        outcome,
+        retained,
+        armed,
+        dropped,
+    ] = fields.as_slice()
+    else {
+        return Err("invalid recovery record shape".into());
+    };
+    if *kind != "scene-recovery"
+        || *version != "alpine-pending-silence/v1"
+        || *pid != action.pid.to_string()
+        || *window != action.window.to_string()
+        || *tick != action.tick.to_string()
+        || *silence != "35"
+    {
+        return Err("recovery source or injection mismatch".into());
+    }
+    let number = |v: &str| v.parse::<u64>().map_err(|_| "invalid recovery counter");
+    number(dropped)?;
+    if number(ticks)? < 35
+        || !(1..=3).contains(&number(restarts)?)
+        || number(callbacks)? == 0
+        || *requested != "2"
+        || *drawn != "2"
+        || *submits != "1"
+        || *presents != "1"
+        || *eligible != "true"
+        || !matches!(*outcome, "Failed" | "Presented")
+        || *retained != "0"
+        || *armed != "false"
+    {
+        return Err("ended silence did not recover one eligible B frame and drain".into());
+    }
+    Ok(row)
+}
+
 fn finish_case(
     native: &str,
     captured: &str,
@@ -1096,7 +1161,14 @@ fn finish_case(
     let capture_path = dir.join("capture.tsv");
     let action_path = dir.join("action.tsv");
     let replay = physical_evidence::run(&capture_path, &action_path);
-    let accepted = if control == "positive" {
+    if control == "ended-silence" {
+        fs::write(
+            dir.join("recovery.tsv"),
+            format!("{}\n", recovery_record(native, action)?),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let accepted = if matches!(control, "positive" | "ended-silence") {
         replay.as_ref().map(|_| ()).map_err(Clone::clone)
     } else {
         physical_evidence::negative(&capture_path, &action_path, control, action.witness)
@@ -1110,7 +1182,7 @@ fn finish_case(
     Ok(report)
 }
 
-fn stamp(fixture: &Path, helpers: &Path, output: &Path) -> Result<String> {
+fn stamp(fixture: &Path, helpers: &Path, output: &Path, cases: &str) -> Result<String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1151,7 +1223,7 @@ fn stamp(fixture: &Path, helpers: &Path, output: &Path) -> Result<String> {
         return Err("helper build stamp is not clean HEAD".into());
     }
     let mut record = format!(
-        "revision={revision}\ntree=clean\nfixture_env=cleared; HOME/CFFIXED_USER_HOME/TMPDIR=disposable; PATH=/usr/bin:/bin; MTL_DEBUG_LAYER=1\nprofile=alpine-scene-boundary/v1,scale1,central500x40,8seconds,one positive/stale/wrong,no retries\n{helper_stamp}"
+        "revision={revision}\ntree=clean\nfixture_env=cleared; HOME/CFFIXED_USER_HOME/TMPDIR=disposable; PATH=/usr/bin:/bin; MTL_DEBUG_LAYER=1\nprofile=alpine-scene-boundary/v1,scale1,central500x40,8seconds,one {cases},no retries\n{helper_stamp}"
     );
     for path in [
         fixture.to_path_buf(),
@@ -1187,9 +1259,14 @@ fn stamp(fixture: &Path, helpers: &Path, output: &Path) -> Result<String> {
 }
 
 /// Runs one prospective set of controls after explicit screen-session approval.
-pub fn run(fixture: &Path, helper_dir: &Path, output: &Path) -> Result<()> {
+pub fn run(fixture: &Path, helper_dir: &Path, output: &Path, ended_silence: bool) -> Result<()> {
     fs::create_dir(output).map_err(|e| e.to_string())?;
-    let revision = stamp(fixture, helper_dir, output).inspect_err(|error| {
+    let cases: &[&str] = if ended_silence {
+        &["ended-silence"]
+    } else {
+        &["positive", "stale", "wrong"]
+    };
+    let revision = stamp(fixture, helper_dir, output, &cases.join("/")).inspect_err(|error| {
         let _ = fs::write(
             output.join("result.txt"),
             format!("unavailable: {error}; physical qualification=false\n"),
@@ -1227,7 +1304,7 @@ pub fn run(fixture: &Path, helper_dir: &Path, output: &Path) -> Result<()> {
     }
     let mut report =
         String::from("DIAGNOSTIC ONLY; one run per control; no retries; Metal gate unchanged\n");
-    for control in ["positive", "stale", "wrong"] {
+    for &control in cases {
         let result = session
             .require_conditions(Instant::now() + Duration::from_secs(3))
             .and_then(|()| case(&mut session, fixture, &output.join(control), control));
@@ -1694,6 +1771,59 @@ if [ -f "$base/listed" ]; then /bin/cat "$base/after"; else : > "$base/listed"; 
             assert!(state.observe(w, t, t, end)?.is_none());
         }
         assert!(state.observe(main, end, end, end).is_err());
+        Ok(())
+    }
+    #[test]
+    fn ended_silence_requires_a_new_recovered_terminal_and_bounded_timer_evidence() -> Result<()> {
+        let issued = Issued {
+            pid: 11,
+            window: 22,
+            tick: 33,
+            witness: None,
+        };
+        let good = "scene-recovery\talpine-pending-silence/v1\t11\t22\t33\t35\t2\t2\t37\t1\t12\t1\t1\ttrue\tFailed\t0\tfalse\t100";
+        assert_eq!(recovery_record(good, &issued)?, good);
+        recovery_record(
+            &good
+                .replace("Failed", "Presented")
+                .replace("\t37\t1\t", "\t35\t3\t"),
+            &issued,
+        )?;
+        for (i, bad) in [
+            (1, "other"),
+            (2, "10"),
+            (3, "21"),
+            (4, "34"),
+            (5, "0"),
+            (6, "1"),
+            (7, "1"),
+            (8, "34"),
+            (9, "0"),
+            (9, "4"),
+            (10, "0"),
+            (11, "2"),
+            (12, "0"),
+            (13, "false"),
+            (14, "Cancelled"),
+            (14, "Superseded"),
+            (15, "4"),
+            (16, "true"),
+            (17, "invalid"),
+        ] {
+            let mut row: Vec<_> = good.split('\t').collect();
+            row[i] = bad;
+            assert!(
+                recovery_record(&row.join("\t"), &issued).is_err(),
+                "{i}:{bad}"
+            );
+        }
+        for bad in [
+            String::new(),
+            format!("{good}\n{good}"),
+            format!("{good}\textra"),
+        ] {
+            assert!(recovery_record(&bad, &issued).is_err());
+        }
         Ok(())
     }
     #[test]
