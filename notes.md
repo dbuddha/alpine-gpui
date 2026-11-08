@@ -18,8 +18,8 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #678 is draft. Implement the approved title-bar indicator rule, then review
-  and run the positive, stale and wrong controls on a clean build.
+- #678 is draft. Review the registered-class proof and run the positive, stale
+  and wrong controls on a clean build in a new approved session.
 - The main editor suite passed 707 tests with three ignored. The November 8 audit also passed eight focused tests for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
@@ -34,14 +34,14 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Evidence and blockers
 
-- On bbe37b6 the approved November 8 session identified the 66x20 child as
-  NSKVONotifying_NSLocalWindowSharingWindow, parented to the pinned fixture.
-  Its 512,348 CG origin lies within the 500x332 outer frame at 506,342, above
-  the 500x300 content. The trial rejected it and recorded exact native cleanup.
-  Evidence is under bench/results/scene-inspection/alpine-678-live-inspect-nov08.
-- Deepak approved only that verified class/parent/title-bar case after capture
-  start. Every observed child requires fresh proof with matching CG geometry.
-  Stale requires an A display after an independent, post-admission clock read.
+- On ca06260 the same fixture child (220511, parent 220503) reported runtime
+  NSLocalWindowSharingWindow during sharing and NSKVONotifying_NSLocalWindowSharingWindow
+  at teardown with identical geometry. The wrapper-only check rejected it after
+  34 baseline A frames. The fixture reported exact cleanup before any transition.
+  Evidence is under bench/results/scene-inspection/alpine-scene-ca06260-live-nov08.
+- The fixture now checks the registered base pointer or exact registered KVO
+  wrapper pointer and direct superclass. Fresh capture must verify this proof,
+  title-bar geometry and the stale control's post-admission display sample.
 - The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
   Native submissions still have zero qualified presentations. Metal hold unchanged.
 

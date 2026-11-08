@@ -1,7 +1,8 @@
 //! Evidence for the capture-owned title-bar indicator of the pinned fixture.
 
 use crate::helpers::WindowInfo;
-const CLASS: &str = "NSKVONotifying_NSLocalWindowSharingWindow";
+const BASE: &str = "NSLocalWindowSharingWindow";
+const KVO: &str = "NSKVONotifying_NSLocalWindowSharingWindow";
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,13 +55,14 @@ impl Proof {
             return Err("oversize inspection reply".into());
         }
         let parts: Vec<_> = line.split('\t').collect();
-        if parts.len() != 10
+        if parts.len() != 12
             || parts[0] != "scene-sharing"
             || parts[1] != seq.to_string()
             || parts[2] != main.pid.to_string()
             || parts[3] != main.id.to_string()
             || parts[4] != child.id.to_string()
-            || parts[5] != CLASS
+            || parts[10] != BASE
+            || !matches!((parts[5], parts[11]), (BASE, "exact") | (KVO, "kvo-direct"))
             || parts[6] != main.id.to_string()
         {
             return Err("unresolved or mismatched indicator identity".into());

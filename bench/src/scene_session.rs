@@ -1068,7 +1068,7 @@ mod tests {
         child.width = 66.0;
         child.height = 20.0;
         let reply = format!(
-            "scene-sharing\t1\t{pid}\t220325\t220333\tNSKVONotifying_NSLocalWindowSharingWindow\t220325\t506,342,500,332\t506,374,500,300\t512,348,66,20"
+            "scene-sharing\t1\t{pid}\t220325\t220333\tNSKVONotifying_NSLocalWindowSharingWindow\t220325\t506,342,500,332\t506,374,500,300\t512,348,66,20\tNSLocalWindowSharingWindow\tkvo-direct"
         );
         (main, child, reply)
     }
@@ -1115,6 +1115,37 @@ mod tests {
         assert!(capture_started(marker, 23, 35).is_err());
         assert!(capture_started(marker, 24, 34).is_err());
         assert!(capture_started(&marker.repeat(2), 24, 35).is_err());
+        Ok(())
+    }
+    #[test]
+    fn recorded_base_indicator_and_verified_kvo_view_have_one_identity() -> Result<()> {
+        let (mut main, mut child, _) = observed(37968);
+        main.id = 220_503;
+        child.id = 220_511;
+        let row = "scene-sharing\t1\t37968\t220503\t220511\tNSLocalWindowSharingWindow\t220503\t506,342,500,332\t506,374,500,300\t512,348,66,20";
+        assert!(Proof::read(row, 1, &main, &child).is_err());
+        let exact = format!("{row}\tNSLocalWindowSharingWindow\texact");
+        let wrapped = exact
+            .replacen(
+                "\tNSLocalWindowSharingWindow\t220503",
+                "\tNSKVONotifying_NSLocalWindowSharingWindow\t220503",
+                1,
+            )
+            .replace("\texact", "\tkvo-direct");
+        assert_eq!(
+            Proof::read(&exact, 1, &main, &child)?,
+            Proof::read(&wrapped, 1, &main, &child)?
+        );
+        for invalid in [
+            exact.replace("\texact", "\tkvo-direct"),
+            wrapped.replace("\tkvo-direct", "\texact"),
+            wrapped.replace("KVONotifying_", "OtherSubclass_"),
+            wrapped.replace("KVONotifying_", "KVONotifying_NSKVONotifying_"),
+            exact.replace("\tNSLocalWindowSharingWindow\texact", "\tunresolved\texact"),
+            wrapped.replace("\tkvo-direct", "\tunresolved"),
+        ] {
+            assert!(Proof::read(&invalid, 1, &main, &child).is_err());
+        }
         Ok(())
     }
     #[test]
@@ -1226,7 +1257,7 @@ mod tests {
     fn exercise_start_samples(kind: &str) -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = crate::test_dir(&format!("sharing-list-race-{kind}"))?;
-        let fixture = r#"printf 'ready\n'; while read -r verb seq main child; do test "$verb" = sharing || exit 0; printf 'scene-sharing\t%s\t%s\t%s\t%s\tNSKVONotifying_NSLocalWindowSharingWindow\t%s\t506,342,500,332\t506,374,500,300\t512,348,66,20\n' "$seq" "$$" "$main" "$child" "$main"; done"#;
+        let fixture = r#"printf 'ready\n'; while read -r verb seq main child; do test "$verb" = sharing || exit 0; printf 'scene-sharing\t%s\t%s\t%s\t%s\tNSKVONotifying_NSLocalWindowSharingWindow\t%s\t506,342,500,332\t506,374,500,300\t512,348,66,20\tNSLocalWindowSharingWindow\tkvo-direct\n' "$seq" "$$" "$main" "$child" "$main"; done"#;
         let mut app = Owned::spawn(Path::new("/bin/sh"), &["-c", fixture], 4096, None, None)?;
         let pid = i32::try_from(app.child.id()).map_err(|e| e.to_string())?;
         let (main, child, _) = observed(pid);

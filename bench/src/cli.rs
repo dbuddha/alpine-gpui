@@ -59,8 +59,9 @@ Only these first-party binaries are supported. OS scheduling/reaping is an
 external dependency; cleanup failures invalidate the run. Conditions are
 checked at least each second and immediately before activation/capture/action.
 Before capture the fixture must own one visible window. After confirmed capture
-start, each sample may admit one AppKit-confirmed NSKVONotifying_NSLocalWindowSharingWindow
-parented to the pinned window and wholly in its title bar. Queries are bounded
+start, each sample may admit one registered NSLocalWindowSharingWindow parented
+to the pinned window and wholly in its title bar. The observed KVO wrapper
+requires its exact registered class and that exact immediate superclass. Queries are bounded
 to 32 per case. The stale control needs an A display tick after the supervisor
 observes fixture admission and records its second clock sample in admission.tsv.
 Every control needs valid full-trace clocks, geometry, identity and cleanup.

@@ -235,6 +235,47 @@ mod native {
             }
         }
     }
+    fn registered_relation(
+        actual: &objc2::runtime::AnyClass,
+        base: Option<&objc2::runtime::AnyClass>,
+        wrapper: Option<&objc2::runtime::AnyClass>,
+    ) -> Option<&'static str> {
+        let base = base?;
+        if std::ptr::eq(actual, base) {
+            return Some("exact");
+        }
+        if wrapper.is_some_and(|kvo| std::ptr::eq(actual, kvo))
+            && actual
+                .superclass()
+                .is_some_and(|parent| std::ptr::eq(parent, base))
+        {
+            return Some("kvo-direct");
+        }
+        None
+    }
+    #[cfg(test)]
+    mod class_tests {
+        use objc2::ClassType as _;
+        use objc2_app_kit::{NSPanel, NSResponder, NSView, NSWindow};
+        #[test]
+        fn requires_the_registered_pointers_and_a_direct_wrapper_relationship() {
+            let base = NSResponder::class();
+            let wrapper = NSWindow::class();
+            let relation = super::registered_relation;
+            assert_eq!(relation(base, Some(base), None), Some("exact"));
+            assert_eq!(
+                relation(wrapper, Some(base), Some(wrapper)),
+                Some("kvo-direct")
+            );
+            assert_eq!(relation(wrapper, None, Some(wrapper)), None);
+            assert_eq!(relation(wrapper, Some(base), None), None);
+            assert_eq!(relation(NSView::class(), Some(base), Some(wrapper)), None);
+            assert_eq!(
+                relation(NSPanel::class(), Some(base), Some(NSPanel::class())),
+                None
+            );
+        }
+    }
     fn sharing_geometry(main: u32, child: u32) -> Result<String> {
         let mtm = objc2::MainThreadMarker::new().ok_or("main thread required")?;
         let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
@@ -263,12 +304,19 @@ mod native {
             return Err("unsupported primary coordinate system".into());
         }
         let object: &objc2::runtime::AnyObject = &child;
-        let class = object.class().name().to_bytes();
+        let runtime = object.class();
+        let base_name = c"NSLocalWindowSharingWindow";
+        let relation = registered_relation(
+            runtime,
+            objc2::runtime::AnyClass::get(base_name),
+            objc2::runtime::AnyClass::get(c"NSKVONotifying_NSLocalWindowSharingWindow"),
+        );
+        let class = runtime.name().to_bytes();
         if class.len() > 96 || !class.iter().all(u8::is_ascii_graphic) {
             return Err("unresolved class".into());
         }
         Ok(format!(
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             std::str::from_utf8(class)?,
             child
                 .parentWindow()
@@ -276,7 +324,13 @@ mod native {
                 .windowNumber(),
             cg_rect(main.frame(), screen.size.height),
             cg_rect(content, screen.size.height),
-            cg_rect(child.frame(), screen.size.height)
+            cg_rect(child.frame(), screen.size.height),
+            if relation.is_some() {
+                base_name.to_str()?
+            } else {
+                "unresolved"
+            },
+            relation.unwrap_or("unresolved")
         ))
     }
     fn chart(control: &str, changed: bool) -> Result<Scene> {
