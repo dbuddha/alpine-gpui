@@ -206,6 +206,7 @@ fn inspect(
     capture: &str,
     actions: Option<&str>,
     control: Option<&str>,
+    witness: Option<u64>,
 ) -> Result<Observation, String> {
     if capture.len() as u64 > MAX_BYTES {
         return Err("diagnostic capture byte cap exceeded".to_owned());
@@ -277,6 +278,9 @@ fn inspect(
     if !baseline {
         return Err("no captured A baseline".into());
     }
+    if control == Some("stale") && witness.is_none_or(|after| after <= action || display <= after) {
+        return Err("stale control needs A displayed after the admission witness".into());
+    }
     if let Some(control) = control
         && (first_b.is_some()
             || (control == "wrong" && !wrong)
@@ -295,7 +299,7 @@ fn inspect(
 }
 
 fn replay(capture: &str, actions: &str) -> Result<Observation, String> {
-    inspect(capture, Some(actions), None)
+    inspect(capture, Some(actions), None, None)
 }
 
 /// Validates complete baseline records and the supervisor's window mapping.
@@ -328,7 +332,7 @@ pub fn baseline(
     {
         return Err("capture differs from verified fixture mapping".into());
     }
-    inspect(complete, None, None).map(|_| ())
+    inspect(complete, None, None, None).map(|_| ())
 }
 
 /// Requires the command clock to use the capture timebase.
@@ -348,11 +352,17 @@ pub fn clock_matches(
 }
 
 /// Validates the whole negative trace before accepting a semantic control.
-pub fn negative(capture: &Path, actions: &Path, control: &str) -> Result<(), String> {
+pub fn negative(
+    capture: &Path,
+    actions: &Path,
+    control: &str,
+    witness: Option<u64>,
+) -> Result<(), String> {
     inspect(
         &read_bounded(capture, MAX_BYTES)?,
         Some(&read_bounded(actions, 256)?),
         Some(control),
+        witness,
     )
     .map(|_| ())
 }
@@ -560,12 +570,33 @@ mod tests {
     }
 
     #[test]
+    fn stale_needs_a_display_sample_after_action() {
+        let before = frame(1, 20, 21, State::A);
+        for (rows, count) in [
+            (before.clone(), 1),
+            (before.clone() + &frame(2, 30, 41, State::A), 2),
+        ] {
+            assert!(inspect(&trace(&rows, count), Some(ACTION), Some("stale"), Some(35)).is_err());
+        }
+    }
+    #[test]
+    fn queued_a_after_command_does_not_prove_display_after_admission() -> Result<(), String> {
+        let before = frame(1, 20, 21, State::A);
+        let queued = trace(&(before.clone() + &frame(2, 34, 41, State::A)), 2);
+        for witness in [None, Some(30), Some(34), Some(35)] {
+            assert!(inspect(&queued, Some(ACTION), Some("stale"), witness).is_err());
+        }
+        let after = trace(&(before + &frame(2, 36, 41, State::A)), 2);
+        inspect(&after, Some(ACTION), Some("stale"), Some(35))?;
+        Ok(())
+    }
+    #[test]
     fn negative_controls_validate_the_whole_trace() -> Result<(), String> {
         let stale = trace(
             &(frame(1, 20, 21, State::A) + &frame(2, 40, 41, State::A)),
             2,
         );
-        inspect(&stale, Some(ACTION), Some("stale"))?;
+        inspect(&stale, Some(ACTION), Some("stale"), Some(35))?;
         let wrong_samples = [188; SAMPLES]
             .iter()
             .map(u8::to_string)
@@ -574,7 +605,7 @@ mod tests {
         let wrong =
             format!("scene-frame\t2\t40\t41\tinvalid\t{wrong_samples}\t0\t0\t100\t40\t1\t1\n");
         let good = trace(&(frame(1, 20, 21, State::A) + &wrong), 2);
-        inspect(&good, Some(ACTION), Some("wrong"))?;
+        inspect(&good, Some(ACTION), Some("wrong"), None)?;
         for bad in [
             good.replace("scene-end\t100\t2", "scene-end\t100\t3"),
             good.replace("scene-end\t100\t2\n", ""),
@@ -585,15 +616,16 @@ mod tests {
                 3,
             ),
         ] {
-            assert!(inspect(&bad, Some(ACTION), Some("wrong")).is_err());
+            assert!(inspect(&bad, Some(ACTION), Some("wrong"), None).is_err());
         }
-        assert!(inspect(&valid(), Some(ACTION), Some("wrong")).is_err());
-        assert!(inspect(&valid(), Some(ACTION), Some("stale")).is_err());
+        assert!(inspect(&valid(), Some(ACTION), Some("wrong"), None).is_err());
+        assert!(inspect(&valid(), Some(ACTION), Some("stale"), Some(35)).is_err());
         assert!(
             inspect(
                 &stale.replace("scene-end\t100\t2\n", ""),
                 Some(ACTION),
-                Some("stale")
+                Some("stale"),
+                Some(35)
             )
             .is_err()
         );

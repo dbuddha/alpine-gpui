@@ -8,6 +8,7 @@ mod protocol {
         Transition(u32, u64),
         Stop,
         InspectStop(Vec<u32>),
+        Sharing(u8, u32, u32),
     }
     pub fn read(reader: &mut impl Read, transitioned: &mut bool) -> Result<Command, String> {
         let mut line = Vec::with_capacity(96);
@@ -19,6 +20,15 @@ mod protocol {
                     return Ok(Command::Stop);
                 }
                 let parts: Vec<_> = text.split(' ').collect();
+                if let ["sharing", seq, main, child] = parts.as_slice() {
+                    let seq: u8 = seq.parse().map_err(|_| "bad inspection sequence")?;
+                    let main: u32 = main.parse().map_err(|_| "bad main ID")?;
+                    let child: u32 = child.parse().map_err(|_| "bad child ID")?;
+                    if !(1..=32).contains(&seq) || main == 0 || child == 0 || main == child {
+                        return Err("invalid sharing inspection request".into());
+                    }
+                    return Ok(Command::Sharing(seq, main, child));
+                }
                 if parts[0] == "inspect-stop" {
                     if parts.len() > 5 {
                         return Err("inspection exceeds four window IDs".into());
@@ -106,6 +116,29 @@ mod protocol {
             Ok(())
         }
         #[test]
+        fn repeated_sharing_requests_allow_transition_and_termination() -> Result<(), String> {
+            let mut input = &b"sharing 1 12 34\ntransition 12 99\nsharing 2 12 34\nstop\n"[..];
+            let mut changed = false;
+            for expected in [
+                Command::Sharing(1, 12, 34),
+                Command::Transition(12, 99),
+                Command::Sharing(2, 12, 34),
+                Command::Stop,
+            ] {
+                assert_eq!(read(&mut input, &mut changed)?, expected);
+            }
+            for invalid in [
+                "sharing 33 12 34\n",
+                "sharing 0 12 34\n",
+                "sharing 1 12 12\n",
+                "sharing 1 0 34\n",
+                "sharing 1 12 0\n",
+            ] {
+                assert!(read(&mut invalid.as_bytes(), &mut false).is_err());
+            }
+            Ok(())
+        }
+        #[test]
         fn independent_controls() -> Result<(), String> {
             let baseline = levels("positive", false)?;
             for name in ["positive", "stale", "wrong"] {
@@ -169,6 +202,82 @@ mod native {
         );
         std::io::stdout().flush()?;
         Ok(())
+    }
+    fn cg_rect(rect: objc2_foundation::NSRect, primary_height: f64) -> String {
+        format!(
+            "{},{},{},{}",
+            rect.origin.x,
+            primary_height - (rect.origin.y + rect.size.height),
+            rect.size.width,
+            rect.size.height
+        )
+    }
+    #[cfg(test)]
+    mod geometry_tests {
+        #[test]
+        fn observed_appkit_frames_convert_to_cg_global_points() {
+            use objc2_foundation::{NSPoint, NSRect, NSSize};
+            for (origin, size, expected) in [
+                ((506.0, 308.0), (500.0, 332.0), "506,342,500,332"),
+                ((512.0, 614.0), (66.0, 20.0), "512,348,66,20"),
+                ((506.0, 308.0), (500.0, 300.0), "506,374,500,300"),
+            ] {
+                assert_eq!(
+                    super::cg_rect(
+                        NSRect::new(
+                            NSPoint::new(origin.0, origin.1),
+                            NSSize::new(size.0, size.1)
+                        ),
+                        982.0
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+    fn sharing_geometry(main: u32, child: u32) -> Result<String> {
+        let mtm = objc2::MainThreadMarker::new().ok_or("main thread required")?;
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        let lookup = |id| -> Result<_> {
+            let window = app
+                .windowWithWindowNumber(isize::try_from(id)?)
+                .ok_or("unresolved window")?;
+            if u32::try_from(window.windowNumber())? != id {
+                return Err("window identity mismatch".into());
+            }
+            Ok(window)
+        };
+        let main = lookup(main)?;
+        let child = lookup(child)?;
+        let view = main.contentView().ok_or("unresolved content view")?;
+        let content = main.convertRectToScreen(view.convertRect_toView(view.bounds(), None));
+        let screen = objc2_app_kit::NSScreen::screens(mtm)
+            .firstObject()
+            .ok_or("missing primary screen")?
+            .frame();
+        if screen.origin.x != 0.0
+            || screen.origin.y != 0.0
+            || !screen.size.height.is_finite()
+            || !(1.0..=65536.0).contains(&screen.size.height)
+        {
+            return Err("unsupported primary coordinate system".into());
+        }
+        let object: &objc2::runtime::AnyObject = &child;
+        let class = object.class().name().to_bytes();
+        if class.len() > 96 || !class.iter().all(u8::is_ascii_graphic) {
+            return Err("unresolved class".into());
+        }
+        Ok(format!(
+            "{}\t{}\t{}\t{}\t{}",
+            std::str::from_utf8(class)?,
+            child
+                .parentWindow()
+                .ok_or("unresolved parent")?
+                .windowNumber(),
+            cg_rect(main.frame(), screen.size.height),
+            cg_rect(content, screen.size.height),
+            cg_rect(child.frame(), screen.size.height)
+        ))
     }
     fn chart(control: &str, changed: bool) -> Result<Scene> {
         let mut builder = SceneBuilder::new(
@@ -277,19 +386,36 @@ mod native {
             std::thread::spawn(move || {
                 let mut transitioned = false;
                 let mut input = std::io::stdin().lock();
-                for _ in 0..3 {
+                for _ in 0..34 {
                     let command = protocol::read(&mut input, &mut transitioned);
-                    let stop = !matches!(command, Ok(Command::Transition(_, _)));
+                    let stop = !matches!(
+                        command,
+                        Ok(Command::Transition(_, _) | Command::Sharing(_, _, _))
+                    );
                     if tx.try_send(command).is_err() || stop {
                         break;
                     }
                 }
             });
+            let mut next_inspection = 1;
             while Instant::now() < deadline {
                 native_validation::drain_run_loop(|| false, 1, Duration::from_millis(10));
                 match rx.try_recv() {
                     Ok(Ok(Command::Transition(window, tick))) => {
                         present(&surface, &control, true, Some((window, tick)))?;
+                    }
+                    Ok(Ok(Command::Sharing(seq, main, child))) => {
+                        if seq != next_inspection {
+                            return Err("unexpected inspection sequence".into());
+                        }
+                        next_inspection += 1;
+                        let proof =
+                            sharing_geometry(main, child).unwrap_or_else(|_| "unresolved".into());
+                        println!(
+                            "scene-sharing\t{seq}\t{}\t{main}\t{child}\t{proof}",
+                            std::process::id()
+                        );
+                        std::io::stdout().flush()?;
                     }
                     Ok(Ok(Command::Stop)) => return Ok(()),
                     Ok(Ok(Command::InspectStop(ids))) => return inspect_windows(&ids),

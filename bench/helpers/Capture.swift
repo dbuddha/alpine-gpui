@@ -204,7 +204,10 @@ func capture(_ request: CaptureRequest) async throws {
                      String(sceneFrameCap), String(request.durationMs), "srgb"])
     }
     try await stream.startCapture()
-    if scene == nil {
+    if scene != nil {
+        let started = "scene-stream-start\t\(sceneSchema)\t\(request.pid)\t\(request.windowID)\n"
+        FileHandle.standardError.write(Data(started.utf8))
+    } else {
         Output.emit(["started", String(Clock.now()), String(configuration.width), String(configuration.height)])
     }
     try await Task.sleep(nanoseconds: UInt64(request.durationMs) * 1_000_000)

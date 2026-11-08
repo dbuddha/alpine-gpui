@@ -1,6 +1,6 @@
 //! Approved-session-only native controls. Results never replace a physical gate.
 
-use crate::{analysis, gate, helpers, physical_evidence};
+use crate::{analysis, gate, helpers, physical_evidence, sharing_indicator::Proof};
 use std::fmt::Write as _;
 use std::{
     fs,
@@ -266,11 +266,25 @@ fn bounded(path: &Path, args: &[&str], deadline: Instant) -> Result<String> {
         thread::sleep(POLL);
     }
 }
+fn capture_started(stderr: &str, pid: u32, window: u32) -> Result<bool> {
+    let expected = format!("scene-stream-start\talpine-scene-diagnostic/v1\t{pid}\t{window}");
+    let complete = stderr.rsplit_once('\n').map_or("", |(done, _)| done);
+    let mut markers = complete
+        .lines()
+        .filter(|line| line.starts_with("scene-stream-start"));
+    match (markers.next(), markers.next()) {
+        (None, None) => Ok(false),
+        (Some(line), None) if line == expected => Ok(true),
+        _ => Err("mismatched or duplicate capture-start marker".into()),
+    }
+}
+
 struct Session {
     helpers: PathBuf,
     log: Vec<u8>,
     path: PathBuf,
     revision: String,
+    sharing: Option<Inspection>,
 }
 impl Session {
     fn call(&mut self, name: &str, args: &[&str], deadline: Instant) -> Result<String> {
@@ -309,52 +323,222 @@ impl Session {
         &mut self,
         app: &mut Owned,
         window: &helpers::WindowInfo,
+        capture: Option<&Owned>,
         deadline: Instant,
     ) -> Result<()> {
         let deadline = sample_deadline(Instant::now(), deadline);
         self.require_conditions(deadline)?;
-        if !same_window(window, &self.window(app, deadline)?) {
-            return Err("fixture visibility or geometry changed".into());
-        }
+        self.window(app, Some(window), capture, deadline)?;
         remaining(deadline)?;
         Ok(())
     }
-    fn window(&mut self, app: &mut Owned, deadline: Instant) -> Result<helpers::WindowInfo> {
+    fn window(
+        &mut self,
+        app: &mut Owned,
+        pin: Option<&helpers::WindowInfo>,
+        capture: Option<&Owned>,
+        deadline: Instant,
+    ) -> Result<helpers::WindowInfo> {
         let pid = i32::try_from(app.child.id()).map_err(|e| e.to_string())?;
-        let list = helpers::parse_window_list(&self.call(helpers::WINDOW, &["list"], deadline)?)?;
-        select_fixture_window(&list, pid, |command| {
-            let end = sample_deadline(Instant::now(), deadline);
-            self.require_conditions(end)?;
-            inspect_stop(app, command, end)
-        })
+        let mut list =
+            helpers::parse_window_list(&self.call(helpers::WINDOW, &["scene-list"], deadline)?)?;
+        let start_check = if self.sharing.is_none()
+            && let (Some(pin), Some(capture)) = (pin, capture)
+            && list
+                .windows
+                .iter()
+                .filter(|w| w.pid == pid && w.alpha > 0.0)
+                .count()
+                == 2
+        {
+            self.confirm_start_pair(&mut list, pin, capture, deadline)
+        } else {
+            Ok(())
+        };
+        let owned = list
+            .windows
+            .iter()
+            .filter(|w| w.pid == pid && w.alpha > 0.0);
+        let count = owned.clone().count();
+        let result = start_check
+            .and_then(|()| select_fixture_window(&list, pid, pin, self.sharing.is_some()))
+            .and_then(|(main, child)| {
+                if let Some(child) = child {
+                    self.sharing
+                        .as_mut()
+                        .ok_or("capture start unavailable")?
+                        .verify(app, &main, child, deadline)?;
+                }
+                Ok(main)
+            });
+        match result {
+            Err(error) if count != 1 => {
+                let mut cmd = String::from("inspect-stop");
+                for w in owned.take(4) {
+                    write!(&mut cmd, " {}", w.id).map_err(|e| e.to_string())?;
+                }
+                cmd.push('\n');
+                let end = sample_deadline(Instant::now(), deadline);
+                let stopped = self
+                    .require_conditions(end)
+                    .and_then(|()| inspect_stop(app, &cmd, end));
+                Err(format!(
+                    "{error} (count={count}, command={}, inspection={stopped:?})",
+                    cmd.trim_end()
+                ))
+            }
+            other => other,
+        }
+    }
+    fn confirm_start_pair(
+        &mut self,
+        first: &mut helpers::WindowList,
+        pin: &helpers::WindowInfo,
+        capture: &Owned,
+        deadline: Instant,
+    ) -> Result<()> {
+        let pid = u32::try_from(pin.pid).map_err(|e| e.to_string())?;
+        *first = consistent_start_sample(first, pin, || {
+            while !capture_started(&Owned::text(&capture.err)?, pid, pin.id)? {
+                thread::sleep(remaining(deadline)?.min(POLL));
+            }
+            helpers::parse_window_list(&self.call(helpers::WINDOW, &["scene-list"], deadline)?)
+        })?;
+        self.sharing = Some(Inspection::default());
+        Ok(())
     }
 }
 
-fn select_fixture_window(
-    list: &helpers::WindowList,
+fn consistent_start_sample(
+    first: &helpers::WindowList,
+    pin: &helpers::WindowInfo,
+    after_start: impl FnOnce() -> Result<helpers::WindowList>,
+) -> Result<helpers::WindowList> {
+    let (main, child) = select_fixture_window(first, pin.pid, Some(pin), true)?;
+    let child = child.ok_or("fixture windows changed across capture start")?;
+    let fresh = after_start()?;
+    let (next_main, next_child) = select_fixture_window(&fresh, pin.pid, Some(pin), true)?;
+    if !same_window(&main, &next_main) || !next_child.is_some_and(|next| same_window(child, next)) {
+        return Err("fixture windows changed across capture start".into());
+    }
+    Ok(fresh)
+}
+
+fn select_fixture_window<'a>(
+    list: &'a helpers::WindowList,
     pid: i32,
-    inspect: impl FnOnce(&str) -> Result<()>,
-) -> Result<helpers::WindowInfo> {
-    let eligible = list
+    pin: Option<&helpers::WindowInfo>,
+    active: bool,
+) -> Result<(helpers::WindowInfo, Option<&'a helpers::WindowInfo>)> {
+    if list.windows.iter().any(|w| {
+        ![w.alpha, w.x, w.y, w.width, w.height]
+            .iter()
+            .all(|v| v.is_finite())
+            || !(0.0..=1.0).contains(&w.alpha)
+            || w.width < 0.0
+            || w.height < 0.0
+    }) {
+        return Err("invalid CG window list geometry".into());
+    }
+    let main = match analysis::visibility(list, pid, 100.0) {
+        analysis::Visibility::Visible(main) => main,
+        other => return Err(other.describe()),
+    };
+    if pin.is_some_and(|w| !same_window(w, &main)) {
+        return Err("pinned fixture changed".into());
+    }
+    let owned = list
         .windows
         .iter()
-        .filter(|w| w.pid == pid && w.layer == 0 && w.alpha > 0.0);
-    let count = eligible.clone().count();
-    if count != 1 {
-        let mut command = String::from("inspect-stop");
-        for window in eligible.take(4) {
-            write!(&mut command, " {}", window.id).map_err(|e| e.to_string())?;
-        }
-        command.push('\n');
-        let inspection = inspect(&command);
-        return Err(format!(
-            "fixture does not own exactly one eligible window (count={count}, command={}, inspection={inspection:?})",
-            command.trim_end()
-        ));
+        .filter(|w| w.pid == pid && w.alpha > 0.0);
+    if owned.clone().filter(|w| w.id == main.id).count() != 1 {
+        return Err("ambiguous fixture identity".into());
     }
-    match analysis::visibility(list, pid, 100.0) {
-        analysis::Visibility::Visible(window) => Ok(window),
-        other => Err(other.describe()),
+    let mut others = owned.filter(|w| w.id != main.id);
+    let child = others.next();
+    if let Some(child) = child
+        && (!active
+            || pin.is_none()
+            || others.next().is_some()
+            || child.layer != 0
+            || child.alpha.to_bits() != 1.0f64.to_bits()
+            || child.order >= main.order
+            || child.id == 0)
+    {
+        return Err("fixture has an unsupported visible window".into());
+    }
+    Ok((main, child))
+}
+
+#[derive(Default)]
+struct Inspection {
+    sequence: u8,
+    previous: Option<Proof>,
+}
+impl Inspection {
+    fn audit(&self, text: &str) -> Result<()> {
+        let mut seen = 0usize;
+        for line in text
+            .lines()
+            .filter(|line| line.starts_with("scene-sharing"))
+        {
+            seen += 1;
+            let mut fields = line.split('\t');
+            if fields.next() != Some("scene-sharing")
+                || fields.next().and_then(|s| s.parse::<usize>().ok()) != Some(seen)
+            {
+                return Err("unsolicited or stale inspection reply".into());
+            }
+        }
+        if seen != usize::from(self.sequence) {
+            return Err("unexpected inspection reply count".into());
+        }
+        Ok(())
+    }
+    fn verify(
+        &mut self,
+        app: &mut Owned,
+        main: &helpers::WindowInfo,
+        child: &helpers::WindowInfo,
+        deadline: Instant,
+    ) -> Result<()> {
+        if self.sequence >= 32 {
+            return Err("sharing inspection limit exceeded".into());
+        }
+        remaining(deadline)?;
+        let prior = app.output()?;
+        self.audit(&prior)?;
+        if !prior.ends_with('\n') {
+            return Err("incomplete fixture output before inspection".into());
+        }
+        self.sequence += 1;
+        app.send(&format!(
+            "sharing {} {} {}\n",
+            self.sequence, main.id, child.id
+        ))?;
+        loop {
+            remaining(deadline)?;
+            if app.done()? {
+                return Err("fixture ended during inspection".into());
+            }
+            let text = app.output()?;
+            let fresh = text.strip_prefix(&prior).ok_or("fixture output changed")?;
+            if let Some((complete, _)) = fresh.rsplit_once('\n') {
+                let mut replies = complete.lines().filter(|l| l.starts_with("scene-sharing"));
+                if let Some(line) = replies.next() {
+                    let proof = Proof::read(line, self.sequence, main, child)?;
+                    if replies.next().is_some()
+                        || self.previous.as_ref().is_some_and(|p| p != &proof)
+                    {
+                        return Err("duplicate or changed sharing indicator".into());
+                    }
+                    remaining(deadline)?;
+                    self.previous = Some(proof);
+                    return Ok(());
+                }
+            }
+            thread::sleep(remaining(deadline)?.min(POLL));
+        }
     }
 }
 
@@ -446,6 +630,7 @@ fn ready(text: &str, pid: u32, revision: &str) -> Result<()> {
 fn same_window(a: &helpers::WindowInfo, b: &helpers::WindowInfo) -> bool {
     a.id == b.id
         && a.pid == b.pid
+        && a.layer == b.layer
         && a.x == b.x
         && a.y == b.y
         && a.width == b.width
@@ -505,25 +690,35 @@ fn wait_for_baseline(
     let mut next_check = Instant::now();
     loop {
         remaining(baseline_deadline)?;
+        let started = capture_started(&Owned::text(&capture.err)?, app.child.id(), window.id)?;
+        let baseline = started
+            && physical_evidence::baseline(
+                &capture.output()?,
+                app.child.id(),
+                window.id,
+                window.width,
+                window.height,
+                region.0,
+                region.1,
+            )
+            .is_ok();
+        if started {
+            session.sharing.get_or_insert_with(Inspection::default);
+        }
         if Instant::now() >= next_check {
             let start = Instant::now();
             next_check = start + Duration::from_secs(1);
-            session.verify(app, window, sample_deadline(start, baseline_deadline))?;
+            session.verify(
+                app,
+                window,
+                Some(capture),
+                sample_deadline(start, baseline_deadline),
+            )?;
         }
         if app.done()? || capture.done()? {
             return Err("child ended before baseline".into());
         }
-        if physical_evidence::baseline(
-            &capture.output()?,
-            app.child.id(),
-            window.id,
-            window.width,
-            window.height,
-            region.0,
-            region.1,
-        )
-        .is_ok()
-        {
+        if baseline {
             break;
         }
         thread::sleep(poll_delay(Instant::now(), next_check, baseline_deadline)?);
@@ -532,6 +727,7 @@ fn wait_for_baseline(
 }
 
 fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Result<String> {
+    session.sharing = None;
     fs::create_dir(dir).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(30);
     let home = dir.join("home");
@@ -567,58 +763,117 @@ fn case(session: &mut Session, fixture: &Path, dir: &Path, control: &str) -> Res
         &["activate", "--pid", &pid.to_string()],
         ready_deadline,
     )?;
-    let window = session.window(&mut app, ready_deadline)?;
+    let window = session.window(&mut app, None, None, ready_deadline)?;
     let region = region(&window)?;
-    session.verify(&mut app, &window, deadline)?;
+    session.verify(&mut app, &window, None, deadline)?;
     let capture_deadline = (Instant::now() + Duration::from_secs(10)).min(deadline);
     let mut capture = start_capture(&session.helpers, dir, pid, window.id, region)?;
     wait_for_baseline(session, &mut app, &mut capture, &window, region, deadline)?;
-    session.verify(&mut app, &window, capture_deadline)?;
+    session.verify(&mut app, &window, None, capture_deadline)?;
     let (tick, timebase) =
         helpers::parse_now(&session.call(helpers::WINDOW, &["now"], capture_deadline)?)?;
     physical_evidence::clock_matches(&capture.output()?, tick, timebase)?;
+    let mut action = Issued {
+        pid,
+        window: window.id,
+        tick,
+        witness: None,
+    };
     app.send(&format!("transition {} {tick}\n", window.id))?;
-    next_check = Instant::now();
-    loop {
-        remaining(capture_deadline)?;
-        if Instant::now() >= next_check {
-            let start = Instant::now();
-            next_check = start + Duration::from_secs(1);
-            session.verify(&mut app, &window, sample_deadline(start, capture_deadline))?;
-        }
-        if app.done()? {
-            return Err("fixture ended during capture".into());
-        }
-        if capture.done()? {
-            break;
-        }
-        thread::sleep(poll_delay(Instant::now(), next_check, capture_deadline)?);
-    }
-    session.verify(&mut app, &window, deadline)?;
+    monitor_capture(
+        session,
+        &mut app,
+        &mut capture,
+        &window,
+        control,
+        &mut action,
+        (dir, capture_deadline),
+    )?;
+    session.verify(&mut app, &window, None, deadline)?;
     app.send("stop\n")?;
     let drain_deadline = (Instant::now() + Duration::from_secs(5)).min(deadline);
     while !app.done()? {
         remaining(drain_deadline)?;
         thread::sleep(POLL);
     }
-    finish_case(
-        &app.output()?,
-        &capture.output()?,
-        dir,
-        control,
-        pid,
-        window.id,
-        tick,
-    )
+    let native = app.output()?;
+    if !capture_started(&Owned::text(&capture.err)?, pid, window.id)? {
+        return Err("missing capture-start marker".into());
+    }
+    session
+        .sharing
+        .as_ref()
+        .ok_or("missing capture baseline")?
+        .audit(&native)?;
+    finish_case(&native, &capture.output()?, dir, control, &action)
 }
+
+struct Issued {
+    pid: u32,
+    window: u32,
+    tick: u64,
+    witness: Option<u64>,
+}
+
+fn monitor_capture(
+    session: &mut Session,
+    app: &mut Owned,
+    capture: &mut Owned,
+    window: &helpers::WindowInfo,
+    control: &str,
+    action: &mut Issued,
+    run: (&Path, Instant),
+) -> Result<()> {
+    let (dir, deadline) = run;
+    let mut next_check = Instant::now();
+    loop {
+        remaining(deadline)?;
+        let native = app.output()?;
+        let witness_due = control == "stale"
+            && action.witness.is_none()
+            && native.rsplit_once('\n').is_some_and(|(complete, _)| {
+                complete.lines().any(|l| l.starts_with("scene-action\t"))
+            });
+        if Instant::now() >= next_check || witness_due {
+            let start = Instant::now();
+            next_check = start + Duration::from_secs(1);
+            let end = sample_deadline(start, deadline);
+            session.verify(app, window, None, end)?;
+            if witness_due {
+                action_record(&native, action.pid, action.window, action.tick)?;
+                let (after, base) =
+                    helpers::parse_now(&session.call(helpers::WINDOW, &["now"], end)?)?;
+                physical_evidence::clock_matches(&capture.output()?, after, base)?;
+                if after <= action.tick {
+                    return Err("admission witness did not follow issued action".into());
+                }
+                fs::write(
+                    dir.join("admission.tsv"),
+                    format!(
+                        "scene-admission-witness\t{}\t{}\t{}\t{after}\t{}\t{}\n",
+                        action.pid, action.window, action.tick, base.numer, base.denom
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+                action.witness = Some(after);
+            }
+        }
+        if app.done()? {
+            return Err("fixture ended during capture".into());
+        }
+        if capture.done()? {
+            return Ok(());
+        }
+        thread::sleep(poll_delay(Instant::now(), next_check, deadline)?);
+    }
+}
+
 fn finish_case(
     native: &str,
     captured: &str,
     dir: &Path,
     control: &str,
-    pid: u32,
-    window: u32,
-    tick: u64,
+    action: &Issued,
 ) -> Result<String> {
     if !native
         .lines()
@@ -628,7 +883,7 @@ fn finish_case(
     }
     fs::write(
         dir.join("action.tsv"),
-        action_record(native, pid, window, tick)?,
+        action_record(native, action.pid, action.window, action.tick)?,
     )
     .map_err(|e| e.to_string())?;
     fs::write(dir.join("capture.tsv"), captured).map_err(|e| e.to_string())?;
@@ -638,7 +893,7 @@ fn finish_case(
     let accepted = if control == "positive" {
         replay.as_ref().map(|_| ()).map_err(Clone::clone)
     } else {
-        physical_evidence::negative(&capture_path, &action_path, control)
+        physical_evidence::negative(&capture_path, &action_path, control, action.witness)
     };
     let report = format!(
         "control={control}; expected_outcome={}; replay={replay:?}; control_validation={accepted:?}; physical qualification=false; typing qualification=false; action tick is command-issued lower bound",
@@ -739,6 +994,7 @@ pub fn run(fixture: &Path, helper_dir: &Path, output: &Path) -> Result<()> {
         log: Vec::new(),
         path: output.join("helpers.log"),
         revision,
+        sharing: None,
     };
     let wait = Instant::now() + Duration::from_mins(5);
     let precondition = (|| {
@@ -796,38 +1052,293 @@ mod tests {
             height: 328.0,
         }
     }
+    fn observed(pid: i32) -> (helpers::WindowInfo, helpers::WindowInfo, String) {
+        let mut main = window();
+        main.pid = pid;
+        main.id = 220_325;
+        main.x = 506.0;
+        main.y = 342.0;
+        main.height = 332.0;
+        main.order = 13;
+        let mut child = main.clone();
+        child.id = 220_333;
+        child.order = 12;
+        child.x = 512.0;
+        child.y = 348.0;
+        child.width = 66.0;
+        child.height = 20.0;
+        let reply = format!(
+            "scene-sharing\t1\t{pid}\t220325\t220333\tNSKVONotifying_NSLocalWindowSharingWindow\t220325\t506,342,500,332\t506,374,500,300\t512,348,66,20"
+        );
+        (main, child, reply)
+    }
     #[test]
-    fn extra_fixture_windows_remain_rejected_after_inspection() {
+    fn sharing_requires_a_pinned_main_and_checks_all_layers() -> Result<()> {
+        let (main, child, _) = observed(2);
         let mut list = helpers::WindowList {
             front_pid: 2,
             front_name: "fixture".into(),
-            windows: vec![window()],
+            windows: vec![main.clone()],
         };
-        assert!(select_fixture_window(&list, 2, |_| unreachable!()).is_ok());
-        let mut other = window();
-        other.pid = 9;
-        other.id = 99;
-        other.order = 8;
-        list.windows.push(other);
-        for id in 4..=8 {
-            let mut w = window();
-            w.id = id;
-            w.width = 66.0;
-            w.height = 20.0;
-            list.windows.push(w);
+        assert!(select_fixture_window(&list, 2, None, false)?.1.is_none());
+        list.windows.insert(0, child.clone());
+        assert!(select_fixture_window(&list, 2, Some(&main), false).is_err());
+        assert!(select_fixture_window(&list, 2, None, true).is_err());
+        assert_eq!(
+            select_fixture_window(&list, 2, Some(&main), true)?.1,
+            Some(&child)
+        );
+        for layer in [1, 10, -1] {
+            list.windows[0].layer = layer;
+            assert!(select_fixture_window(&list, 2, Some(&main), true).is_err());
         }
-        for outcome in [Ok(()), Err("deadline".to_owned())] {
-            let mut called = false;
-            let result = select_fixture_window(&list, 2, |command| {
-                called = true;
-                assert_eq!(command, "inspect-stop 3 4 5 6\n");
-                outcome
-            });
-            assert!(called);
-            assert!(result.is_err_and(|error| {
-                error.contains("does not own exactly one eligible window (count=6")
-            }));
+        list.windows[0] = child.clone();
+        list.windows[0].pid = 9;
+        assert!(select_fixture_window(&list, 2, Some(&main), true).is_err());
+        list.windows[0] = child.clone();
+        list.windows.push(child.clone());
+        assert!(select_fixture_window(&list, 2, Some(&main), true).is_err());
+        list.windows.pop();
+        list.windows[0].alpha = f64::NAN;
+        assert!(select_fixture_window(&list, 2, Some(&main), true).is_err());
+        list.windows[0] = child;
+        list.windows[1].id += 1;
+        assert!(select_fixture_window(&list, 2, Some(&main), true).is_err());
+        Ok(())
+    }
+    #[test]
+    fn requires_one_complete_start_marker_for_the_launched_capture() -> Result<()> {
+        let marker = "scene-stream-start\talpine-scene-diagnostic/v1\t24\t35\n";
+        assert!(capture_started(marker, 24, 35)?);
+        assert!(!capture_started("scene-source\t24\t35\n", 24, 35)?);
+        assert!(!capture_started(marker.trim_end(), 24, 35)?);
+        assert!(capture_started(marker, 23, 35).is_err());
+        assert!(capture_started(marker, 24, 34).is_err());
+        assert!(capture_started(&marker.repeat(2), 24, 35).is_err());
+        Ok(())
+    }
+    #[test]
+    fn sharing_proof_rejects_unresolved_moved_and_content_overlapping_rows() -> Result<()> {
+        let (main, child, reply) = observed(2);
+        Proof::read(&reply, 1, &main, &child)?;
+        for bad in [
+            reply.replace("Notifying_", ""),
+            reply.replace("\t220325\t506,", "\t17\t506,"),
+            reply.replace("\t220333\t", "\t9\t"),
+            reply.replace("\t2\t220325", "\t7\t220325"),
+            reply.replace("\t1\t2", "\t3\t2"),
+            reply.replace("512,348,66,20", "512,348,66,19"),
+            reply.replace("506,342,500,332", "506,343,500,332"),
+            reply.replace("506,374,500,300", "506,375,500,300"),
+            reply.replace("512,348", "512,NaN"),
+            reply.clone() + "\textra",
+            "scene-sharing\t1\tunresolved".into(),
+        ] {
+            assert!(Proof::read(&bad, 1, &main, &child).is_err(), "{bad}");
         }
+        for (x, y) in [
+            (505.0, 348.0),
+            (512.0, 341.0),
+            (512.0, 355.0),
+            (512.0, 500.0),
+        ] {
+            let mut changed = child.clone();
+            changed.x = x;
+            changed.y = y;
+            assert!(
+                Proof::read(
+                    &reply.replace("512,348,66,20", &format!("{x},{y},66,20")),
+                    1,
+                    &main,
+                    &changed
+                )
+                .is_err()
+            );
+        }
+        let audit = Inspection {
+            sequence: 1,
+            previous: None,
+        };
+        audit.audit(&reply)?;
+        assert!(audit.audit("").is_err());
+        assert!(
+            audit
+                .audit(&reply.replace("sharing\t1", "sharing\t2"))
+                .is_err()
+        );
+        assert!(audit.audit(&(reply.clone() + "\n" + &reply)).is_err());
+        Ok(())
+    }
+    #[test]
+    fn start_marker_arriving_during_window_list_enables_inspection_before_first_frame() -> Result<()>
+    {
+        exercise_start_samples("stable")
+    }
+    #[test]
+    fn first_sample_cannot_hide_an_occlusion_or_a_changed_indicator() -> Result<()> {
+        exercise_start_samples("vanished")?;
+        let (main, child, _) = observed(2);
+        let clean = helpers::WindowList {
+            front_pid: 2,
+            front_name: "fixture".into(),
+            windows: vec![child, main.clone()],
+        };
+        for kind in [
+            "exchanged",
+            "occluded",
+            "moved",
+            "reordered",
+            "layer",
+            "opacity",
+            "main moved",
+            "expanded",
+        ] {
+            let mut first = clean.clone();
+            match kind {
+                "exchanged" => first.windows[0].id += 1,
+                "moved" => first.windows[0].x += 1.0,
+                "reordered" => first.windows[0].order = 14,
+                "layer" => first.windows[0].layer = 1,
+                "opacity" => first.windows[0].alpha = 0.5,
+                "main moved" => first.windows[1].x += 1.0,
+                "expanded" => first.windows[0].width += 1.0,
+                _ => {
+                    let mut other = first.windows[0].clone();
+                    other.order = 0;
+                    other.id = 9;
+                    other.pid = 99;
+                    first.windows.insert(0, other);
+                }
+            }
+            let mut sampled = false;
+            assert!(
+                consistent_start_sample(&first, &main, || {
+                    sampled = true;
+                    Ok(clean.clone())
+                })
+                .is_err(),
+                "{kind}"
+            );
+            assert_eq!(sampled, matches!(kind, "exchanged" | "moved" | "expanded"));
+        }
+        Ok(())
+    }
+    fn exercise_start_samples(kind: &str) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::test_dir(&format!("sharing-list-race-{kind}"))?;
+        let fixture = r#"printf 'ready\n'; while read -r verb seq main child; do test "$verb" = sharing || exit 0; printf 'scene-sharing\t%s\t%s\t%s\t%s\tNSKVONotifying_NSLocalWindowSharingWindow\t%s\t506,342,500,332\t506,374,500,300\t512,348,66,20\n' "$seq" "$$" "$main" "$child" "$main"; done"#;
+        let mut app = Owned::spawn(Path::new("/bin/sh"), &["-c", fixture], 4096, None, None)?;
+        let pid = i32::try_from(app.child.id()).map_err(|e| e.to_string())?;
+        let (main, child, _) = observed(pid);
+        let row = |w: &helpers::WindowInfo| {
+            format!(
+                "window\t{}\t{}\t{pid}\tfixture\t0\t1\t{}\t{}\t{}\t{}\n",
+                w.order, w.id, w.x, w.y, w.width, w.height
+            )
+        };
+        let write =
+            |name: &str, data: String| fs::write(dir.join(name), data).map_err(|e| e.to_string());
+        write(
+            "list",
+            format!("front\t{pid}\tfixture\n{}{}", row(&child), row(&main)),
+        )?;
+        write(
+            "after",
+            format!(
+                "front\t{pid}\tfixture\n{}{}",
+                if kind == "vanished" {
+                    String::new()
+                } else {
+                    row(&child)
+                },
+                row(&main)
+            ),
+        )?;
+        write(
+            helpers::WINDOW,
+            r#"#!/bin/sh
+set -eu
+base=${0%/*}
+: > "$base/started"
+while [ ! -f "$base/collected" ]; do /bin/sleep .01; done
+if [ -f "$base/listed" ]; then /bin/cat "$base/after"; else : > "$base/listed"; /bin/cat "$base/list"; fi
+"#
+            .into(),
+        )?;
+        fs::set_permissions(dir.join(helpers::WINDOW), fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        write(
+            "marker",
+            format!("scene-stream-start\talpine-scene-diagnostic/v1\t{pid}\t220325\n"),
+        )?;
+        let capture_script = r#"while [ ! -f "$1/started" ]; do /bin/sleep .01; done; /bin/cat "$1/marker" >&2; read -r done"#;
+        let capture = Owned::spawn(
+            Path::new("/bin/sh"),
+            &["-c", capture_script, "capture", dir.to_str().ok_or("path")?],
+            4096,
+            None,
+            None,
+        )?;
+        assert!(capture.output()?.is_empty());
+        let buffer = Arc::clone(&capture.err);
+        let marker = dir.join("collected");
+        let signal = thread::spawn(move || -> Result<()> {
+            let end = Instant::now() + Duration::from_secs(2);
+            while !Owned::text(&buffer)?.contains("scene-stream-start\t") {
+                remaining(end)?;
+                thread::sleep(POLL);
+            }
+            fs::write(marker, b"").map_err(|e| e.to_string())
+        });
+        let mut session = Session {
+            helpers: dir.clone(),
+            log: Vec::new(),
+            path: dir.join("helpers.log"),
+            revision: "test".into(),
+            sharing: None,
+        };
+        let first = session.window(
+            &mut app,
+            Some(&main),
+            Some(&capture),
+            Instant::now() + Duration::from_secs(1),
+        );
+        signal.join().map_err(|_| "signal failed")??;
+        if kind == "vanished" {
+            let reason = first.err().ok_or("vanished window was admitted")?;
+            assert!(reason.contains("changed across capture start"), "{reason}");
+            assert!(!app.output()?.contains("scene-sharing\t"));
+            return Ok(());
+        }
+        assert_eq!(first?, main);
+        assert_eq!(
+            String::from_utf8_lossy(&session.log)
+                .matches("scene-list")
+                .count(),
+            2
+        );
+        let state = session.sharing.as_mut().ok_or("missing inspection")?;
+        assert_eq!(state.sequence, 1);
+        state.verify(
+            &mut app,
+            &main,
+            &child,
+            Instant::now() + Duration::from_secs(1),
+        )?;
+        assert_eq!(state.sequence, 2);
+        let mut moved = child;
+        moved.id += 1;
+        assert!(
+            state
+                .verify(
+                    &mut app,
+                    &main,
+                    &moved,
+                    Instant::now() + Duration::from_secs(1)
+                )
+                .is_err()
+        );
+        Ok(())
     }
     #[test]
     fn inspection_requires_owned_exit_and_exact_cleanup() -> Result<()> {

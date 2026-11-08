@@ -15,6 +15,7 @@ mod physical_evidence;
 mod procs;
 mod recorder_log;
 mod scene_session;
+mod sharing_indicator;
 mod stamp;
 mod stats;
 mod trial;

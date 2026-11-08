@@ -58,6 +58,11 @@ Source commit, clean tree and executable hashes are retained in stamp.txt.
 Only these first-party binaries are supported. OS scheduling/reaping is an
 external dependency; cleanup failures invalidate the run. Conditions are
 checked at least each second and immediately before activation/capture/action.
+Before capture the fixture must own one visible window. After confirmed capture
+start, each sample may admit one AppKit-confirmed NSKVONotifying_NSLocalWindowSharingWindow
+parented to the pinned window and wholly in its title bar. Queries are bounded
+to 32 per case. The stale control needs an A display tick after the supervisor
+observes fixture admission and records its second clock sample in admission.tsv.
 Every control needs valid full-trace clocks, geometry, identity and cleanup.
 Native Metal timestamp failure remains a hold, including when controls agree.";
 
