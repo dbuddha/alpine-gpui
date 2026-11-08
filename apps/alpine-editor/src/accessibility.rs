@@ -847,6 +847,43 @@ mod native_text_geometry_tests {
     }
 
     #[test]
+    fn native_geometry_and_hits_follow_horizontal_scroll() -> Result<(), Box<dyn Error>> {
+        let mut app = app(&"abcdefghij".repeat(40))?;
+        let (unscrolled, _) = geometry(&mut app, 40, 1)?;
+        app.scroll_x = 120.0;
+        let scene = app.try_scene(SceneRevision::new(2), app.last_viewport)?;
+        let (scrolled, _) = geometry(&mut app, 40, 1)?;
+        assert_eq!(scrolled.x(), unscrolled.x() - 120.0);
+        assert_eq!(scrolled.width(), unscrolled.width());
+        let glyph = app.rendered_lines[0]
+            .layout
+            .glyphs()
+            .iter()
+            .find(|glyph| glyph.source_utf16() == 40)
+            .ok_or("glyph 40")?;
+        let pane = app.active_pane_bounds()?;
+        assert_eq!(
+            scrolled.x(),
+            pane.origin().x() + crate::GUTTER_WIDTH - 120.0 + glyph.x(),
+            "the frame must sit where the glyph is drawn"
+        );
+        assert!(!scene.glyphs().is_empty());
+        let point = AccessibilityBounds::new(
+            scrolled.x() + scrolled.width() * 0.5,
+            scrolled.y() + 5.0,
+            0.0,
+            0.0,
+        )?;
+        assert_eq!(text_index_at_point(&mut app, point)?, 40);
+        let gutter = AccessibilityBounds::new(pane.origin().x() + 4.0, point.y(), 0.0, 0.0)?;
+        assert!(
+            text_index_at_point(&mut app, gutter).is_err(),
+            "text scrolled under the gutter is not hit"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn composed_scene_geometry_and_hits_match_committed_text() -> Result<(), Box<dyn Error>> {
         for (source, replacement, mark) in [
             ("prefix old suffix\nnext", 7..10, "漢😀"),
@@ -916,15 +953,15 @@ mod native_text_geometry_tests {
                 .caret_bounds(
                     &projected.buffer().snapshot(),
                     &projected.rendered_lines.clone(),
-                    projected.active_pane_bounds()?.origin().x(),
+                    text_origin_x(&projected, projected.active_pane_bounds()?),
                 )?
                 .ok_or("caret")?;
             assert_eq!(caret.origin().x(), bounds.x());
             assert_eq!(caret.origin().y(), bounds.y());
-            let pane = committed.active_pane_bounds()?;
+            let origin_x = text_origin_x(&committed, committed.active_pane_bounds()?);
             for line in &committed.rendered_lines.clone() {
                 for glyph in line.layout.glyphs() {
-                    let x = pane.origin().x() + glyph.x() + glyph.advance() * 0.5;
+                    let x = origin_x + glyph.x() + glyph.advance() * 0.5;
                     let point =
                         AccessibilityBounds::new(x, line.top + LINE_HEIGHT * 0.5, 0.0, 0.0)?;
                     if let Ok(expected_index) = text_index_at_point(&mut committed, point) {
@@ -1074,11 +1111,12 @@ mod native_text_geometry_tests {
         };
         assert_eq!(source, projected);
         assert_eq!(range, AccessibilityTextRange::new(1, 1));
+        let origin_x = text_origin_x(&app, app.active_pane_bounds()?);
         let caret = app
             .caret_bounds(
                 &app.buffer().snapshot(),
                 &app.rendered_lines.clone(),
-                app.active_pane_bounds()?.origin().x(),
+                origin_x,
             )?
             .ok_or("caret")?;
         let AccessibilityPayload::TextGeometry { bounds, .. } =
@@ -1219,11 +1257,16 @@ fn line_text_geometry(
     clipped_geometry(
         app,
         actual,
-        pane.origin().x() + left,
+        text_origin_x(app, pane) + left,
         top,
         right - left,
         super::LINE_HEIGHT,
     )
+}
+
+// Where column zero is drawn: past the gutter, shifted by scroll_x.
+fn text_origin_x(app: &EditorApp, pane: alpine_core::Rect) -> f32 {
+    super::editor_text_origin_x(pane.origin().x()) - app.scroll_x
 }
 
 fn clipped_geometry(
@@ -1237,9 +1280,10 @@ fn clipped_geometry(
     let pane = app
         .active_pane_bounds()
         .map_err(|_| geometry_unavailable())?;
-    let left = x.max(pane.origin().x());
+    let text = super::editor_text_bounds(pane).map_err(|_| geometry_unavailable())?;
+    let left = x.max(text.origin().x());
     let top = y.max(pane.origin().y());
-    let right = (x + width).min(pane.origin().x() + pane.size().width());
+    let right = (x + width).min(text.origin().x() + text.size().width());
     let bottom = (y + height).min(pane.origin().y() + pane.size().height());
     if right < left || bottom <= top {
         return Err(geometry_unavailable());
@@ -1257,8 +1301,9 @@ fn text_index_at_point(
     let pane = app
         .active_pane_bounds()
         .map_err(|_| geometry_unavailable())?;
-    if point.x() < pane.origin().x()
-        || point.x() >= pane.origin().x() + pane.size().width()
+    let text = super::editor_text_bounds(pane).map_err(|_| geometry_unavailable())?;
+    if point.x() < text.origin().x()
+        || point.x() >= text.origin().x() + text.size().width()
         || point.y() < pane.origin().y()
         || point.y() >= pane.origin().y() + pane.size().height()
     {
@@ -1299,7 +1344,7 @@ fn text_index_at_point(
         .index_at_x(
             text.trim_end_matches(['\r', '\n']),
             font,
-            point.x() - pane.origin().x(),
+            point.x() - text_origin_x(app, pane),
         )
         .map_err(|_| geometry_unavailable())?
         .ok_or_else(geometry_unavailable)?;
@@ -2207,6 +2252,7 @@ fn push_diagnostics(
     let pane = app
         .active_pane_bounds()
         .map_err(|_| AccessibilityError::InvalidTree)?;
+    let text = super::editor_text_bounds(pane).map_err(|_| AccessibilityError::InvalidTree)?;
     let mut remaining = MAX_VISIBLE_DIAGNOSTIC_MARKERS;
     let mut rendered_index = 0_usize;
     loop {
@@ -2223,12 +2269,18 @@ fn push_diagnostics(
             remaining,
             |marker| {
                 let rect = super::diagnostic_underline_bounds(
-                    pane.origin().x(),
+                    text_origin_x(app, pane),
                     rendered.baseline,
                     &rendered.layout,
                     marker,
                 )
                 .map_err(|_| AccessibilityError::InvalidTree)?;
+                let id = diagnostic_node_id(rendered.line, ordinal)?;
+                ordinal = ordinal.saturating_add(1);
+                // Like text frames, a marker outside the drawn text area has none.
+                let Some(rect) = rect.intersection(text) else {
+                    return Ok(());
+                };
                 let severity = marker.severity.map_or("diagnostic".to_owned(), |value| {
                     format!("diagnostic severity {value}")
                 });
@@ -2238,7 +2290,7 @@ fn push_diagnostics(
                 let height = rect.size().height();
                 let marker_bounds = bounds(x, y, width, height)?;
                 let marker_result = node(
-                    diagnostic_node_id(rendered.line, ordinal)?,
+                    id,
                     Some(EDITOR_NODE),
                     AccessibilityRole::ListItem,
                     Arc::from(format!(
@@ -2253,7 +2305,6 @@ fn push_diagnostics(
                 );
                 let marker_node = marker_result?;
                 nodes.push(marker_node);
-                ordinal = ordinal.saturating_add(1);
                 Ok::<(), AccessibilityError>(())
             },
         );

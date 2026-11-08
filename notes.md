@@ -13,15 +13,13 @@ owner_checkpoint: pending, five normal working days after stability checks
 Goal: Deepak's daily-driver editor on a reusable, performance-first Alpine
 GPUI. Follow project.md for the accepted scope and stage order.
 
-Main at inspection: e482b9f. #679 merged the skill, research and project instructions. M1 remains a limited baseline.
+Main at inspection: 741a8f1. #678 merged and its main CI and installed smoke passed. M1 remains a limited baseline.
 The delivery automation is paused. Screen sessions require approval.
 
 ## Active work
 
-- #678 is draft. The positive control passed on 3392090. The stale fixture failed
-  during launch before capture, and the wrong control did not run. Review the
-  bounded pre-pin settling check before a new approved clean run.
-- The main editor suite passed 707 tests with three ignored. The November 8 audit also passed eight focused tests for atomic save, recovery, quit, session restoration and navigation. A disposable regression on 3312df1 confirmed that first Quit is allowed after document save and recovery journaling both fail. The edited buffer and external disk bytes were checked before Quit.
+- #671 integrates main 741a8f1. Seven before-fix assertions covered tab/pane offsets, scoped Find, RTL marked text, large-line rejection, explicit navigation and decoded views. The installed b0f5805 also lost its manual pan on tab return. Corrected headless routes pass; installed verification of the fixes and qualified performance rows are pending.
+- #680 at ecf1e21 passed its installed file-backed rescue scenarios. Draft #681 at 5831a04 passed its installed healthy and degraded scratch journeys. Dock launch in an isolated profile remains open.
 - Maintain app-builder and the [case studies](<case studies/README.md>) alongside the six-stage delivery contract.
 - The November 3 installed build at 3312df1 passed disposable edit/save/reopen. A post-quit UI query reopened the normal profile with conflicting recovered edits. Check exit by process identity after Quit and leave recovered work to its owner.
 - #676 main CI passed (41663939024); clean bf1b394 was tested. Approved
@@ -35,25 +33,12 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Evidence and blockers
 
-- On 3392090 the positive control verified A-to-B (335 frames), the frozen final
-  frame while attached, completed capture stop and exact native teardown. The
-  stale process's sole main window changed from (505,342,502,332) to
-  (506,342,500,332) with the same ID 220750 and center. It was rejected before
-  capture or transition. Evidence: bench/results/scene-inspection/alpine-scene-3392090-nov08.
-- The proposed pre-pin check allows that centered launch border only, requires
-  matching samples separated by 250 ms, and retains the five-second deadline.
-  Exact geometry still applies after pinning. Physical qualification is open.
-- The earlier 502x332 outer-frame mapping fix passed review and 243 tests.
-  Native submissions still have zero qualified presentations. Metal hold unchanged.
-
+- The #678 positive, stale and wrong-scene fixture controls were checked before merge. This evidence does not qualify editor scrolling or replace the missing Metal timestamp.
 - #675 improves missing-presentation diagnostics only. Its merged-main live
   check still failed qualification: three submissions, zero qualified
   presentations. It did not repair the platform measurement limitation.
-- #666 remains held on physical evidence. Repeated zero timestamps do not
-  justify another blind renderer change or a passing result.
-- #671 at b0f5805 includes reviewed find/IME/sidebar caret-reveal fixes and
-  passing CI. Physical idle/scroll qualification remains incomplete; a
-  system alert blocked the first run, and the retry stopped for goal review.
+- #666 at 20bb4a9 has green CI, visible bounded recovery and 12 valid matched idle pairs. Window-filtered scroll capture was refused for a 66 by 20 point auxiliary. The app-filtered display crop was non-opaque. Qualified scroll rows remain unavailable.
+- #671 at b0f5805 has passing CI on its previous base. Matched physical rows and the installed horizontal-scroll journey must cover the updated head before merge.
 - #672 remote head is 0ecc486; its local worktree is older. Do not treat the
   local checkout as the current PR head. #674 is e4bb655.
 - Semantic typing analysis currently cannot qualify intended text/caret;
@@ -69,10 +54,9 @@ The delivery automation is paused. Screen sessions require approval.
 
 ## Next steps and decisions
 
-1. After fresh review, run the final clean positive, stale and wrong controls
-   in an approved screen session. Retain all three outcomes.
-2. Fix the reproduced first-quit failure and verify the edited buffer, external disk contents and deliberate discard path.
-3. Qualify the physical method, then run affected PR gates and review each final head.
+1. Review the #671 integration and verify wheel, hit-testing, caret and input behavior on the clean installed build.
+2. Complete the isolated Dock journey for UI PRs and the applicable physical performance gates. Keep unavailable outcomes visible.
+3. Review the remaining stability PRs one at a time.
 4. Complete stability scenarios and give Deepak a build/test guide for five
    normal working days. Record acceptance explicitly.
 
