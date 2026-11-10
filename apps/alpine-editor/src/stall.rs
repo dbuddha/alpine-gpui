@@ -59,6 +59,7 @@ pub(crate) enum Kind {
     Wake,
     CloseRequested,
     Menu,
+    OpenPaths,
     Frame,
     WorkerFind,
     WorkerQuickOpen,
@@ -70,7 +71,7 @@ pub(crate) enum Kind {
     WorkerWorkspaceEditPublication,
 }
 
-const KINDS: [Kind; 20] = [
+const KINDS: [Kind; 21] = [
     Kind::Keyboard,
     Kind::Pointer,
     Kind::Scroll,
@@ -82,6 +83,7 @@ const KINDS: [Kind; 20] = [
     Kind::Wake,
     Kind::CloseRequested,
     Kind::Menu,
+    Kind::OpenPaths,
     Kind::Frame,
     Kind::WorkerFind,
     Kind::WorkerQuickOpen,
@@ -107,6 +109,7 @@ impl Kind {
             SurfaceEvent::Wake { .. } => Self::Wake,
             SurfaceEvent::CloseRequested { .. } => Self::CloseRequested,
             SurfaceEvent::Menu { .. } => Self::Menu,
+            SurfaceEvent::OpenPaths { .. } => Self::OpenPaths,
         }
     }
 

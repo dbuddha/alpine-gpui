@@ -25,8 +25,17 @@ use std::path::PathBuf;
 /// Title shown in the leftmost menu and in the Dock.
 pub(crate) const APPLICATION_NAME: &str = "Alpine Editor";
 
-/// Receives a menu command whose file choice is already resolved.
-pub(crate) type MenuHandler = Box<dyn FnMut(MenuAction) + 'static>;
+/// What the menu reports to the surface.
+pub(crate) enum MenuSignal {
+    /// A command whose file choice is already resolved.
+    Action(MenuAction),
+    /// A modal panel opened; its command, if any, follows before it closes.
+    PanelOpened,
+    PanelClosed,
+}
+
+/// Receives menu signals.
+pub(crate) type MenuHandler = Box<dyn FnMut(MenuSignal) + 'static>;
 
 struct Item {
     title: &'static str,
@@ -62,6 +71,7 @@ define_class!(
     impl MenuTarget {
         #[unsafe(method(alpineOpenFile:))]
         fn open_file(&self, _sender: Option<&AnyObject>) {
+            let _panel = PanelSpan::open(self);
             if let Some(path) = choose_path(self.mtm(), Choice::FileOrFolder) {
                 self.emit(MenuAction::OpenPath(path));
             }
@@ -69,6 +79,7 @@ define_class!(
 
         #[unsafe(method(alpineOpenFolder:))]
         fn open_folder(&self, _sender: Option<&AnyObject>) {
+            let _panel = PanelSpan::open(self);
             if let Some(path) = choose_path(self.mtm(), Choice::FolderOnly) {
                 self.emit(MenuAction::OpenPath(path));
             }
@@ -81,6 +92,7 @@ define_class!(
 
         #[unsafe(method(alpineSaveAs:))]
         fn save_as(&self, _sender: Option<&AnyObject>) {
+            let _panel = PanelSpan::open(self);
             if let Some(path) = choose_save_path(self.mtm()) {
                 self.emit(MenuAction::SaveAsPath(path));
             }
@@ -132,11 +144,31 @@ impl MenuTarget {
     /// dispatching, which reentrant modal panels can produce. Dropping the
     /// second is correct: the first is still mutating editor state.
     fn emit(&self, action: MenuAction) {
+        self.signal(MenuSignal::Action(action));
+    }
+
+    fn signal(&self, signal: MenuSignal) {
         if let Ok(mut handler) = self.ivars().handler.try_borrow_mut()
             && let Some(handler) = handler.as_mut()
         {
-            handler(action);
+            handler(signal);
         }
+    }
+}
+
+/// Reports a modal panel open until dropped, after the panel's command.
+struct PanelSpan<'a>(&'a MenuTarget);
+
+impl<'a> PanelSpan<'a> {
+    fn open(target: &'a MenuTarget) -> Self {
+        target.signal(MenuSignal::PanelOpened);
+        Self(target)
+    }
+}
+
+impl Drop for PanelSpan<'_> {
+    fn drop(&mut self) {
+        self.0.signal(MenuSignal::PanelClosed);
     }
 }
 
