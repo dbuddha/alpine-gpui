@@ -9217,15 +9217,223 @@ pub mod native_validation {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct PresentationFailureCounts {
+        submissions: u64,
+        presented: u64,
+        cancelled: u64,
+        failed: u64,
+        skipped: u64,
+        callbacks: u64,
+    }
+
+    fn physical_presentation_failure(
+        error: &alpine_runtime::RuntimeError,
+        retained_error: &Result<Option<SurfaceError>, SurfaceError>,
+        mode: PresentationEvidenceMode,
+        timed_out: bool,
+        counts: PresentationFailureCounts,
+        drained: bool,
+    ) -> Option<SurfaceError> {
+        if !matches!(
+            error,
+            alpine_runtime::RuntimeError::Surface(SurfaceError::UnexpectedRunLoopExit {
+                lifecycle: SurfaceLifecycle::Live,
+            })
+        ) || !matches!(retained_error, Ok(None))
+            || mode != PresentationEvidenceMode::Physical
+            || !timed_out
+            || !drained
+            || counts.submissions == 0
+            || counts.presented != 0
+            || counts.cancelled != 0
+            || counts.failed != counts.submissions
+            || counts.skipped > counts.failed
+        {
+            return None;
+        }
+        if counts.skipped == counts.submissions {
+            Some(SurfaceError::PresentationsSkipped {
+                attempts: u16::try_from(counts.skipped).ok()?,
+            })
+        } else {
+            Some(SurfaceError::PresentationNotObserved {
+                callbacks: u16::try_from(counts.callbacks).ok()?,
+            })
+        }
+    }
+
     #[cfg(test)]
     mod presentation_evidence_policy_tests {
         use super::{
-            PresentationEvidenceDisposition, PresentationEvidenceMode,
+            PresentationEvidenceDisposition, PresentationEvidenceMode, PresentationFailureCounts,
             classify_presentation_evidence, hosted_terminal_snapshot_is_settled,
             parse_presentation_evidence_mode, pending_cancellation_evidence_is_bounded,
-            terminal_outcome_count,
+            physical_presentation_failure, terminal_outcome_count,
         };
         use std::ffi::OsStr;
+
+        fn failed_run() -> alpine_runtime::RuntimeError {
+            alpine_runtime::RuntimeError::Surface(
+                alpine_platform_macos::SurfaceError::UnexpectedRunLoopExit {
+                    lifecycle: alpine_platform_macos::SurfaceLifecycle::Live,
+                },
+            )
+        }
+
+        fn failed_frames() -> PresentationFailureCounts {
+            PresentationFailureCounts {
+                submissions: 3,
+                presented: 0,
+                cancelled: 0,
+                failed: 3,
+                skipped: 3,
+                callbacks: 9,
+            }
+        }
+
+        fn diagnose(
+            counts: PresentationFailureCounts,
+        ) -> Option<alpine_platform_macos::SurfaceError> {
+            physical_presentation_failure(
+                &failed_run(),
+                &Ok(None),
+                PresentationEvidenceMode::Physical,
+                true,
+                counts,
+                true,
+            )
+        }
+
+        #[test]
+        fn physical_timeout_reports_zero_or_missing_presentation_evidence() {
+            use alpine_platform_macos::SurfaceError;
+
+            assert_eq!(
+                diagnose(failed_frames()),
+                Some(SurfaceError::PresentationsSkipped { attempts: 3 })
+            );
+            assert_eq!(
+                diagnose(PresentationFailureCounts {
+                    skipped: 1,
+                    callbacks: 11,
+                    ..failed_frames()
+                }),
+                Some(SurfaceError::PresentationNotObserved { callbacks: 11 })
+            );
+            assert_eq!(
+                diagnose(PresentationFailureCounts {
+                    skipped: 0,
+                    ..failed_frames()
+                }),
+                Some(SurfaceError::PresentationNotObserved { callbacks: 9 })
+            );
+        }
+
+        #[test]
+        fn physical_failure_diagnosis_rejects_mixed_or_invalid_frame_counts() {
+            for counts in [
+                PresentationFailureCounts {
+                    presented: 1,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    cancelled: 1,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    submissions: 0,
+                    failed: 0,
+                    skipped: 0,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    failed: 2,
+                    skipped: 2,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    failed: 0,
+                    skipped: 0,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    skipped: 4,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    skipped: 0,
+                    callbacks: u64::MAX,
+                    ..failed_frames()
+                },
+                PresentationFailureCounts {
+                    submissions: u64::MAX,
+                    failed: u64::MAX,
+                    skipped: u64::MAX,
+                    ..failed_frames()
+                },
+            ] {
+                assert_eq!(diagnose(counts), None);
+            }
+        }
+
+        #[test]
+        fn physical_failure_diagnosis_preserves_other_run_errors_and_unsettled_work() {
+            use alpine_platform_macos::{SurfaceError, SurfaceLifecycle};
+            use alpine_runtime::RuntimeError;
+
+            for (mode, timed_out, drained) in [
+                (PresentationEvidenceMode::HostedDirect, true, true),
+                (PresentationEvidenceMode::Physical, false, true),
+                (PresentationEvidenceMode::Physical, true, false),
+            ] {
+                assert_eq!(
+                    physical_presentation_failure(
+                        &failed_run(),
+                        &Ok(None),
+                        mode,
+                        timed_out,
+                        failed_frames(),
+                        drained,
+                    ),
+                    None
+                );
+            }
+            for error in [
+                RuntimeError::Surface(SurfaceError::UnsupportedPlatform),
+                RuntimeError::Surface(SurfaceError::UnexpectedRunLoopExit {
+                    lifecycle: SurfaceLifecycle::Closing,
+                }),
+            ] {
+                assert_eq!(
+                    physical_presentation_failure(
+                        &error,
+                        &Ok(None),
+                        PresentationEvidenceMode::Physical,
+                        true,
+                        failed_frames(),
+                        true,
+                    ),
+                    None
+                );
+            }
+            for retained in [
+                Ok(Some(SurfaceError::UnsupportedPlatform)),
+                Err(SurfaceError::UnsupportedPlatform),
+            ] {
+                assert_eq!(
+                    physical_presentation_failure(
+                        &failed_run(),
+                        &retained,
+                        PresentationEvidenceMode::Physical,
+                        true,
+                        failed_frames(),
+                        true,
+                    ),
+                    None
+                );
+            }
+        }
 
         #[test]
         fn evidence_mode_parser_rejects_drift_and_preserves_source_identity() {
@@ -9478,6 +9686,25 @@ pub mod native_validation {
             Err(error) => {
                 let frame = surface.snapshot();
                 let (events, frame_builds) = native_validation_dispatch_counts();
+                let retained_error = surface.take_error();
+                let timed_out = timeout.as_ref().is_some_and(|guard| guard.expired());
+                let presentation_error = physical_presentation_failure(
+                    &error,
+                    &retained_error,
+                    evidence_mode,
+                    timed_out,
+                    PresentationFailureCounts {
+                        submissions: frame.submission_count(),
+                        presented: frame.presented_count(),
+                        cancelled: frame.cancelled_count(),
+                        failed: frame.failed_count(),
+                        skipped: frame.skipped_count(),
+                        callbacks: observer.callback_count(),
+                    },
+                    frame.occupied_frame_slots() == 0
+                        && frame.submitted_frame_slots() == 0
+                        && frame.display_link_paused(),
+                );
                 eprintln!(
                     "alpine-native-run-failure callbacks={} submissions={} presented={} skipped={} cancelled={} failed={} qualified={} superseded={} occupied={} submitted={} pending-cancellations={} paused={} frame-builds={} events={events:?}",
                     observer.callback_count(),
@@ -9495,12 +9722,11 @@ pub mod native_validation {
                     frame_builds,
                 );
                 eprintln!(
-                    "alpine-native-run-failure-detail returned={error:?} retained={:?} evidence={evidence_source} initial-native-visible={initial_native_visibility:?} configuration-injected={configuration_injected} timeout-expired={:?}",
-                    surface.take_error(),
+                    "alpine-native-run-failure-detail returned={error:?} retained={retained_error:?} evidence={evidence_source} initial-native-visible={initial_native_visibility:?} configuration-injected={configuration_injected} timeout-expired={:?} presentation-error={presentation_error:?}",
                     timeout.as_ref().map(|guard| guard.expired()),
                 );
                 eprintln!("alpine-native-run-failure-snapshot={frame:?}");
-                return Err(error);
+                return Err(presentation_error.map_or(error, alpine_runtime::RuntimeError::Surface));
             }
         }
             .ok_or(alpine_runtime::RuntimeError::Surface(
