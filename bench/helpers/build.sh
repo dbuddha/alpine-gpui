@@ -27,7 +27,7 @@ compile() {
 compile bench-window "$helpers/Common.swift" "$helpers/Window.swift"
 compile bench-sample "$helpers/Common.swift" "$helpers/Sample.swift"
 compile bench-input "$helpers/Common.swift" "$helpers/Input.swift"
-compile bench-capture "$helpers/Common.swift" "$helpers/Capture.swift"
+compile bench-capture "$helpers/Common.swift" "$helpers/SceneEvidence.swift" "$helpers/Capture.swift"
 compile bench-reference-appkit "$bench_root/reference-appkit/ReferenceEditor.swift"
 
 for helper in bench-window bench-sample bench-input bench-capture; do
@@ -38,6 +38,15 @@ printf 'helper self-tests passed\n'
 
 stamp="$output/stamp.tsv"
 {
+    printf 'revision\t%s\n' "$(git -C "$bench_root" rev-parse HEAD)"
+    if [ -z "$(git -C "$bench_root" status --porcelain)" ]; then
+        printf 'tree\tclean\n'
+    else
+        printf 'tree\tdirty\n'
+    fi
+    for binary in bench-window bench-capture; do
+        printf 'binary\t%s\t%s\n' "$binary" "$(shasum -a 256 "$output/$binary" | awk '{print $1}')"
+    done
     printf 'swiftc\t%s\n' "$(xcrun swiftc --version 2>&1 | head -n 1)"
     printf 'sdk\t%s\n' "$(xcrun --show-sdk-version)"
     for source in "$helpers"/*.swift "$bench_root"/reference-appkit/*.swift; do

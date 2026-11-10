@@ -12,8 +12,11 @@ distribution, and is not affiliated with or endorsed by Zed Industries.
 
 ## Status
 
-A prototype, not yet a daily driver. Performance has not been measured against
-Zed yet; that is the next milestone.
+A prototype, not yet a daily driver. October 2026 produced a limited baseline
+against Zed and AppKit. Semantic typing latency and equivalent workspace-loaded
+language-server memory remain unqualified; recorded scroll cadence trails Zed.
+See [project.md](project.md) for the accepted objective and release scope,
+[notes.md](notes.md) for current work, and [ARCHIVE.md](ARCHIVE.md) for results.
 
 Works today: opening files and folders from the File menu or at launch,
 editing, atomic save, undo and redo, tabs, splits, a lazy file tree, session
@@ -23,8 +26,11 @@ definition, references, symbols, rename and format previews). Those are
 verified for Rust; C++ shows clangd diagnostics; the other languages use the
 same layer once their server is installed.
 
-Not yet: git features, a file watcher, multiple windows, a design system, vim
-mode and multi-cursor editing.
+Planned daily-driver work includes Vim, local Git, structural editing, preview
+tabs, a preferences UI, Markdown preview, and OCaml/Haskell qualification.
+Debugging follows the daily-driver release. Multi-cursor, AI, collaboration,
+extensions, remote development and an integrated terminal are excluded.
+These are targets, not claims of implemented behavior.
 
 ## Requirements
 
