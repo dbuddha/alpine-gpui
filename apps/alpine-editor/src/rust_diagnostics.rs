@@ -1,10 +1,11 @@
 //! Bounded active-document Rust diagnostics above the local LSP client.
 
 use std::{
+    collections::VecDeque,
     env,
     error::Error,
     ffi::OsString,
-    fmt, fs,
+    fmt, fs, mem,
     ops::Range,
     path::{Path, PathBuf},
     sync::{
@@ -23,7 +24,8 @@ use crate::{
         DiagnosticBatch, LanguageProtocolError, LspDocument, LspPosition, initialize_params,
     },
     lsp_process::{
-        ConfigError, ProcessIdentity, ProcessSpec, ProcessStop, ProcessWake, StopReason,
+        ConfigError, InputSequence, ProcessIdentity, ProcessSpec, ProcessStop, ProcessWake,
+        StopReason, SubmitError,
     },
     rust_completion::{CompletionBatch, CompletionError, CompletionItem},
     rust_navigation::{HoverContent, NavigationError, SourceLocation, SourceLocations},
@@ -38,6 +40,15 @@ use crate::{
 
 const MAX_POLLS_PER_TURN: usize = 8;
 const MAX_RESTARTS_PER_DOCUMENT: u8 = 2;
+// Documents one server holds open: the shown one and the most recently shown
+// others. Each keeps a rope snapshot shared with its tab's buffer, plus at
+// most one diagnostic batch.
+const MAX_OPEN_DOCUMENTS: usize = 16;
+// Background frames go out only into an empty event queue (16 deep), at most
+// this many unconfirmed, so their writes and replies cannot overflow it. The
+// shown document's frames never wait.
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
+const MAX_TRACKED_FRAMES: usize = 2 * MAX_OPEN_DOCUMENTS;
 pub(crate) const MAX_VISIBLE_DIAGNOSTIC_MARKERS: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -572,6 +583,9 @@ enum NavigationCandidate {
 struct PollCandidates {
     initialized: bool,
     diagnostics: Option<Result<DiagnosticBatch, LanguageProtocolError>>,
+    // Newest batch per background document, keyed by roster index.
+    background_diagnostics: Vec<(usize, DiagnosticBatch)>,
+    stale_background_diagnostics: u64,
     completion: Option<(u32, RequestStamp, Result<CompletionBatch, CompletionError>)>,
     navigation: Option<(
         u32,
@@ -592,6 +606,46 @@ struct PollCandidates {
         Result<WorkspaceEditWire, WorkspaceEditError>,
     )>,
     stale_response: Option<u32>,
+}
+
+impl PollCandidates {
+    /// Routes a publication to the shown document or a background one.
+    fn route_diagnostics(
+        &mut self,
+        params: &RawValue,
+        shown: Option<&LspDocument>,
+        background: &[OpenDocument],
+        recently_closed: &VecDeque<Box<str>>,
+    ) {
+        let mut closed = false;
+        let routed = DiagnosticBatch::admit_resolved(params, |uri| {
+            if let Some(shown) = shown.filter(|shown| shown.uri() == uri) {
+                return Some((None, shown));
+            }
+            let index = background
+                .iter()
+                .position(|open| open.document.uri() == uri);
+            closed = index.is_none() && recently_closed.iter().any(|held| held.as_ref() == uri);
+            index.map(|index| (Some(index), &background[index].document))
+        });
+        match routed {
+            Ok((None, batch)) => self.diagnostics = Some(Ok(batch)),
+            Ok((Some(index), batch)) => {
+                self.background_diagnostics
+                    .retain(|(held, _)| *held != index);
+                self.background_diagnostics.push((index, batch));
+            }
+            Err((Some(Some(_)), _)) => {
+                self.stale_background_diagnostics =
+                    self.stale_background_diagnostics.saturating_add(1);
+            }
+            Err((None, LanguageProtocolError::DocumentMismatch)) if closed => {
+                self.stale_background_diagnostics =
+                    self.stale_background_diagnostics.saturating_add(1);
+            }
+            Err((_, error)) => self.diagnostics = Some(Err(error)),
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
@@ -650,6 +704,37 @@ fn symbols_from_response(
     }
 }
 
+/// A document the server holds open while another tab is shown.
+struct OpenDocument {
+    path: PathBuf,
+    document: LspDocument,
+    snapshot: BufferSnapshot,
+    synced_snapshot: BufferSnapshot,
+    pending_change: bool,
+    // The server lacks this document: a `didOpen` is owed.
+    unopened: bool,
+    // The next frame resends one whose write was rejected.
+    retry: bool,
+    diagnostics: Option<DiagnosticBatch>,
+}
+
+/// A document frame whose write is unconfirmed, kept for one retry.
+struct TrackedFrame {
+    sequence: InputSequence,
+    frame: Frame,
+    retried: bool,
+}
+
+enum Frame {
+    Open(Box<str>),
+    Change(Box<str>),
+    Close(LspDocument),
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the shown document's wire flags change independently, as each roster entry's do"
+)]
 struct RustSession {
     target: Target,
     identity: LanguageIdentity,
@@ -657,12 +742,25 @@ struct RustSession {
     process_generation: u64,
     process_epoch: u64,
     lsp_version: i32,
+    // Highest version this session has sent for any document.
+    newest_version: i32,
     state: SessionState,
     snapshot: BufferSnapshot,
     synced_snapshot: BufferSnapshot,
     pending_change: bool,
     restart_count: u8,
     document: LspDocument,
+    // The shown document's tab closed with no other document shown here.
+    active_closed: bool,
+    unopened: bool,
+    retry: bool,
+    // Least recently shown first; at most MAX_OPEN_DOCUMENTS - 1.
+    background: Vec<OpenDocument>,
+    // Closes owed for documents that left the roster, each with its retry.
+    owed_closes: VecDeque<(LspDocument, bool)>,
+    tracked: VecDeque<TrackedFrame>,
+    // Lately closed URIs, whose late publications are quietly stale.
+    recently_closed: VecDeque<Box<str>>,
     diagnostics: Option<AdmittedDiagnostics>,
     pending_completion: Option<PendingCompletion>,
     completion: Option<AdmittedCompletion>,
@@ -680,6 +778,129 @@ impl RustSession {
     fn take_workspace_edit(&mut self) -> Option<PendingWorkspaceEdit> {
         self.workspace_edit_params = None;
         self.pending_workspace_edit.take()
+    }
+
+    /// A version above every one sent, so no URI ever reuses a version.
+    fn fresh_version(&mut self) -> Result<i32, RustDiagnosticsError> {
+        let version = self
+            .lsp_version
+            .max(self.newest_version)
+            .checked_add(1)
+            .ok_or(RustDiagnosticsError::VersionExhausted)?;
+        self.newest_version = version;
+        Ok(version)
+    }
+
+    /// The document to show next, taken from the roster or built new with
+    /// its `didOpen`. Fails before changing anything but the version count.
+    fn take_incoming(
+        &mut self,
+        input: &RustDocumentInput,
+        language_id: &str,
+    ) -> Result<(OpenDocument, Option<Box<RawValue>>), RustDiagnosticsError> {
+        let held = self
+            .background
+            .iter()
+            .position(|open| open.path == input.path);
+        if let Some(index) = held {
+            let changed = self.background[index].snapshot.revision() != input.snapshot.revision();
+            let version = changed.then(|| self.fresh_version()).transpose()?;
+            let mut incoming = self.background.remove(index);
+            if let Some(version) = version {
+                incoming.document.set_version(version);
+                incoming.diagnostics = None;
+            }
+            incoming.pending_change |=
+                incoming.synced_snapshot.revision() != input.snapshot.revision();
+            return Ok((incoming, None));
+        }
+        let version = self.fresh_version()?;
+        let document = LspDocument::from_file_path(&input.path, language_id, version)
+            .map_err(RustDiagnosticsError::Language)?;
+        let open = (self.state == SessionState::Open)
+            .then(|| document.did_open_params(&input.snapshot.text()))
+            .transpose()
+            .map_err(RustDiagnosticsError::Language)?;
+        let incoming = OpenDocument {
+            path: input.path.clone(),
+            document,
+            snapshot: input.snapshot.clone(),
+            synced_snapshot: input.snapshot.clone(),
+            pending_change: false,
+            unopened: open.is_none(),
+            retry: false,
+            diagnostics: None,
+        };
+        Ok((incoming, open))
+    }
+
+    /// A new process holds nothing: each document is owed a `didOpen` at a
+    /// fresh version, and no close or write is outstanding.
+    fn reset_for_new_process(&mut self) -> Result<(), RustDiagnosticsError> {
+        if !self.active_closed {
+            let version = self.fresh_version()?;
+            self.document.set_version(version);
+            self.lsp_version = version;
+            self.unopened = true;
+        }
+        self.retry = false;
+        for index in 0..self.background.len() {
+            let version = self.fresh_version()?;
+            let open = &mut self.background[index];
+            open.document.set_version(version);
+            open.unopened = true;
+            open.retry = false;
+            open.pending_change = false;
+            open.diagnostics = None;
+        }
+        self.owed_closes.clear();
+        self.tracked.clear();
+        Ok(())
+    }
+
+    /// Remembers a sent document frame until its write is confirmed.
+    fn track(&mut self, sequence: InputSequence, frame: Frame, retried: bool) {
+        if self.tracked.len() == MAX_TRACKED_FRAMES {
+            let _ = self.tracked.pop_front();
+        }
+        self.tracked.push_back(TrackedFrame {
+            sequence,
+            frame,
+            retried,
+        });
+    }
+
+    /// Owes the server a close; false when the owed list is already full.
+    fn owe_close(&mut self, document: LspDocument, retry: bool) -> bool {
+        if self.owed_closes.len() == MAX_OPEN_DOCUMENTS {
+            return false;
+        }
+        self.owed_closes.push_back((document, retry));
+        true
+    }
+
+    fn remember_closed(&mut self, uri: &str) {
+        if self.recently_closed.len() == MAX_OPEN_DOCUMENTS {
+            let _ = self.recently_closed.pop_front();
+        }
+        self.recently_closed.push_back(Box::from(uri));
+    }
+
+    /// Sends the close owed for `uri`, if any, so a reopen follows it.
+    fn send_owed_close_for(&mut self, uri: &str) -> Result<(), RustDiagnosticsError> {
+        let Some(index) = self
+            .owed_closes
+            .iter()
+            .position(|(owed, _)| owed.uri() == uri)
+        else {
+            return Ok(());
+        };
+        let Some((document, retried)) = self.owed_closes.remove(index) else {
+            return Ok(());
+        };
+        let sequence = send_close(&mut self.client, &document)?;
+        self.track(sequence, Frame::Close(document), retried);
+        Ok(())
     }
 
     fn begin_completion(
@@ -1252,42 +1473,25 @@ impl RustDiagnostics {
         if !shares_workspace {
             return self.replace_session(input, target, wake_factory);
         }
-        if self.target.as_ref() != Some(&target) {
+        let reopening = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.active_closed);
+        if self.target.as_ref() != Some(&target) || reopening {
             if self.session.is_some() {
                 return self.switch_document(input, target);
             }
             return self.replace_session(input, target, wake_factory);
         }
-        let Some(session) = self.session.as_mut() else {
+        let Some(identity) = self.session.as_ref().map(|session| session.identity) else {
             return self.replace_session(input, target, wake_factory);
         };
-        let mut visual_changed = false;
-        if input.identity != session.identity {
-            merge_visual_changed(&mut visual_changed, session.completion.take().is_some());
-            merge_visual_changed(&mut visual_changed, session.navigation.take().is_some());
-            merge_visual_changed(&mut visual_changed, session.symbols.take().is_some());
-            if let Some(pending) = session.pending_completion.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.completion_cancellations = self.completion_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_navigation.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_symbols.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.take_workspace_edit() {
-                let _ = session.client.cancel(pending.request_id);
-                self.workspace_edit_cancellations =
-                    self.workspace_edit_cancellations.saturating_add(1);
-            }
-            self.workspace_edit_preparation = None;
-        }
+        let mut visual_changed = input.identity != identity && self.revoke_requests();
+        let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
         if input.identity.buffer_revision != session.identity.buffer_revision {
-            let Some(version) = session.lsp_version.checked_add(1) else {
-                return self.fail(RustDiagnosticsError::VersionExhausted);
+            let version = match session.fresh_version() {
+                Ok(version) => version,
+                Err(error) => return self.fail(error),
             };
             session.document.set_version(version);
             session.lsp_version = version;
@@ -1338,6 +1542,10 @@ impl RustDiagnostics {
                 let admitted = self.admit(candidate);
                 merge_visual_changed(&mut visual_changed, admitted);
             }
+            self.admit_background(
+                candidates.background_diagnostics,
+                candidates.stale_background_diagnostics,
+            );
             if let Some(id) = candidates.stale_response {
                 merge_visual_changed(&mut visual_changed, self.reject_stale_completion(id));
                 merge_visual_changed(&mut visual_changed, self.reject_stale_navigation(id));
@@ -1396,20 +1604,31 @@ impl RustDiagnostics {
         &mut self,
     ) -> Result<(LspClientPoll, PollCandidates), LspClientError> {
         let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
-        let expected = &session.document;
         let current = session
             .pending_workspace_edit
             .map(|pending| pending.stamp)
             .or_else(|| session.pending_symbols.map(|pending| pending.stamp))
             .or_else(|| session.pending_navigation.map(|pending| pending.stamp))
             .or_else(|| session.pending_completion.map(|pending| pending.stamp));
+        let RustSession {
+            client,
+            document: expected,
+            background,
+            active_closed,
+            recently_closed,
+            ..
+        } = session;
+        let expected = &*expected;
+        let background = background.as_slice();
+        let recently_closed = &*recently_closed;
+        let shown = (!*active_closed).then_some(expected);
         let mut candidates = PollCandidates::default();
-        let poll = session.client.poll(current, |event| match event {
+        let poll = client.poll(current, |event| match event {
             PeerEvent::Initialized(_) => candidates.initialized = true,
             PeerEvent::InboundNotification {
                 method: "textDocument/publishDiagnostics",
                 params: Some(params),
-            } => candidates.diagnostics = Some(DiagnosticBatch::admit(params, expected)),
+            } => candidates.route_diagnostics(params, shown, background, recently_closed),
             PeerEvent::Response {
                 id,
                 method,
@@ -2245,8 +2464,15 @@ impl RustDiagnostics {
             }
             LspClientPoll::Stopped(StopReason::Restart)
             | LspClientPoll::Protocol { .. }
-            | LspClientPoll::Stderr { .. }
-            | LspClientPoll::InputWritten { .. } => false,
+            | LspClientPoll::Stderr { .. } => false,
+            LspClientPoll::InputWritten { sequence, .. } => {
+                if let Some(session) = self.session.as_mut() {
+                    session
+                        .tracked
+                        .retain(|tracked| tracked.sequence != sequence);
+                }
+                false
+            }
             LspClientPoll::Exited { .. } | LspClientPoll::Failed(_) | LspClientPoll::Stopped(_) => {
                 let restarted = self.restart_or_fail(RustDiagnosticsError::Client(
                     LspClientError::ProcessNotStarted,
@@ -2254,9 +2480,19 @@ impl RustDiagnostics {
                 merge_visual_changed(visual_changed, restarted);
                 true
             }
-            LspClientPoll::InputRejected { .. } => {
-                if let Some(session) = self.session.as_mut() {
-                    session.pending_change = session.state == SessionState::Open;
+            LspClientPoll::InputRejected { sequence, failure } => {
+                match self.requeue_rejected(sequence) {
+                    Some(true) => {}
+                    Some(false) => {
+                        let error = RustDiagnosticsError::Client(LspClientError::Process(failure));
+                        merge_visual_changed(visual_changed, self.restart_or_fail(error));
+                        return true;
+                    }
+                    None => {
+                        if let Some(session) = self.session.as_mut() {
+                            session.pending_change = session.state == SessionState::Open;
+                        }
+                    }
                 }
                 let status_changed = replace_status(
                     &mut self.status,
@@ -2266,6 +2502,55 @@ impl RustDiagnostics {
                 false
             }
         }
+    }
+
+    /// Queues a rejected document frame to be sent once more. `None` when
+    /// the write was no tracked document frame, false when it was a retry.
+    fn requeue_rejected(&mut self, sequence: InputSequence) -> Option<bool> {
+        let session = self.session.as_mut()?;
+        let index = session
+            .tracked
+            .iter()
+            .position(|tracked| tracked.sequence == sequence)?;
+        let tracked = session.tracked.remove(index)?;
+        if tracked.retried {
+            return Some(false);
+        }
+        let uri = match tracked.frame {
+            Frame::Close(document) => return Some(session.owe_close(document, true)),
+            Frame::Open(uri) => uri,
+            // The server keeps its older text: close and reopen with the new.
+            Frame::Change(uri) => {
+                let document = if !session.active_closed && session.document.uri() == uri.as_ref() {
+                    Some(session.document.clone())
+                } else {
+                    session
+                        .background
+                        .iter()
+                        .find(|open| open.document.uri() == uri.as_ref())
+                        .map(|open| open.document.clone())
+                };
+                let Some(document) = document else {
+                    return Some(true);
+                };
+                if !session.owe_close(document, false) {
+                    return Some(false);
+                }
+                uri
+            }
+        };
+        if !session.active_closed && session.document.uri() == uri.as_ref() {
+            session.unopened = true;
+            session.retry = true;
+        } else if let Some(open) = session
+            .background
+            .iter_mut()
+            .find(|open| open.document.uri() == uri.as_ref())
+        {
+            open.unopened = true;
+            open.retry = true;
+        }
+        Some(true)
     }
 
     pub(crate) fn for_each_marker<E, F>(
@@ -2540,12 +2825,20 @@ impl RustDiagnostics {
             process_generation: generation,
             process_epoch: 1,
             lsp_version: 1,
+            newest_version: 1,
             state: SessionState::Starting,
             snapshot: input.snapshot,
             synced_snapshot,
             pending_change: false,
             restart_count: 0,
             document,
+            active_closed: false,
+            unopened: true,
+            retry: false,
+            background: Vec::new(),
+            owed_closes: VecDeque::new(),
+            tracked: VecDeque::new(),
+            recently_closed: VecDeque::new(),
             diagnostics: None,
             pending_completion: None,
             completion: None,
@@ -2584,28 +2877,15 @@ impl RustDiagnostics {
         )
     }
 
+    /// Opens the roster: the shown document now, the rest over later turns
+    /// as their writes are confirmed.
     fn open_document(&mut self) -> bool {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        let text = session.snapshot.text();
-        let result = session
-            .document
-            .did_open_params(&text)
-            .map_err(RustDiagnosticsError::Language)
-            .and_then(|params| {
-                session
-                    .client
-                    .notify("textDocument/didOpen", Some(&params))
-                    .map_err(RustDiagnosticsError::Client)
-            });
-        if let Err(error) = result {
-            return self.restart_or_fail(error);
-        }
         session.state = SessionState::Open;
-        session.synced_snapshot = session.snapshot.clone();
-        session.pending_change = false;
-        replace_status(&mut self.status, None)
+        let cleared = replace_status(&mut self.status, None);
+        self.flush_change() || cleared
     }
 
     fn replace_session<F>(
@@ -2627,103 +2907,348 @@ impl RustDiagnostics {
         }
     }
 
+    /// Shows another document of this workspace. One the server holds open
+    /// is promoted without a `didOpen`; the shown one stays open behind it,
+    /// and a full roster closes its least recently shown document.
     fn switch_document(&mut self, input: RustDocumentInput, target: Target) -> LanguageEffect {
         let language_id = self.lsp_language_id.as_deref().unwrap_or("rust");
-        let document = match LspDocument::from_file_path(&input.path, language_id, 1) {
-            Ok(document) => document,
-            Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
+        let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
+        let (incoming, open) = match session.take_incoming(&input, language_id) {
+            Ok(incoming) => incoming,
+            Err(error) => return self.fail(error),
         };
-        let session = self.session.as_ref().unwrap_or_else(|| unreachable!());
-        let transition = if session.state == SessionState::Open {
-            let text = input.snapshot.text();
-            let transition = session
-                .document
-                .did_close_params()
-                .and_then(|close| document.did_open_params(&text).map(|open| (close, open)));
-            match transition {
-                Ok(transition) => Some(transition),
-                Err(error) => return self.fail(RustDiagnosticsError::Language(error)),
-            }
-        } else {
-            None
+        let _ = self.revoke_requests();
+        let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
+        let open_state = session.state == SessionState::Open;
+        let shown = OpenDocument {
+            path: mem::replace(&mut session.target, target.clone()).path,
+            document: mem::replace(&mut session.document, incoming.document),
+            snapshot: mem::replace(&mut session.snapshot, input.snapshot),
+            synced_snapshot: mem::replace(&mut session.synced_snapshot, incoming.synced_snapshot),
+            pending_change: mem::replace(
+                &mut session.pending_change,
+                incoming.pending_change && open_state,
+            ),
+            unopened: mem::replace(&mut session.unopened, incoming.unopened),
+            retry: mem::replace(&mut session.retry, incoming.retry),
+            diagnostics: session.diagnostics.take().map(|admitted| admitted.batch),
         };
-
-        let transition_result = {
-            let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
-            let _ = session.completion.take();
-            let _ = session.navigation.take();
-            let _ = session.symbols.take();
-            if let Some(pending) = session.pending_completion.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.completion_cancellations = self.completion_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_navigation.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.pending_symbols.take() {
-                let _ = session.client.cancel(pending.request_id);
-                self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
-            }
-            if let Some(pending) = session.take_workspace_edit() {
-                let _ = session.client.cancel(pending.request_id);
-                self.workspace_edit_cancellations =
-                    self.workspace_edit_cancellations.saturating_add(1);
-            }
-            self.workspace_edit_preparation = None;
-            let _ = session.diagnostics.take();
-            session.target = target.clone();
-            session.identity = input.identity;
-            session.lsp_version = 1;
-            session.snapshot = input.snapshot;
-            session.synced_snapshot = session.snapshot.clone();
-            session.pending_change = false;
-            session.document = document;
-            transition.map_or(Ok(()), |(close, open)| {
-                session
-                    .client
-                    .notify("textDocument/didClose", Some(&close))
-                    .and_then(|_| session.client.notify("textDocument/didOpen", Some(&open)))
-                    .map(|_| ())
-            })
-        };
+        if !mem::replace(&mut session.active_closed, false) {
+            session.background.push(shown);
+        }
+        let evicted =
+            (session.background.len() >= MAX_OPEN_DOCUMENTS).then(|| session.background.remove(0));
+        if let Some(evicted) = &evicted {
+            session.remember_closed(evicted.document.uri());
+        }
+        session.identity = input.identity;
+        session.lsp_version = session.document.version();
+        session.diagnostics = incoming.diagnostics.map(|batch| AdmittedDiagnostics {
+            identity: input.identity,
+            process_epoch: session.process_epoch,
+            batch,
+        });
+        let status = session
+            .diagnostics
+            .as_ref()
+            .and_then(|admitted| admitted.batch.primary_message())
+            .map(Arc::from);
+        let mut transition = Ok(());
+        if open_state
+            && let Some(evicted) = evicted
+            && !evicted.unopened
+        {
+            transition = send_close(&mut session.client, &evicted.document)
+                .map(|sequence| session.track(sequence, Frame::Close(evicted.document), false));
+        }
+        if transition.is_ok()
+            && let Some(open) = &open
+        {
+            let uri = Box::<str>::from(session.document.uri());
+            transition = session
+                .send_owed_close_for(&uri)
+                .and_then(|()| {
+                    session
+                        .client
+                        .notify("textDocument/didOpen", Some(open))
+                        .map_err(RustDiagnosticsError::Client)
+                })
+                .map(|sequence| session.track(sequence, Frame::Open(uri), false));
+        }
         self.target = Some(target);
         self.document_switches = self.document_switches.saturating_add(1);
-        let _ = replace_status(&mut self.status, None);
-        if let Err(error) = transition_result {
-            let _ = self.restart_or_fail(RustDiagnosticsError::Client(error));
+        let _ = replace_status(&mut self.status, status);
+        if let Err(error) = transition {
+            let _ = self.restart_or_fail(error);
         }
+        let _ = self.flush_change();
         LanguageEffect {
             visual_changed: true,
             continuation: None,
         }
     }
 
+    /// Drops the shown document's results and revokes its requests locally;
+    /// the server's cancellation is only advisory.
+    fn revoke_requests(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let mut changed = session.completion.take().is_some();
+        changed |= session.navigation.take().is_some();
+        changed |= session.symbols.take().is_some();
+        if let Some(pending) = session.pending_completion.take() {
+            let _ = session.client.cancel(pending.request_id);
+            self.completion_cancellations = self.completion_cancellations.saturating_add(1);
+        }
+        if let Some(pending) = session.pending_navigation.take() {
+            let _ = session.client.cancel(pending.request_id);
+            self.navigation_cancellations = self.navigation_cancellations.saturating_add(1);
+        }
+        if let Some(pending) = session.pending_symbols.take() {
+            let _ = session.client.cancel(pending.request_id);
+            self.symbol_cancellations = self.symbol_cancellations.saturating_add(1);
+        }
+        if let Some(pending) = session.take_workspace_edit() {
+            let _ = session.client.cancel(pending.request_id);
+            self.workspace_edit_cancellations = self.workspace_edit_cancellations.saturating_add(1);
+        }
+        self.workspace_edit_preparation = None;
+        changed
+    }
+
+    /// Sends what the server lacks: the shown document at once, then owed
+    /// closes and background documents while few tracked writes are unseen.
     fn flush_change(&mut self) -> bool {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        if !session.pending_change || session.state != SessionState::Open {
+        if session.state != SessionState::Open || session.active_closed {
+            return self.flush_background();
+        }
+        if session.unopened {
+            let uri = Box::<str>::from(session.document.uri());
+            let sent = session.send_owed_close_for(&uri).and_then(|()| {
+                send_open(&mut session.client, &session.document, &session.snapshot)
+            });
+            match sent {
+                Ok(sequence) => {
+                    let retried = mem::take(&mut session.retry);
+                    session.track(sequence, Frame::Open(uri), retried);
+                    session.unopened = false;
+                    session.synced_snapshot = session.snapshot.clone();
+                    session.pending_change = false;
+                }
+                // A document the server may not take stays closed there.
+                Err(RustDiagnosticsError::Language(error)) => {
+                    session.active_closed = true;
+                    session.unopened = false;
+                    session.pending_change = false;
+                    session.diagnostics = None;
+                    let error = RustDiagnosticsError::Language(error).to_string();
+                    let changed = replace_status(&mut self.status, Some(Arc::from(error)));
+                    return self.flush_background() || changed;
+                }
+                Err(error) => return self.restart_or_fail(error),
+            }
+        } else if session.pending_change {
+            let sent = send_change(
+                &mut session.client,
+                &session.document,
+                &session.synced_snapshot,
+                &session.snapshot,
+            );
+            if let Err(error) = sent {
+                return replace_status(&mut self.status, Some(Arc::from(error.to_string())));
+            }
+            session.synced_snapshot = session.snapshot.clone();
+            session.pending_change = false;
+            let changed = replace_status(&mut self.status, None);
+            return self.flush_background() || changed;
+        }
+        self.flush_background()
+    }
+
+    /// Sends owed closes, then background opens and changes, most recently
+    /// shown first, until `MAX_FRAMES_IN_FLIGHT` tracked writes are unseen.
+    fn flush_background(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        if session.state != SessionState::Open
+            || session.client.snapshot().process.queued_events != 0
+        {
             return false;
         }
-        let text = session.snapshot.text();
-        let result = document_end(&session.synced_snapshot)
-            .and_then(|previous_end| session.document.did_change_params(&text, previous_end))
-            .map_err(RustDiagnosticsError::Language)
-            .and_then(|params| {
-                session
-                    .client
-                    .notify("textDocument/didChange", Some(&params))
-                    .map_err(RustDiagnosticsError::Client)
-            });
-        match result {
-            Ok(_) => {
-                session.synced_snapshot = session.snapshot.clone();
-                session.pending_change = false;
-                replace_status(&mut self.status, None)
+        let mut failure = None;
+        while session.tracked.len() < MAX_FRAMES_IN_FLIGHT {
+            let Some((document, retried)) = session.owed_closes.pop_front() else {
+                break;
+            };
+            match send_close(&mut session.client, &document) {
+                Ok(sequence) => session.track(sequence, Frame::Close(document), retried),
+                Err(error) => {
+                    session.owed_closes.push_front((document, retried));
+                    failure = Some(error);
+                    break;
+                }
             }
-            Err(error) => replace_status(&mut self.status, Some(Arc::from(error.to_string()))),
         }
+        let mut report = failure;
+        let mut index = session.background.len();
+        while failure.is_none() && index > 0 && session.tracked.len() < MAX_FRAMES_IN_FLIGHT {
+            index -= 1;
+            let open = &session.background[index];
+            let uri = Box::<str>::from(open.document.uri());
+            let sent = if open.unopened {
+                send_open(&mut session.client, &open.document, &open.snapshot)
+                    .map(|sequence| (sequence, Frame::Open(uri)))
+            } else if open.pending_change {
+                send_change(
+                    &mut session.client,
+                    &open.document,
+                    &open.synced_snapshot,
+                    &open.snapshot,
+                )
+                .map(|sequence| (sequence, Frame::Change(uri)))
+            } else {
+                continue;
+            };
+            match sent {
+                Ok((sequence, frame)) => {
+                    let open = &mut session.background[index];
+                    let retried = mem::take(&mut open.retry);
+                    open.unopened = false;
+                    open.pending_change = false;
+                    open.synced_snapshot = open.snapshot.clone();
+                    session.track(sequence, frame, retried);
+                }
+                // A document the server may not take leaves the roster.
+                Err(RustDiagnosticsError::Language(error)) => {
+                    let dropped = session.background.remove(index);
+                    session.remember_closed(dropped.document.uri());
+                    if !dropped.unopened && !session.owe_close(dropped.document, false) {
+                        return self.restart_or_fail(RustDiagnosticsError::Client(
+                            LspClientError::Submit(SubmitError::Saturated),
+                        ));
+                    }
+                    report = Some(RustDiagnosticsError::Language(error));
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    report = failure;
+                }
+            }
+        }
+        report.is_some_and(|error| {
+            replace_status(&mut self.status, Some(Arc::from(error.to_string())))
+        })
+    }
+
+    /// Keeps the newest current-version batch per background document.
+    fn admit_background(&mut self, batches: Vec<(usize, DiagnosticBatch)>, stale: u64) {
+        self.stale_diagnostics = self.stale_diagnostics.saturating_add(stale);
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        for (index, batch) in batches {
+            let Some(open) = session.background.get_mut(index) else {
+                continue;
+            };
+            let current = session.state == SessionState::Open
+                && batch
+                    .document_version()
+                    .is_none_or(|version| version == open.document.version());
+            if current {
+                open.diagnostics = Some(batch);
+            } else {
+                self.stale_diagnostics = self.stale_diagnostics.saturating_add(1);
+            }
+        }
+    }
+
+    /// Takes a hidden tab's newer buffer, as after a workspace edit, and
+    /// sends it if the server holds that document open. Returns whether the
+    /// status changed.
+    pub(crate) fn update_background(&mut self, path: &Path, snapshot: BufferSnapshot) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let shown = !session.active_closed && session.target.path == path;
+        let held = session.background.iter().position(|open| open.path == path);
+        let known = match (shown, held) {
+            (true, _) => &session.snapshot,
+            (false, Some(index)) => &session.background[index].snapshot,
+            (false, None) => return false,
+        };
+        if known.revision() == snapshot.revision() {
+            return false;
+        }
+        let version = match session.fresh_version() {
+            Ok(version) => version,
+            Err(error) => return self.fail(error).visual_changed,
+        };
+        let pending = session.state == SessionState::Open;
+        if shown {
+            // A later sync of this buffer revision then sends nothing more.
+            session.identity.buffer_revision = snapshot.revision().get();
+            session.document.set_version(version);
+            session.lsp_version = version;
+            session.snapshot = snapshot;
+            session.pending_change = pending;
+            session.diagnostics = None;
+        } else if let Some(open) = held.and_then(|index| session.background.get_mut(index)) {
+            open.document.set_version(version);
+            open.snapshot = snapshot;
+            open.pending_change = pending;
+            open.diagnostics = None;
+        }
+        self.flush_change()
+    }
+
+    /// Closes every open document whose tab is gone. A closed shown document
+    /// also loses its results and in-flight requests.
+    pub(crate) fn close_documents_outside(&mut self, open_paths: &[PathBuf]) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let is_open = |path: &Path| open_paths.iter().any(|open| open == path);
+        let open_state = session.state == SessionState::Open;
+        let mut owed = true;
+        let mut index = 0;
+        while index < session.background.len() {
+            if is_open(&session.background[index].path) {
+                index += 1;
+                continue;
+            }
+            let closed = session.background.remove(index);
+            session.remember_closed(closed.document.uri());
+            if open_state && !closed.unopened {
+                owed &= session.owe_close(closed.document, false);
+            }
+        }
+        let mut changed = false;
+        if !session.active_closed && !is_open(&session.target.path) {
+            changed = self.revoke_requests();
+            let session = self.session.as_mut().unwrap_or_else(|| unreachable!());
+            changed |= session.diagnostics.take().is_some();
+            session.active_closed = true;
+            session.pending_change = false;
+            // The closed tab's text is not kept.
+            session.snapshot = alpine_text::Buffer::new("").snapshot();
+            session.synced_snapshot = session.snapshot.clone();
+            let document = session.document.clone();
+            session.remember_closed(document.uri());
+            let unopened = mem::take(&mut session.unopened);
+            if open_state && !unopened {
+                owed &= session.owe_close(document, false);
+            }
+        }
+        if !owed {
+            let full = RustDiagnosticsError::Client(LspClientError::Submit(SubmitError::Saturated));
+            return self.restart_or_fail(full) || changed;
+        }
+        self.flush_background() || changed
     }
 
     fn admit(&mut self, candidate: Result<DiagnosticBatch, LanguageProtocolError>) -> bool {
@@ -3255,6 +3780,9 @@ impl RustDiagnostics {
         session.restart_count += 1;
         session.state = SessionState::Starting;
         session.pending_change = false;
+        if let Err(error) = session.reset_for_new_process() {
+            return self.fail(error).visual_changed;
+        }
         session.diagnostics = None;
         session.pending_completion = None;
         session.completion = None;
@@ -3439,6 +3967,47 @@ fn replace_status(status: &mut Option<Arc<str>>, next: Option<Arc<str>>) -> bool
     }
 }
 
+fn send_open(
+    client: &mut LspClient,
+    document: &LspDocument,
+    snapshot: &BufferSnapshot,
+) -> Result<InputSequence, RustDiagnosticsError> {
+    let params = document
+        .did_open_params(&snapshot.text())
+        .map_err(RustDiagnosticsError::Language)?;
+    client
+        .notify("textDocument/didOpen", Some(&params))
+        .map_err(RustDiagnosticsError::Client)
+}
+
+fn send_close(
+    client: &mut LspClient,
+    document: &LspDocument,
+) -> Result<InputSequence, RustDiagnosticsError> {
+    let params = document
+        .did_close_params()
+        .map_err(RustDiagnosticsError::Language)?;
+    client
+        .notify("textDocument/didClose", Some(&params))
+        .map_err(RustDiagnosticsError::Client)
+}
+
+/// Replaces the server's copy, `synced`, with the whole of `snapshot`.
+fn send_change(
+    client: &mut LspClient,
+    document: &LspDocument,
+    synced: &BufferSnapshot,
+    snapshot: &BufferSnapshot,
+) -> Result<InputSequence, RustDiagnosticsError> {
+    let text = snapshot.text();
+    let params = document_end(synced)
+        .and_then(|previous_end| document.did_change_params(&text, previous_end))
+        .map_err(RustDiagnosticsError::Language)?;
+    client
+        .notify("textDocument/didChange", Some(&params))
+        .map_err(RustDiagnosticsError::Client)
+}
+
 fn document_end(snapshot: &BufferSnapshot) -> Result<LspPosition, LanguageProtocolError> {
     let last_line = snapshot
         .line_count()
@@ -3487,12 +4056,20 @@ fn test_session(
         process_generation: generation,
         process_epoch: 1,
         lsp_version: 1,
+        newest_version: 1,
         state: SessionState::Open,
         snapshot: input.snapshot,
         synced_snapshot,
         pending_change: false,
         restart_count: 0,
         document,
+        active_closed: false,
+        unopened: false,
+        retry: false,
+        background: Vec::new(),
+        owed_closes: VecDeque::new(),
+        tracked: VecDeque::new(),
+        recently_closed: VecDeque::new(),
         diagnostics: Some(AdmittedDiagnostics {
             identity: input.identity,
             process_epoch: 1,

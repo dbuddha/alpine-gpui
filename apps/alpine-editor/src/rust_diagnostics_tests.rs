@@ -146,6 +146,56 @@ fn marker_admission_is_identity_epoch_visible_and_bounded() {
 }
 
 #[test]
+fn a_publication_for_a_lately_closed_document_is_quietly_stale() -> Result<(), Box<dyn Error>> {
+    let (root, path, _, _) = fixture();
+    let closed = root.join("closed.rs");
+    let shown = LspDocument::from_file_path(&path, "rust", 1)?;
+    let closed_uri = Box::<str>::from(LspDocument::from_file_path(&closed, "rust", 1)?.uri());
+    let recently_closed = std::collections::VecDeque::from([closed_uri]);
+    let mut candidates = PollCandidates::default();
+    candidates.route_diagnostics(
+        &diagnostics(&closed, 1),
+        Some(&shown),
+        &[],
+        &recently_closed,
+    );
+    assert_eq!(candidates.stale_background_diagnostics, 1);
+    assert!(candidates.diagnostics.is_none());
+    candidates.route_diagnostics(
+        &diagnostics(&root.join("never_open.rs"), 1),
+        Some(&shown),
+        &[],
+        &recently_closed,
+    );
+    assert!(matches!(
+        candidates.diagnostics,
+        Some(Err(LanguageProtocolError::DocumentMismatch))
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn closing_the_shown_tab_keeps_none_of_its_text() -> Result<(), Box<dyn Error>> {
+    let (root, path, snapshot, identity) = fixture();
+    let mut model = RustDiagnostics::default();
+    model.install_for_test(
+        RustDocumentInput::new(&path, &root, identity, snapshot),
+        &diagnostics(&path, 1),
+        mock_executable(),
+    )?;
+    let _ = model.close_documents_outside(&[]);
+    let session = model.session.as_ref().ok_or("session")?;
+    assert!(session.active_closed);
+    assert!(session.snapshot.is_empty());
+    assert!(session.synced_snapshot.is_empty());
+    assert_eq!(model.snapshot().diagnostic_items, 0);
+    assert!(!model.shutdown().active);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn status_replacement_and_stale_wakes_are_quiet() {
     let mut model = RustDiagnostics::default();
     assert!(!replace_status(&mut model.status, None));
@@ -360,11 +410,13 @@ fn portable_mock_reuses_one_process_across_workspace_document_switches()
             )
             .visual_changed
     );
+    // Versions never repeat within a session, so the second document opens
+    // above the first's.
     let second = wait_for_product_diagnostics(
         &mut model,
         &latch,
         first.diagnostic_publications.saturating_add(1),
-        1,
+        2,
         false,
         true,
     )?;
@@ -387,14 +439,16 @@ fn portable_mock_reuses_one_process_across_workspace_document_switches()
             )
             .visual_changed
     );
-    let returned = wait_for_product_diagnostics(
-        &mut model,
-        &latch,
-        second.diagnostic_publications.saturating_add(1),
-        1,
-        false,
-        true,
-    )?;
+    // The first document is still open: its cached diagnostics return at
+    // once, with no new open and so no new publication.
+    let returned = model.snapshot();
+    assert_eq!(
+        returned.diagnostic_publications,
+        second.diagnostic_publications
+    );
+    assert_eq!(returned.diagnostic_version, Some(1));
+    assert!(returned.diagnostic_items > 0);
+    assert_eq!(returned.lsp_version, 1);
     assert_eq!(returned.process_starts, 1);
     assert_eq!(returned.process_epoch, first.process_epoch);
     assert_eq!(returned.document_switches, 2);

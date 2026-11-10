@@ -308,21 +308,43 @@ impl DiagnosticBatch {
         params: &RawValue,
         expected: &LspDocument,
     ) -> Result<Self, LanguageProtocolError> {
+        Self::admit_resolved(params, |uri| {
+            (uri == expected.uri.as_ref()).then_some(((), expected))
+        })
+        .map(|((), batch)| batch)
+        .map_err(|(_, error)| error)
+    }
+
+    /// `admit` for whichever document `resolve` finds by URI. Errors after
+    /// that lookup carry its key, so callers can tell whose they are.
+    pub(crate) fn admit_resolved<'d, K: Copy>(
+        params: &RawValue,
+        resolve: impl FnOnce(&str) -> Option<(K, &'d LspDocument)>,
+    ) -> Result<(K, Self), (Option<K>, LanguageProtocolError)> {
         if params.get().len() > MAX_DIAGNOSTIC_WIRE_BYTES {
-            return Err(LanguageProtocolError::DiagnosticWireTooLarge);
+            return Err((None, LanguageProtocolError::DiagnosticWireTooLarge));
         }
         let value: Value = serde_json::from_str(params.get())
-            .map_err(|_| LanguageProtocolError::MalformedDiagnostics)?;
+            .map_err(|_| (None, LanguageProtocolError::MalformedDiagnostics))?;
         let object = value
             .as_object()
-            .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
+            .ok_or((None, LanguageProtocolError::MalformedDiagnostics))?;
         let uri = object
             .get("uri")
             .and_then(Value::as_str)
-            .ok_or(LanguageProtocolError::MalformedDiagnostics)?;
-        if uri != expected.uri.as_ref() {
-            return Err(LanguageProtocolError::DocumentMismatch);
-        }
+            .ok_or((None, LanguageProtocolError::MalformedDiagnostics))?;
+        let (key, expected) =
+            resolve(uri).ok_or((None, LanguageProtocolError::DocumentMismatch))?;
+        Self::admit_object(object, uri, expected)
+            .map(|batch| (key, batch))
+            .map_err(|error| (Some(key), error))
+    }
+
+    fn admit_object(
+        object: &serde_json::Map<String, Value>,
+        uri: &str,
+        expected: &LspDocument,
+    ) -> Result<Self, LanguageProtocolError> {
         let document_version = match object.get("version") {
             None | Some(Value::Null) => None,
             Some(value) => Some(

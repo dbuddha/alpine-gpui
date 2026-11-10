@@ -5,7 +5,7 @@ author: Deepak Buddha
 authority: ../../../project.md
 related: [../AGENTS.md, ../../../AGENTS.md, ../../../project.md, ../../../notes.md]
 parent: ../AGENTS.md
-updated: 2026-11-03
+updated: 2026-11-10
 ---
 
 # Editor subsystems: language intelligence and git
@@ -18,8 +18,9 @@ scope and acceptance, and root instructions own operating rules.
 ## Language intelligence
 
 Today: off-main-thread discovery, one server per workspace and language (cap
-5), idle shutdown of unattached slots, local-lexer highlighting, plus
-../AGENTS.md `known_defects`. A stop sends `shutdown` and `exit`, then TERMs
+5), idle shutdown of unattached slots, local-lexer highlighting, up to 16
+open documents per session whose unsaved text survives tab switches and
+restarts, plus ../AGENTS.md `known_defects`. A stop sends `shutdown` and `exit`, then TERMs
 and KILLs the server's process group within about 0.8 s. Eviction and idle
 stops never wait on the main thread; quit waits 1.5 s at most. rust-analyzer
 takes 1 to 4 GB on a real crate; a first query waits on its indexing.
@@ -62,8 +63,7 @@ Rules:
 
 Implement serially: wire format (Cow JSON fix, string IDs, server requests,
 processId, capabilities, UTF-8 negotiation and event-driven waits); supervisor
-without 2 ms polling; pool/discovery; incremental sync and didSave (16 open
-documents/server); off-main decoding; completion; hover/signature help;
+without 2 ms polling; pool/discovery; incremental sync and didSave; off-main decoding; completion; hover/signature help;
 diagnostics; code actions/applyEdit; seven-language memory qualification.
 Recheck implemented behavior before starting each slice. Every target language
 needs real-server evidence; settings and background priority are experiments.

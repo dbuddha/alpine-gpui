@@ -5,17 +5,16 @@ author: Deepak Buddha
 authority: ../../project.md
 related: [../../AGENTS.md, ../../project.md, ../../notes.md, src/AGENTS.md]
 parent: ../../AGENTS.md
-updated: 2026-11-03
+updated: 2026-11-10
 stage: evidence and stability
 language_targets: [Rust, Python, C++, Java, TypeScript, OCaml, Haskell]
 implemented_language_evidence: Rust workflows; C++ diagnostics; other servers need qualification
 known_defects:
   - "physical native validation: missing or zero presentedTime withholds close until timeout; the error identifies the missing evidence, but qualification still fails"
-  - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown, but unsaved overlays await PR #672"
+  - "a sixth language with five attached slots stops the least recently used other tab's server; it restarts when shown but reopens only the shown document"
   - "didChange sends the whole document (lsp_language.rs did_change_params)"
   - "Open With and drag to Dock fail: no CFBundleDocumentTypes or open-document handler (was #543)"
   - "no horizontal scroll, so a caret past the right edge stays hidden (rest of #555)"
-  - "unsaved workspace overlays lost on tab switch; PR #672, refresh its remote head before review"
 parked_branch: "feat/lsp-manager at 6600f40, local only: fix its blockers (ARCHIVE F1-F10) before salvaging the Cow JSON fix, scroll skip and pool tests in stage 3"
 out_of_scope: [AI, collaboration, extensions, remote development, multi-cursor, built-in terminal]
 ---

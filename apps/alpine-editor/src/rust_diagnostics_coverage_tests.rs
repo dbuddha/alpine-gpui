@@ -476,8 +476,17 @@ fn oversized_document_messages_fail_boundedly() -> Result<(), Box<dyn Error>> {
     let (mut oversized_open, _, root) = installed_model()?;
     let session = oversized_open.session.as_mut().ok_or("session")?;
     session.snapshot = alpine_text::Buffer::new(&oversized).snapshot();
-    session.restart_count = MAX_RESTARTS_PER_DOCUMENT;
+    session.unopened = true;
     assert!(oversized_open.open_document());
+    // The server is left without the document; the session is not restarted.
+    let session = oversized_open.session.as_ref().ok_or("session")?;
+    assert!(session.active_closed);
+    assert_eq!(oversized_open.snapshot().restarts, 0);
+    assert!(
+        oversized_open
+            .status_message()
+            .is_some_and(|message| message.contains("DocumentTooLarge"))
+    );
 
     let (mut oversized_change, _, root_two) = installed_model()?;
     let session = oversized_change.session.as_mut().ok_or("session")?;
@@ -1949,6 +1958,48 @@ fn symbol_admission_rejects_stale_invalid_empty_truncated_and_oversized_results(
     assert!(!model.reject_stale_symbols(pending.request_id));
     assert!(!model.snapshot().symbol_pending());
     let _ = model.shutdown();
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn a_rejected_document_frame_is_sent_once_more_then_restarts() -> Result<(), Box<dyn Error>> {
+    let (mut model, _, root) = installed_model()?;
+    let rejected = |sequence| LspClientPoll::InputRejected {
+        sequence: InputSequence::for_test(sequence),
+        failure: ProcessFailure {
+            stage: ProcessStage::Input,
+            kind: FailureKind::QueueSaturated,
+            raw_os_error: None,
+        },
+    };
+    let session = model.session.as_mut().ok_or("session")?;
+    let uri = Box::<str>::from(session.document.uri());
+    let document = session.document.clone();
+    session.track(InputSequence::for_test(7), Frame::Open(uri.clone()), false);
+    session.track(InputSequence::for_test(8), Frame::Close(document), false);
+    session.track(InputSequence::for_test(9), Frame::Open(uri.clone()), false);
+    let mut visual = false;
+    assert!(!model.apply_poll(rejected(7), &mut visual));
+    assert!(!model.apply_poll(rejected(8), &mut visual));
+    assert!(!model.apply_poll(
+        LspClientPoll::InputWritten {
+            sequence: InputSequence::for_test(9),
+            bytes: 1,
+        },
+        &mut visual,
+    ));
+    let session = model.session.as_mut().ok_or("session")?;
+    assert!(session.unopened && session.retry);
+    assert_eq!(
+        session.owed_closes.front().map(|(_, retry)| *retry),
+        Some(true)
+    );
+    assert!(session.tracked.is_empty());
+    session.track(InputSequence::for_test(10), Frame::Open(uri), true);
+    assert!(model.apply_poll(rejected(10), &mut visual));
+    assert_eq!(model.snapshot().restarts, 1);
+    assert!(!model.shutdown().active);
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
